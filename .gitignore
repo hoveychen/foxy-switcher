@@ -1,0 +1,37 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Tauri
+src-tauri/target
+src-tauri/binaries
+src-tauri/gen
+
+# Server build artifacts
+/build
+/dist-server
+
+# Stale tsc -b emit (vite.config.ts is consumed directly by Vite)
+/vite.config.js
+/vite.config.d.ts
+/*.tsbuildinfo
