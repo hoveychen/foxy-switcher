@@ -102,6 +102,15 @@ pub fn run() {
                         }
                     }
                     "quit" => {
+                        // Send SIGTERM to the sidecar BEFORE asking Tauri to
+                        // exit. We don't trust the ExitRequested path alone —
+                        // with hide-on-close prevent_close on the only window,
+                        // app.exit() does not always reach our RunEvent
+                        // handler in a state where the sidecar is still
+                        // shutdown-able. Calling shutdown here is idempotent
+                        // (the ChildHandle take() pattern), so the RunEvent
+                        // backup below is harmless.
+                        sidecar::shutdown(app);
                         app.exit(0);
                     }
                     _ => {}
@@ -120,7 +129,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {
-            if let RunEvent::ExitRequested { .. } = event {
+            // Belt-and-suspenders: ExitRequested fires for app.exit() and
+            // most clean-quit paths; Exit fires unconditionally on actual
+            // process exit. Hooking both ensures we send SIGTERM no matter
+            // which path the runtime takes. shutdown() is idempotent.
+            if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
                 sidecar::shutdown(app);
             }
         });

@@ -114,11 +114,38 @@ pub fn shutdown(app: &AppHandle) {
             #[cfg(unix)]
             {
                 // SIGTERM lets the Go server run its deferred cleanup
-                // (hook.Uninstall + port file removal). The orphaned child
-                // finishes shutdown after we exit; we don't block on it.
+                // (hook.Uninstall + port file removal). We then poll for the
+                // process to actually exit before letting the GUI proceed —
+                // without this wait, the GUI's event loop can finish before
+                // the orphaned daemon has CPU time to run its signal handler,
+                // and the user is left with an apiKeyHelper hook still
+                // pointing at a get-token.sh that no longer has a daemon
+                // behind it.
                 let pid = child.pid();
-                unsafe {
-                    libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                eprintln!("[shell] sending SIGTERM to sidecar pid {pid}");
+                let kill_rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                if kill_rc != 0 {
+                    eprintln!(
+                        "[shell] kill(SIGTERM, {pid}) failed: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let mut exited = false;
+                while Instant::now() < deadline {
+                    // signal 0 is the "is this pid alive?" probe.
+                    if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+                        exited = true;
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                if exited {
+                    eprintln!("[shell] sidecar pid {pid} exited cleanly");
+                } else {
+                    eprintln!(
+                        "[shell] sidecar pid {pid} still alive after 3s; leaking"
+                    );
                 }
                 // Drop the handle without invoking kill(). std::process::Child::Drop
                 // is a no-op (intentional Rust design), so the OS process keeps
