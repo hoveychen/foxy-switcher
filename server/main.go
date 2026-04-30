@@ -39,6 +39,7 @@ func main() {
 		dataDir   = flag.String("data-dir", "", "directory for state.db / port file (default ~/.foxy-switcher)")
 		port      = flag.Int("port", 0, "TCP port to bind on 127.0.0.1; 0 = random")
 		parentPID = flag.Int("parent-pid", 0, "if non-zero, exit when this pid disappears (sidecar-mode safety net)")
+		noHook    = flag.Bool("no-hook", false, "don't manage the apiKeyHelper hook (no install/uninstall, no reconcile loop) — useful for debugging /api/token in isolation")
 	)
 	flag.Parse()
 
@@ -93,13 +94,19 @@ func main() {
 	// pool availability (avoid blocking Claude Code during bootstrap when the
 	// pool is empty, or during periods when every account is rate-limited).
 	// The deferred Uninstall is the final safety net for graceful shutdown.
-	defer func() {
-		if err := hook.Uninstall(dir); err != nil {
-			logger.Printf("warning: uninstall apiKeyHelper hook: %v", err)
-		} else {
-			logger.Print("apiKeyHelper hook removed")
-		}
-	}()
+	//
+	// --no-hook skips both sides: nothing to uninstall on shutdown, no
+	// reconcile loop on startup. Used to debug /api/token without the helper
+	// rewriting ~/.claude/settings.json.
+	if !*noHook {
+		defer func() {
+			if err := hook.Uninstall(dir); err != nil {
+				logger.Printf("warning: uninstall apiKeyHelper hook: %v", err)
+			} else {
+				logger.Print("apiKeyHelper hook removed")
+			}
+		}()
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -108,14 +115,18 @@ func main() {
 		go watchParent(ctx, cancel, *parentPID, 2*time.Second, logger)
 	}
 
-	hookCoord := server.NewHookCoordinator(logger, 5*time.Second)
-	server.Hook = hookCoord
-	// Wire callbacks BEFORE Start so the spawned goroutines see them on
-	// their first tick. Trigger() is non-blocking and idempotent, so it's
-	// safe to fire even before hookCoord.Run starts consuming.
-	rf.OnChange = hookCoord.Trigger
-	up.OnChange = hookCoord.Trigger
-	go hookCoord.Run(ctx)
+	if !*noHook {
+		hookCoord := server.NewHookCoordinator(logger, 5*time.Second)
+		server.Hook = hookCoord
+		// Wire callbacks BEFORE Start so the spawned goroutines see them on
+		// their first tick. Trigger() is non-blocking and idempotent, so it's
+		// safe to fire even before hookCoord.Run starts consuming.
+		rf.OnChange = hookCoord.Trigger
+		up.OnChange = hookCoord.Trigger
+		go hookCoord.Run(ctx)
+	} else {
+		logger.Print("--no-hook: apiKeyHelper hook lifecycle disabled")
+	}
 
 	rf.Start(ctx)
 	defer rf.Stop()
