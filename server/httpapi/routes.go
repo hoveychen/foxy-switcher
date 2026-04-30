@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/anthropic"
 	"github.com/hoveychen/foxy-switcher/server/assets"
 	"github.com/hoveychen/foxy-switcher/server/authz"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
@@ -121,13 +122,17 @@ func (s *Server) handleGetToken(w http.ResponseWriter, r *http.Request) {
 
 // --- /api/accounts ---------------------------------------------------------
 
+type usageWindowView struct {
+	Utilization float64 `json:"utilization"` // 0–100 percent
+	ResetsAt    string  `json:"resets_at"`   // RFC3339; "" when API didn't return this window
+}
+
 type accountView struct {
 	ID               int64  `json:"id"`
 	Name             string `json:"name"`
 	ExpiresAt        int64  `json:"expires_at"`
 	Scopes           string `json:"scopes"`
 	SubscriptionType string `json:"subscription_type"`
-	RateLimitTier    string `json:"rate_limit_tier"`
 	OrganizationUUID string `json:"organization_uuid"`
 	Status           string `json:"status"`
 	CooldownUntil    int64  `json:"cooldown_until"`
@@ -135,17 +140,40 @@ type accountView struct {
 	Last429At        int64  `json:"last_429_at"`
 	CreatedAt        int64  `json:"created_at"`
 	UpdatedAt        int64  `json:"updated_at"`
+	// Profile fields populated at login.
+	Email            string `json:"email"`
+	FullName         string `json:"full_name"`
+	OrganizationName string `json:"organization_name"`
+	Plan             string `json:"plan"`
+	// Usage snapshot, refreshed by the usage scheduler.
+	FiveHour       *usageWindowView `json:"five_hour,omitempty"`
+	SevenDay       *usageWindowView `json:"seven_day,omitempty"`
+	SevenDaySonnet *usageWindowView `json:"seven_day_sonnet,omitempty"`
+	UsageFetchedAt int64            `json:"usage_fetched_at"`
 	// Tokens are deliberately omitted from the UI surface.
 }
 
 func toView(a store.Account) accountView {
-	return accountView{
+	view := accountView{
 		ID: a.ID, Name: a.Name, ExpiresAt: a.ExpiresAt, Scopes: a.Scopes,
-		SubscriptionType: a.SubscriptionType, RateLimitTier: a.RateLimitTier,
+		SubscriptionType: a.SubscriptionType,
 		OrganizationUUID: a.OrganizationUUID, Status: a.Status,
 		CooldownUntil: a.CooldownUntil, LastUsedAt: a.LastUsedAt,
 		Last429At: a.Last429At, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		Email: a.Email, FullName: a.FullName,
+		OrganizationName: a.OrganizationName, Plan: a.Plan,
+		UsageFetchedAt: a.UsageFetchedAt,
 	}
+	if a.FiveHourResetsAt != "" {
+		view.FiveHour = &usageWindowView{Utilization: a.FiveHourUtil, ResetsAt: a.FiveHourResetsAt}
+	}
+	if a.SevenDayResetsAt != "" {
+		view.SevenDay = &usageWindowView{Utilization: a.SevenDayUtil, ResetsAt: a.SevenDayResetsAt}
+	}
+	if a.SevenDaySonnetResetsAt != "" {
+		view.SevenDaySonnet = &usageWindowView{Utilization: a.SevenDaySonnetUtil, ResetsAt: a.SevenDaySonnetResetsAt}
+	}
+	return view
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
@@ -212,15 +240,29 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		expiresAt = time.Now().Add(8 * time.Hour).UnixMilli()
 	}
 
+	// Populate owner / plan immediately. We treat profile fetch as part of
+	// the login: a token that can't read its own profile is unusable, so
+	// failing here is preferable to silently storing an account that will
+	// show "—" forever in the UI.
+	prof, err := anthropic.FetchProfile(r.Context(), tr.AccessToken)
+	if err != nil {
+		http.Error(w, "fetch profile: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
 	a := store.Account{
-		Name:         strings.TrimSpace(req.Name),
-		AccessToken:  tr.AccessToken,
-		RefreshToken: tr.RefreshToken,
-		ExpiresAt:    expiresAt,
-		Scopes:       tr.Scope,
-		// SubscriptionType / RateLimitTier / OrganizationUUID could be
-		// populated from a follow-up call to /api/oauth/profile; left empty
-		// for the MVP and discovered passively as the account is used.
+		Name:             strings.TrimSpace(req.Name),
+		AccessToken:      tr.AccessToken,
+		RefreshToken:     tr.RefreshToken,
+		ExpiresAt:        expiresAt,
+		Scopes:           tr.Scope,
+		Email:            prof.Email,
+		FullName:         prof.FullName,
+		OrganizationName: prof.OrganizationName,
+		Plan:             prof.Plan,
+		SubscriptionType: prof.SubscriptionType,
+		// OrganizationUUID is currently not surfaced by /api/oauth/profile;
+		// we keep the column for future use when Anthropic exposes it.
 	}
 	if a.Name == "" {
 		a.Name = fmt.Sprintf("Account %d", time.Now().Unix())
@@ -229,7 +271,37 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "save account: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Best-effort initial usage pull so the new card lights up immediately
+	// instead of waiting for the next 5-minute tick. Failures are logged
+	// only — the next tick will retry.
+	if usage, err := anthropic.FetchUsage(r.Context(), a.AccessToken); err == nil {
+		_ = applyUsage(r.Context(), s.Store, a.ID, usage)
+		// Re-read so the response includes the freshly-stored usage.
+		if updated, err := s.Store.Get(r.Context(), a.ID); err == nil {
+			a = *updated
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"account": toView(a)})
+}
+
+// applyUsage writes a Usage snapshot to the store. Nil windows become zeroed
+// columns. Centralised here so the login path, the periodic poller, and the
+// "Refresh now" handler all agree on the encoding.
+func applyUsage(ctx context.Context, st *store.Store, id int64, u *anthropic.Usage) error {
+	var fhU, sdU, ssU float64
+	var fhR, sdR, ssR string
+	if u.FiveHour != nil {
+		fhU, fhR = u.FiveHour.Utilization, u.FiveHour.ResetsAt
+	}
+	if u.SevenDay != nil {
+		sdU, sdR = u.SevenDay.Utilization, u.SevenDay.ResetsAt
+	}
+	if u.SevenDaySonnet != nil {
+		ssU, ssR = u.SevenDaySonnet.Utilization, u.SevenDaySonnet.ResetsAt
+	}
+	return st.SetUsage(ctx, id, fhU, fhR, sdU, sdR, ssU, ssR)
 }
 
 // --- mutations -------------------------------------------------------------
@@ -312,6 +384,16 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Pull fresh usage with the just-rotated token. We don't surface this
+	// failure: the user's primary intent (rotate token) succeeded, and
+	// usage will come in on the next 5-minute tick if Anthropic is
+	// transient-erroring right now.
+	if u, err := anthropic.FetchUsage(r.Context(), a.AccessToken); err == nil {
+		_ = applyUsage(r.Context(), s.Store, a.ID, u)
+		if updated, err := s.Store.Get(r.Context(), id); err == nil {
+			a = updated
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"account": toView(*a)})
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Account,
+  UsageWindow,
   apiClient,
   installHook,
   isHookInstalled,
@@ -22,6 +23,15 @@ function fmtRemaining(ms: number): string {
   return `${m}m`;
 }
 
+function fmtResetsAt(rfc3339: string, nowMs: number): string {
+  if (!rfc3339) return "—";
+  const t = Date.parse(rfc3339);
+  if (Number.isNaN(t)) return rfc3339;
+  const diff = t - nowMs;
+  if (diff <= 0) return "rolling over";
+  return `resets in ${fmtRemaining(diff)}`;
+}
+
 function statusBadge(a: Account, nowMs: number): { text: string; tone: string } {
   if (a.status !== "active") return { text: a.status, tone: "muted" };
   if (a.cooldown_until > nowMs) {
@@ -34,6 +44,37 @@ function statusBadge(a: Account, nowMs: number): { text: string; tone: string } 
     return { text: "refresh due", tone: "warn" };
   }
   return { text: "active", tone: "ok" };
+}
+
+function UsageBar({
+  label,
+  win,
+  nowMs,
+}: {
+  label: string;
+  win: UsageWindow | undefined;
+  nowMs: number;
+}) {
+  if (!win) {
+    return (
+      <div className="usage-row">
+        <span className="usage-label">{label}</span>
+        <span className="usage-empty">—</span>
+      </div>
+    );
+  }
+  const pct = Math.max(0, Math.min(100, win.utilization));
+  const tone = pct >= 90 ? "danger" : pct >= 75 ? "warn" : "ok";
+  return (
+    <div className="usage-row">
+      <span className="usage-label">{label}</span>
+      <div className={`usage-track ${tone}`}>
+        <div className="usage-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="usage-pct">{pct.toFixed(1)}%</span>
+      <span className="usage-resets">{fmtResetsAt(win.resets_at, nowMs)}</span>
+    </div>
+  );
 }
 
 export default function App() {
@@ -177,15 +218,37 @@ export default function App() {
         <ul className="accounts">
           {accounts.map((a) => {
             const b = statusBadge(a, now);
+            const ownerLine =
+              a.full_name && a.email
+                ? `${a.full_name} <${a.email}>`
+                : a.email || a.full_name || "—";
             return (
               <li key={a.id}>
                 <div className="acc-main">
-                  <strong>{a.name}</strong>
+                  <div className="acc-title">
+                    <strong>{a.name}</strong>
+                    {a.plan && (
+                      <span className="plan-tag">{a.plan}</span>
+                    )}
+                  </div>
                   <span className={`badge ${b.tone}`}>{b.text}</span>
                 </div>
+                <div className="acc-owner">
+                  <span>{ownerLine}</span>
+                  {a.organization_name && (
+                    <span className="muted"> · {a.organization_name}</span>
+                  )}
+                </div>
+                <div className="acc-usage">
+                  <UsageBar label="5h" win={a.five_hour} nowMs={now} />
+                  <UsageBar label="7d Opus" win={a.seven_day} nowMs={now} />
+                  <UsageBar
+                    label="7d Sonnet"
+                    win={a.seven_day_sonnet}
+                    nowMs={now}
+                  />
+                </div>
                 <div className="acc-meta">
-                  <span>tier: {a.rate_limit_tier || "—"}</span>
-                  <span>sub: {a.subscription_type || "—"}</span>
                   <span>
                     last used:{" "}
                     {a.last_used_at
@@ -193,7 +256,13 @@ export default function App() {
                       : "never"}
                   </span>
                   <span>
-                    expires in: {fmtRemaining(a.expires_at - now)}
+                    token expires in: {fmtRemaining(a.expires_at - now)}
+                  </span>
+                  <span>
+                    usage:{" "}
+                    {a.usage_fetched_at
+                      ? `updated ${fmtRemaining(now - a.usage_fetched_at)} ago`
+                      : "pending"}
                   </span>
                 </div>
                 <div className="acc-actions">

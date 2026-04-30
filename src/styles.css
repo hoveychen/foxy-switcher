@@ -117,8 +117,92 @@ h3 { font-size: 0.95rem; margin: 0 0 0.5rem; }
 .acc-main {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
   margin-bottom: 0.35rem;
+}
+
+.acc-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.plan-tag {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  background: #e7f0ff;
+  color: #0040a0;
+  font-weight: 500;
+}
+@media (prefers-color-scheme: dark) {
+  .plan-tag { background: #1f3358; color: #a8c7ff; }
+}
+
+.acc-owner {
+  font-size: 0.82rem;
+  margin-bottom: 0.5rem;
+  color: #1d1d1f;
+}
+@media (prefers-color-scheme: dark) {
+  .acc-owner { color: #f5f5f7; }
+}
+
+.acc-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.5rem;
+}
+
+.usage-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 60px auto;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.usage-label {
+  color: #6e6e73;
+}
+
+.usage-track {
+  height: 6px;
+  background: #e5e5ea;
+  border-radius: 3px;
+  overflow: hidden;
+}
+@media (prefers-color-scheme: dark) {
+  .usage-track { background: #38383a; }
+}
+
+.usage-fill {
+  height: 100%;
+  background: #34c759;
+  transition: width 0.3s;
+}
+.usage-track.warn .usage-fill { background: #ff9f0a; }
+.usage-track.danger .usage-fill { background: #ff3b30; }
+
+.usage-pct {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: #1d1d1f;
+}
+@media (prefers-color-scheme: dark) {
+  .usage-pct { color: #f5f5f7; }
+}
+
+.usage-resets {
+  color: #6e6e73;
+  font-size: 0.72rem;
+}
+
+.usage-empty {
+  grid-column: 2 / span 3;
+  color: #6e6e73;
 }
 
 .badge {

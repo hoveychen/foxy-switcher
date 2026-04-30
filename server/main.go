@@ -53,6 +53,7 @@ func main() {
 
 	pkce := authz.NewPKCEStore()
 	rf := refresh.New(st, logger)
+	up := refresh.NewUsagePoller(st, logger)
 
 	server := httpapi.New(st, pkce, rf)
 
@@ -80,6 +81,8 @@ func main() {
 
 	rf.Start(ctx)
 	defer rf.Stop()
+	up.Start(ctx)
+	defer up.Stop()
 
 	httpSrv := &http.Server{
 		Handler:           server.Handler(),

@@ -36,13 +36,17 @@ async function api<T>(
   return (await res.text()) as unknown as T;
 }
 
+export interface UsageWindow {
+  utilization: number; // 0–100 percent
+  resets_at: string; // RFC3339
+}
+
 export interface Account {
   id: number;
   name: string;
   status: string;
   organization_uuid: string;
   subscription_type: string;
-  rate_limit_tier: string;
   expires_at: number;
   cooldown_until: number;
   last_used_at: number;
@@ -50,6 +54,14 @@ export interface Account {
   scopes: string;
   created_at: number;
   updated_at: number;
+  email: string;
+  full_name: string;
+  organization_name: string;
+  plan: string;
+  five_hour?: UsageWindow;
+  seven_day?: UsageWindow;
+  seven_day_sonnet?: UsageWindow;
+  usage_fetched_at: number;
 }
 
 export const apiClient = {
