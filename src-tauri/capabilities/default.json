@@ -11,6 +11,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-close",
     "core:event:default",
+    "dialog:allow-ask",
     {
       "identifier": "http:default",
       "allow": [

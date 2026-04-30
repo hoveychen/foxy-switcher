@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { Account, UsageWindow, apiClient } from "./api";
 
 type LoginState =
@@ -78,6 +79,7 @@ export default function App() {
   const [now, setNow] = useState<number>(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [busyAccountId, setBusyAccountId] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -142,21 +144,31 @@ export default function App() {
   }
 
   async function onRefreshAccount(id: number) {
+    setBusyAccountId(id);
     try {
       await apiClient.refreshAccount(id);
       await refresh();
     } catch (e) {
       setError(String(e));
+    } finally {
+      setBusyAccountId((curr) => (curr === id ? null : curr));
     }
   }
 
   async function onDeleteAccount(id: number) {
-    if (!confirm("Delete this account from the pool?")) return;
+    const ok = await ask("Delete this account from the pool?", {
+      title: "Confirm delete",
+      kind: "warning",
+    });
+    if (!ok) return;
+    setBusyAccountId(id);
     try {
       await apiClient.deleteAccount(id);
       await refresh();
     } catch (e) {
       setError(String(e));
+    } finally {
+      setBusyAccountId((curr) => (curr === id ? null : curr));
     }
   }
 
@@ -232,12 +244,23 @@ export default function App() {
                   </span>
                 </div>
                 <div className="acc-actions">
-                  <button onClick={() => onRefreshAccount(a.id)}>
-                    Refresh now
+                  <button
+                    onClick={() => onRefreshAccount(a.id)}
+                    disabled={busyAccountId === a.id}
+                  >
+                    {busyAccountId === a.id ? (
+                      <>
+                        <span className="spinner" aria-hidden />
+                        Refreshing…
+                      </>
+                    ) : (
+                      "Refresh now"
+                    )}
                   </button>
                   <button
                     className="danger"
                     onClick={() => onDeleteAccount(a.id)}
+                    disabled={busyAccountId === a.id}
                   >
                     Delete
                   </button>

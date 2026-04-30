@@ -52,9 +52,15 @@ type Account struct {
 	UsageFetchedAt         int64 // unix millis; 0 = never
 }
 
-// schema is the create-from-scratch DDL. For existing databases, migrate()
-// adds any columns that were introduced after the initial release.
-const schema = `
+// tableSchema is the create-from-scratch table DDL. For existing databases,
+// columnMigrations adds any columns that were introduced after the initial
+// release and migrateLegacyOrgUnique drops the obsolete UNIQUE constraint.
+//
+// Uniqueness is enforced via a partial index on `email` (see indexSchema)
+// rather than a column-level constraint: empty emails (the fallback when the
+// OAuth profile API doesn't surface one) must be allowed to coexist as
+// distinct rows.
+const tableSchema = `
 CREATE TABLE IF NOT EXISTS accounts (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
   name                       TEXT    NOT NULL,
@@ -80,17 +86,21 @@ CREATE TABLE IF NOT EXISTS accounts (
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
   seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
   seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
-  usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (organization_uuid)
+  usage_fetched_at           INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS accounts_status_cooldown
-  ON accounts (status, cooldown_until, last_used_at);
 `
 
-// migrations adds columns to existing databases. Each entry is run in order
-// and is idempotent (failures with "duplicate column" are silently ignored,
-// so re-running on an already-migrated DB is fine).
-var migrations = []string{
+const indexSchema = `
+CREATE INDEX IF NOT EXISTS accounts_status_cooldown
+  ON accounts (status, cooldown_until, last_used_at);
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_uniq
+  ON accounts (email) WHERE email != '';
+`
+
+// columnMigrations adds columns to existing databases. Each entry is run in
+// order and is idempotent (failures with "duplicate column" are silently
+// ignored, so re-running on an already-migrated DB is fine).
+var columnMigrations = []string{
 	`ALTER TABLE accounts ADD COLUMN email TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN full_name TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN organization_name TEXT NOT NULL DEFAULT ''`,
@@ -114,17 +124,92 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(tableSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	for _, stmt := range migrations {
+	for _, stmt := range columnMigrations {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
 			db.Close()
 			return nil, fmt.Errorf("migrate %q: %w", stmt, err)
 		}
 	}
+	if err := migrateLegacyOrgUnique(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate legacy org-unique: %w", err)
+	}
+	if _, err := db.Exec(indexSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply indexes: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrateLegacyOrgUnique rebuilds the accounts table without the original
+// `UNIQUE (organization_uuid)` column constraint. The constraint was a
+// dead-letter from a planned dedup-by-org feature: the OAuth profile API
+// never populated organization_uuid, so every login landed with org="" and
+// silently overwrote the previous row. We can't DROP a column-level UNIQUE
+// in SQLite, hence the table-rebuild dance.
+//
+// Idempotent: returns immediately when the legacy constraint isn't present
+// (fresh installs, or already-migrated databases).
+func migrateLegacyOrgUnique(db *sql.DB) error {
+	var sqlText string
+	row := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'`)
+	if err := row.Scan(&sqlText); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if !strings.Contains(sqlText, "UNIQUE (organization_uuid)") {
+		return nil
+	}
+	const rebuild = `
+BEGIN TRANSACTION;
+CREATE TABLE accounts_new (
+  id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name                       TEXT    NOT NULL,
+  access_token               TEXT    NOT NULL,
+  refresh_token              TEXT    NOT NULL,
+  expires_at                 INTEGER NOT NULL,
+  scopes                     TEXT    NOT NULL DEFAULT '',
+  subscription_type          TEXT    NOT NULL DEFAULT '',
+  organization_uuid          TEXT    NOT NULL DEFAULT '',
+  status                     TEXT    NOT NULL DEFAULT 'active',
+  cooldown_until             INTEGER NOT NULL DEFAULT 0,
+  last_used_at               INTEGER NOT NULL DEFAULT 0,
+  last_429_at                INTEGER NOT NULL DEFAULT 0,
+  created_at                 INTEGER NOT NULL,
+  updated_at                 INTEGER NOT NULL,
+  email                      TEXT    NOT NULL DEFAULT '',
+  full_name                  TEXT    NOT NULL DEFAULT '',
+  organization_name          TEXT    NOT NULL DEFAULT '',
+  plan                       TEXT    NOT NULL DEFAULT '',
+  five_hour_util             REAL    NOT NULL DEFAULT 0,
+  five_hour_resets_at        TEXT    NOT NULL DEFAULT '',
+  seven_day_util             REAL    NOT NULL DEFAULT 0,
+  seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
+  seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
+  seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
+  usage_fetched_at           INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO accounts_new SELECT
+  id, name, access_token, refresh_token, expires_at, scopes,
+  subscription_type, organization_uuid, status, cooldown_until,
+  last_used_at, last_429_at, created_at, updated_at,
+  email, full_name, organization_name, plan,
+  five_hour_util, five_hour_resets_at,
+  seven_day_util, seven_day_resets_at,
+  seven_day_sonnet_util, seven_day_sonnet_resets_at,
+  usage_fetched_at FROM accounts;
+DROP TABLE accounts;
+ALTER TABLE accounts_new RENAME TO accounts;
+COMMIT;
+`
+	_, err := db.Exec(rebuild)
+	return err
 }
 
 func isDuplicateColumn(err error) bool {
@@ -138,9 +223,14 @@ func (s *Store) Close() error { return s.db.Close() }
 // before issuing the network exchange).
 func (s *Store) DB() *sql.DB { return s.db }
 
-// Upsert inserts a new account or, when an account with the same
-// organization_uuid already exists, replaces its tokens / metadata. The id of
-// the resulting row is set on a.ID.
+// Upsert inserts a new account or, when an account with the same non-empty
+// email already exists, replaces its tokens / metadata. The id of the
+// resulting row is set on a.ID.
+//
+// Dedup is keyed on email because the OAuth profile API surfaces email
+// reliably (organization_uuid is not exposed). Empty emails fall through to
+// a plain INSERT — the partial unique index `accounts_email_uniq` excludes
+// the empty case, so multiple email-less accounts coexist as distinct rows.
 func (s *Store) Upsert(ctx context.Context, a *Account) error {
 	now := time.Now().UnixMilli()
 	if a.CreatedAt == 0 {
@@ -155,14 +245,14 @@ INSERT INTO accounts
    last_429_at, created_at, updated_at,
    email, full_name, organization_name, plan)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(organization_uuid) DO UPDATE SET
+ON CONFLICT(email) WHERE email != '' DO UPDATE SET
   name = excluded.name,
   access_token = excluded.access_token,
   refresh_token = excluded.refresh_token,
   expires_at = excluded.expires_at,
   scopes = excluded.scopes,
   subscription_type = excluded.subscription_type,
-  email = excluded.email,
+  organization_uuid = excluded.organization_uuid,
   full_name = excluded.full_name,
   organization_name = excluded.organization_name,
   plan = excluded.plan,
@@ -232,7 +322,8 @@ UPDATE accounts
 	return err
 }
 
-// MarkUsed bumps last_used_at to now. Cheap helper called from /api/token.
+// MarkUsed bumps last_used_at to now. Called by credinject after a successful
+// inject so the selector's LRU tiebreaker reflects real pool usage.
 func (s *Store) MarkUsed(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE accounts SET last_used_at = ? WHERE id = ?`, time.Now().UnixMilli(), id)
 	return err

@@ -226,6 +226,24 @@ h3 { font-size: 0.95rem; margin: 0 0 0.5rem; }
 }
 
 .acc-actions { display: flex; gap: 0.5rem; }
+.acc-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.spinner {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 .login-box {
   margin-top: 1rem;
