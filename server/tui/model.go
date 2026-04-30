@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -57,14 +58,21 @@ type model struct {
 	// Cooldown picker state. Indexes into cooldownPresets.
 	cooldownChoice int
 
-	// Last user-facing message and any transient error.
-	statusMsg string
-	statusErr string
+	// Last user-facing message and any transient error. Both auto-dismiss
+	// after statusToastTTL via statusExpiredMsg.
+	statusMsg       string
+	statusErr       string
+	statusExpiresAt time.Time
 
 	// Latest fatal error (network / api). Cleared on next successful op.
 	fatalErr string
 
 	lastRefresh time.Time
+
+	// Async op spinner. pendingOp is the user-facing label shown while a
+	// command is in flight; empty means idle.
+	spinner   spinner.Model
+	pendingOp string
 }
 
 var cooldownPresets = []struct {
@@ -84,10 +92,16 @@ func newModel(c *Client) *model {
 	paste.CharLimit = 512
 	paste.Prompt = "› "
 
+	sp := spinner.New(
+		spinner.WithSpinner(spinner.Dot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(accentBrand)),
+	)
+
 	return &model{
 		client:   c,
 		mode:     modeList,
 		addPaste: paste,
+		spinner:  sp,
 	}
 }
 
@@ -126,6 +140,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case opResultMsg:
+		m.pendingOp = ""
 		if msg.err != nil {
 			m.statusErr = msg.err.Error()
 			m.statusMsg = ""
@@ -133,7 +148,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = msg.ok
 			m.statusErr = ""
 		}
-		return m, m.refreshCmd()
+		m.statusExpiresAt = time.Now().Add(statusToastTTL)
+		return m, tea.Batch(m.refreshCmd(), statusExpireCmd())
+
+	case statusExpiredMsg:
+		if !m.statusExpiresAt.IsZero() && !time.Now().Before(m.statusExpiresAt) {
+			m.statusMsg = ""
+			m.statusErr = ""
+			m.statusExpiresAt = time.Time{}
+		}
+		return m, nil
+
+	case spinner.TickMsg:
+		if m.pendingOp == "" {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 
 	case loginStartMsg:
 		if msg.err != nil {
@@ -200,19 +232,19 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.refreshCmd()
 	case "r":
 		if a, ok := m.selected(); ok {
-			return m, m.opCmd("Token refreshed for "+a.Name, func(ctx context.Context) error {
+			return m, m.startOp("Refreshing "+a.Name+"…", "Token refreshed for "+a.Name, func(ctx context.Context) error {
 				return m.client.RefreshNow(ctx, a.ID)
 			})
 		}
 	case "e":
 		if a, ok := m.selected(); ok {
-			return m, m.opCmd("Enabled "+a.Name, func(ctx context.Context) error {
+			return m, m.startOp("Enabling "+a.Name+"…", "Enabled "+a.Name, func(ctx context.Context) error {
 				return m.client.Enable(ctx, a.ID)
 			})
 		}
 	case "d":
 		if a, ok := m.selected(); ok {
-			return m, m.opCmd("Disabled "+a.Name, func(ctx context.Context) error {
+			return m, m.startOp("Disabling "+a.Name+"…", "Disabled "+a.Name, func(ctx context.Context) error {
 				return m.client.Disable(ctx, a.ID)
 			})
 		}
@@ -251,7 +283,7 @@ func (m *model) handleAddPasteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		m.pendingState = ""
 		m.pendingURL = ""
-		return m, m.opCmd("Account added", func(ctx context.Context) error {
+		return m, m.startOp("Adding account…", "Account added", func(ctx context.Context) error {
 			return m.client.LoginCallback(ctx, pasted, state)
 		})
 	}
@@ -284,7 +316,7 @@ func (m *model) handleCooldownKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if choice.d > 0 {
 			label = fmt.Sprintf("Cooldown %s set on %s", choice.label, a.Name)
 		}
-		return m, m.opCmd(label, func(ctx context.Context) error {
+		return m, m.startOp("Updating cooldown…", label, func(ctx context.Context) error {
 			return m.client.SetCooldown(ctx, a.ID, choice.d)
 		})
 	}
@@ -299,7 +331,7 @@ func (m *model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		return m, m.opCmd("Deleted "+a.Name, func(ctx context.Context) error {
+		return m, m.startOp("Deleting "+a.Name+"…", "Deleted "+a.Name, func(ctx context.Context) error {
 			return m.client.Delete(ctx, a.ID)
 		})
 	case "n", "N", "esc", "q":
@@ -323,6 +355,18 @@ type tickMsg time.Time
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+const statusToastTTL = 5 * time.Second
+
+// statusExpiredMsg signals that a status toast scheduled at op-completion has
+// reached its TTL. The handler only clears if the recorded expiry time has
+// actually elapsed, so a newer toast scheduled in between safely supersedes
+// older ticks.
+type statusExpiredMsg struct{}
+
+func statusExpireCmd() tea.Cmd {
+	return tea.Tick(statusToastTTL, func(time.Time) tea.Msg { return statusExpiredMsg{} })
 }
 
 type accountsMsg struct {
@@ -364,6 +408,15 @@ func (m *model) opCmd(okMsg string, fn func(ctx context.Context) error) tea.Cmd 
 	}
 }
 
+// startOp begins an async op: stamps pendingOp so the spinner+label render in
+// the status line, then batches the spinner tick with the actual command.
+func (m *model) startOp(pendingLabel, okMsg string, fn func(ctx context.Context) error) tea.Cmd {
+	m.pendingOp = pendingLabel
+	m.statusErr = ""
+	m.statusMsg = ""
+	return tea.Batch(m.spinner.Tick, m.opCmd(okMsg, fn))
+}
+
 type loginStartMsg struct {
 	url   string
 	state string
@@ -399,136 +452,12 @@ func (m *model) View() string {
 	return m.viewList()
 }
 
-var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	headerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("244"))
-	cursorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
-	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("57"))
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	okStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	errStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	boxStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-)
-
-func (m *model) viewList() string {
-	var b strings.Builder
-
-	credText := warnStyle.Render("cred: idle")
-	if m.cred.ManagedAccountID != 0 {
-		credText = okStyle.Render(fmt.Sprintf("cred: managing acct #%d", m.cred.ManagedAccountID))
-	} else if m.cred.NativeBackupPresent {
-		credText = okStyle.Render("cred: idle (native restored)")
-	}
-	b.WriteString(titleStyle.Render("foxy-switcher"))
-	b.WriteString("  ")
-	b.WriteString(credText)
-	b.WriteString("  ")
-	b.WriteString(dimStyle.Render(fmt.Sprintf("%d account(s)", len(m.accounts))))
-	if !m.lastRefresh.IsZero() {
-		b.WriteString("  ")
-		b.WriteString(dimStyle.Render("refreshed " + humanAge(m.lastRefresh)))
-	}
-	b.WriteString("\n\n")
-
-	if m.fatalErr != "" {
-		b.WriteString(errStyle.Render("error: " + m.fatalErr))
-		b.WriteString("\n\n")
-	}
-
-	if len(m.accounts) == 0 {
-		b.WriteString(dimStyle.Render("(no accounts — press 'a' to add one)\n"))
-	} else {
-		// Header row.
-		b.WriteString(headerStyle.Render(formatRow("", "NAME", "EMAIL", "PLAN", "STATUS", "5H", "7D", "LAST USED")))
-		b.WriteString("\n")
-		for i, a := range m.accounts {
-			cursor := "  "
-			row := formatRow("", a.Name, a.Email, a.Plan, statusFor(a), pctOrDash(a.FiveHour), pctOrDash(a.SevenDay), humanMillis(a.LastUsedAt))
-			if i == m.cursor {
-				cursor = cursorStyle.Render("▸ ")
-				row = selectedStyle.Render(row)
-			}
-			b.WriteString(cursor + row + "\n")
-		}
-	}
-
-	// Status / message line.
-	b.WriteString("\n")
-	switch {
-	case m.statusErr != "":
-		b.WriteString(errStyle.Render("✗ " + m.statusErr))
-	case m.statusMsg != "":
-		b.WriteString(okStyle.Render("✓ " + m.statusMsg))
-	default:
-		b.WriteString(dimStyle.Render(" "))
-	}
-	b.WriteString("\n\n")
-
-	b.WriteString(helpStyle.Render("↑/↓ move · a add · r refresh · e enable · d disable · c cooldown · x delete · R reload · q quit"))
-	return b.String()
-}
-
-func (m *model) viewAddPaste() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Add account — authorize"))
-	b.WriteString("\n\n")
-	b.WriteString("1. Open this URL in a browser and approve:\n\n")
-	b.WriteString(boxStyle.Render(m.pendingURL))
-	b.WriteString("\n\n")
-	b.WriteString("2. Paste the resulting code (looks like ")
-	b.WriteString(dimStyle.Render("code#state"))
-	b.WriteString(") below:\n")
-	b.WriteString(m.addPaste.View())
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("enter submit · esc cancel"))
-	return b.String()
-}
-
-func (m *model) viewCooldown() string {
-	a, _ := m.selected()
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Cooldown — %s", a.Name)))
-	b.WriteString("\n\n")
-	for i, p := range cooldownPresets {
-		prefix := "  "
-		line := p.label
-		if i == m.cooldownChoice {
-			prefix = cursorStyle.Render("▸ ")
-			line = selectedStyle.Render(line)
-		}
-		b.WriteString(prefix + line + "\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ pick · enter apply · esc cancel"))
-	return b.String()
-}
-
-func (m *model) viewConfirmDelete() string {
-	a, _ := m.selected()
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Delete account"))
-	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("Permanently remove %s (%s)?\n", a.Name, a.Email))
-	b.WriteString(dimStyle.Render("(refresh_token will be discarded; the Anthropic side keeps no state to clean up)\n\n"))
-	b.WriteString(helpStyle.Render("y confirm · n/esc cancel"))
-	return b.String()
-}
+// Style variables live in theme.go. View functions live in view_list.go,
+// view_add_paste.go, view_cooldown.go, view_confirm_delete.go.
 
 // ============================================================================
 // Formatting helpers
 // ============================================================================
-
-func formatRow(_ string, name, email, plan, status, fivehr, sevenday, lastUsed string) string {
-	return fmt.Sprintf("%-20s %-30s %-12s %-18s %5s %5s  %s",
-		truncate(name, 20),
-		truncate(email, 30),
-		truncate(plan, 12),
-		truncate(status, 18),
-		fivehr, sevenday, lastUsed,
-	)
-}
 
 func truncate(s string, n int) string {
 	if len(s) <= n {
@@ -538,24 +467,6 @@ func truncate(s string, n int) string {
 		return s[:n]
 	}
 	return s[:n-1] + "…"
-}
-
-func statusFor(a Account) string {
-	if a.Status == "disabled" {
-		return "disabled"
-	}
-	if a.CooldownUntil > time.Now().UnixMilli() {
-		left := time.Until(time.UnixMilli(a.CooldownUntil)).Round(time.Second)
-		return "cooldown " + left.String()
-	}
-	return "active"
-}
-
-func pctOrDash(w *UsageWindow) string {
-	if w == nil {
-		return "  —  "
-	}
-	return fmt.Sprintf("%4.0f%%", w.Utilization)
 }
 
 func humanMillis(ms int64) string {
