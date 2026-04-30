@@ -57,7 +57,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
-	return mux
+	return cors(mux)
+}
+
+// cors wraps a handler with permissive CORS. The server only listens on
+// 127.0.0.1, so an attacker-on-the-LAN model doesn't apply, and the React
+// front-end loads from a different origin (vite dev on :1420 or
+// tauri://localhost in release). Wildcard origin is fine because we don't
+// use cookies / credentials.
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "600")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // --- /api/token ------------------------------------------------------------
