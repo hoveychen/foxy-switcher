@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Account,
   apiClient,
@@ -45,6 +44,7 @@ export default function App() {
   const [accountName, setAccountName] = useState("");
   const [now, setNow] = useState<number>(Date.now());
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -72,6 +72,7 @@ export default function App() {
 
   async function startLogin() {
     setError(null);
+    setCopied(false);
     try {
       const r = await apiClient.startLogin();
       setLoginState({
@@ -79,9 +80,18 @@ export default function App() {
         state: r.state,
         authorizeUrl: r.authorize_url,
       });
-      await openUrl(r.authorize_url);
     } catch (e) {
       setLoginState({ phase: "error", message: String(e) });
+    }
+  }
+
+  async function copyAuthorizeUrl(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      setError(String(e));
     }
   }
 
@@ -208,23 +218,29 @@ export default function App() {
           <h3>Finish OAuth login</h3>
           <ol>
             <li>
-              A browser tab opened to Anthropic's authorization page. If not,{" "}
-              <a
-                href="#"
-                onClick={(e) => {
-                  e.preventDefault();
-                  openUrl(loginState.authorizeUrl);
-                }}
-              >
-                click here
-              </a>
-              .
+              Copy the authorization URL below and open it in the browser
+              profile you want to sign in with.
             </li>
             <li>
-              After approving, the page will display a code (format
+              After approving, the page will display a code (format{" "}
               <code>code#state</code>). Paste it below.
             </li>
           </ol>
+          <label className="muted">Authorization URL</label>
+          <div className="url-row">
+            <input
+              className="url-input"
+              readOnly
+              value={loginState.authorizeUrl}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              className="secondary"
+              onClick={() => copyAuthorizeUrl(loginState.authorizeUrl)}
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
           <input
             placeholder="account label (optional)"
             value={accountName}
