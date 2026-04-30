@@ -237,6 +237,9 @@ func (s *Store) Upsert(ctx context.Context, a *Account) error {
 		a.CreatedAt = now
 	}
 	a.UpdatedAt = now
+	if a.LastUsedAt == 0 {
+		a.LastUsedAt = now
+	}
 
 	const q = `
 INSERT INTO accounts

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -167,5 +168,28 @@ func TestUpsertEmptyEmailsCoexist(t *testing.T) {
 	}
 	if len(list) != 2 {
 		t.Fatalf("expected 2 accounts, got %d", len(list))
+	}
+}
+
+// TestUpsertDefaultsLastUsedAtToNow guards the credinject sticky-selection
+// invariant: only MarkForNextPick should produce last_used_at = 0. New
+// accounts inserted with the zero default would otherwise be indistinguishable
+// from manually pinned ones, causing the daemon to rotate through every fresh
+// account on first start.
+func TestUpsertDefaultsLastUsedAtToNow(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	before := time.Now().UnixMilli()
+	a := &Account{Name: "alice", Email: "alice@example.com", AccessToken: "at-a", RefreshToken: "rt-a", ExpiresAt: 1}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.LastUsedAt < before {
+		t.Errorf("LastUsedAt not stamped on insert: got %d, want >= %d", got.LastUsedAt, before)
 	}
 }
