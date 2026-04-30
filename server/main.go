@@ -8,12 +8,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,27 +46,59 @@ func main() {
 	)
 	flag.Parse()
 
-	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmicroseconds)
-
-	// Use os.Exit through a deferred closure so cleanup defers
-	// (cc.RestoreOnShutdown, store.Close, port file removal) run before we
-	// surface a non-zero exit code. os.Exit itself skips defers — that's why
-	// log.Fatalf is unsafe here.
-	exitCode := 0
-	defer func() { os.Exit(exitCode) }()
-
 	dir, err := resolveDataDir(*dataDir)
 	if err != nil {
-		logger.Fatalf("resolve data dir: %v", err)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		logger.Fatalf("mkdir %s: %v", dir, err)
+		fmt.Fprintln(os.Stderr, "resolve data dir:", err)
+		os.Exit(1)
 	}
 
-	dbPath := filepath.Join(dir, "state.db")
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	if err := runDaemon(ctx, daemonOpts{
+		DataDir:      dir,
+		Port:         *port,
+		ParentPID:    *parentPID,
+		NoCredInject: *noCredInject,
+	}, nil); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// daemonOpts is the input to runDaemon — everything main()'s flags would have
+// supplied, packaged so runTUI can spawn an embedded daemon with the same
+// surface area.
+type daemonOpts struct {
+	DataDir      string
+	Port         int
+	ParentPID    int
+	NoCredInject bool
+	// LogOutput is where the daemon writes its log lines. nil means os.Stderr.
+	// runTUI redirects this to a file so daemon logs don't smear over the
+	// bubbletea altscreen.
+	LogOutput io.Writer
+}
+
+// runDaemon starts the foxy-switcher daemon and blocks until ctx is canceled
+// or the HTTP server returns. All cleanup runs before return (store close,
+// port file remove, credential restore). ready is invoked once the listener
+// is bound and the port file written; pass nil if you don't need the signal.
+func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error {
+	out := opts.LogOutput
+	if out == nil {
+		out = os.Stderr
+	}
+	logger := log.New(out, "", log.LstdFlags|log.Lmicroseconds)
+
+	if err := os.MkdirAll(opts.DataDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", opts.DataDir, err)
+	}
+
+	dbPath := filepath.Join(opts.DataDir, "state.db")
 	st, err := store.Open(dbPath)
 	if err != nil {
-		logger.Fatalf("open store: %v", err)
+		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
 	if err := os.Chmod(dbPath, 0o600); err != nil && !os.IsNotExist(err) {
@@ -74,20 +109,20 @@ func main() {
 	rf := refresh.New(st, logger)
 	up := refresh.NewUsagePoller(st, logger)
 
-	server := httpapi.New(st, pkce, rf, dir)
+	server := httpapi.New(st, pkce, rf, opts.DataDir)
 
-	addr := fmt.Sprintf("127.0.0.1:%d", *port)
+	addr := fmt.Sprintf("127.0.0.1:%d", opts.Port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		logger.Fatalf("listen %s: %v", addr, err)
+		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 	tcp := ln.Addr().(*net.TCPAddr)
 	server.Port = tcp.Port
 
-	portFile := filepath.Join(dir, "port")
+	portFile := filepath.Join(opts.DataDir, "port")
 	if err := writePortFile(portFile, tcp.Port); err != nil {
 		ln.Close()
-		logger.Fatalf("write port file: %v", err)
+		return fmt.Errorf("write port file: %w", err)
 	}
 	defer os.Remove(portFile)
 
@@ -100,12 +135,13 @@ func main() {
 	// no restore. Used to run the daemon alongside a real native login for
 	// debugging without clobbering it.
 	var cc *credinject.Coordinator
-	if !*noCredInject {
+	if !opts.NoCredInject {
 		backend, err := credinject.NewBackend()
 		if err != nil {
-			logger.Fatalf("credinject backend: %v", err)
+			ln.Close()
+			return fmt.Errorf("credinject backend: %w", err)
 		}
-		cc = credinject.New(st, backend, dir, logger)
+		cc = credinject.New(st, backend, opts.DataDir, logger)
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
 				logger.Printf("warning: restore native credentials: %v", err)
@@ -113,11 +149,11 @@ func main() {
 		}()
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	if *parentPID > 0 {
-		go watchParent(ctx, cancel, *parentPID, 2*time.Second, logger)
+	if opts.ParentPID > 0 {
+		ctx2, cancel2 := context.WithCancel(ctx)
+		defer cancel2()
+		go watchParent(ctx2, cancel2, opts.ParentPID, 2*time.Second, logger)
+		ctx = ctx2
 	}
 
 	if cc != nil {
@@ -151,16 +187,17 @@ func main() {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	logger.Printf("foxy-switcher listening on http://%s (data: %s)", tcp.String(), dir)
+	logger.Printf("foxy-switcher listening on http://%s (data: %s)", tcp.String(), opts.DataDir)
+	if ready != nil {
+		ready(tcp.Port)
+	}
 	serveErr := httpSrv.Serve(ln)
 	if serveErr != nil && serveErr != http.ErrServerClosed {
-		// Don't log.Fatalf here — os.Exit would skip the deferred
-		// cc.RestoreOnShutdown. Log it; arrange exit(1) via a defer scheduled
-		// AFTER all the cleanup defers so they run first (LIFO order).
 		logger.Printf("serve: %v", serveErr)
-		exitCode = 1
+		return serveErr
 	}
 	logger.Print("shutdown complete")
+	return nil
 }
 
 func resolveDataDir(override string) (string, error) {
@@ -185,12 +222,15 @@ func writePortFile(path string, port int) error {
 	return os.Rename(tmp, path)
 }
 
-// runTUI handles the `tui` subcommand. Re-parses flags from the post-`tui`
-// argv tail so `foxy-switcher tui --data-dir=…` works the same way the
-// daemon understands its --data-dir flag.
+// runTUI handles the `tui` subcommand. The TUI is a foreground tool: if a
+// daemon is already serving on dataDir (Tauri sidecar, manual `go run .`,
+// etc.) it transparently attaches; otherwise it embeds a daemon for the
+// session and shuts it down on exit. Either way the user never has to start
+// the daemon by hand.
 func runTUI(args []string) {
 	fs := flag.NewFlagSet("tui", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "", "directory containing the daemon's port/state files (default ~/.foxy-switcher)")
+	noCredInject := fs.Bool("no-cred-inject", false, "embedded daemon: don't manage Claude Code's credential storage")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -200,8 +240,81 @@ func runTUI(args []string) {
 		fmt.Fprintln(os.Stderr, "resolve data dir:", err)
 		os.Exit(1)
 	}
-	if err := tui.Run(dir); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, "mkdir:", err)
 		os.Exit(1)
 	}
+
+	if pingDaemon(dir) {
+		// Already serving — attach as a plain HTTP client.
+		if err := tui.Run(dir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// No daemon found: embed one. Daemon logs go to a file so they don't
+	// smear over the altscreen.
+	logPath := filepath.Join(dir, "tui-daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open daemon log:", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	ready := make(chan struct{})
+	daemonErr := make(chan error, 1)
+	go func() {
+		daemonErr <- runDaemon(ctx, daemonOpts{
+			DataDir:      dir,
+			NoCredInject: *noCredInject,
+			LogOutput:    logFile,
+		}, func(int) { close(ready) })
+	}()
+
+	select {
+	case <-ready:
+	case err := <-daemonErr:
+		fmt.Fprintln(os.Stderr, "embedded daemon failed:", err)
+		fmt.Fprintln(os.Stderr, "see", logPath)
+		os.Exit(1)
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-daemonErr
+		fmt.Fprintln(os.Stderr, "embedded daemon did not become ready within 5s; see", logPath)
+		os.Exit(1)
+	}
+
+	tuiErr := tui.Run(dir)
+	cancel()
+	<-daemonErr // wait for daemon cleanup (cred restore, store close, port file remove)
+	if tuiErr != nil {
+		fmt.Fprintln(os.Stderr, tuiErr)
+		os.Exit(1)
+	}
+}
+
+// pingDaemon returns true if a daemon is already healthy at dir. Reads the
+// port file, then GETs /healthz with a short timeout.
+func pingDaemon(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "port"))
+	if err != nil {
+		return false
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || port <= 0 {
+		return false
+	}
+	c := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode < 500
 }
