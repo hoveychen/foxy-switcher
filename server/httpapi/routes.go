@@ -7,6 +7,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -46,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/{id}/enable", s.handleEnable)
 	mux.HandleFunc("POST /api/accounts/{id}/cooldown", s.handleCooldown)
 	mux.HandleFunc("POST /api/accounts/{id}/refresh", s.handleRefreshNow)
+	mux.HandleFunc("POST /api/accounts/{id}/select", s.handleSelect)
 	mux.HandleFunc("GET /api/cred/status", s.handleCredStatus)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -364,6 +366,41 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"account": toView(*a)})
+}
+
+// handleSelect promotes one account to the front of the LRU queue so the
+// next credinject reconcile picks it. One-shot: subsequent rotations follow
+// normal LRU. Rejects accounts that the selector would skip anyway —
+// disabled or in cooldown — with 409, so the UI can surface a clear reason.
+func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	a, err := s.Store.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if a.Status != "active" {
+		http.Error(w, "account is not active", http.StatusConflict)
+		return
+	}
+	if a.CooldownUntil > time.Now().UnixMilli() {
+		http.Error(w, "account is in cooldown", http.StatusConflict)
+		return
+	}
+	if err := s.Store.MarkForNextPick(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Cred.Trigger()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- credinject status ----------------------------------------------------

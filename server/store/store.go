@@ -329,6 +329,17 @@ func (s *Store) MarkUsed(ctx context.Context, id int64) error {
 	return err
 }
 
+// MarkForNextPick zeroes last_used_at so the LRU selector promotes this row to
+// the front on the next reconcile. Used by the "Use now" UI action — a
+// one-shot manual switch. It does not pin: subsequent injects (after the next
+// MarkUsed bumps last_used_at to now) follow the normal LRU rotation.
+func (s *Store) MarkForNextPick(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE accounts SET last_used_at = 0, updated_at = ? WHERE id = ?`,
+		time.Now().UnixMilli(), id)
+	return err
+}
+
 // SetCooldown stamps cooldown_until and last_429_at. Pass time.Time{} as
 // cooldownUntil to clear.
 func (s *Store) SetCooldown(ctx context.Context, id int64, cooldownUntil time.Time) error {

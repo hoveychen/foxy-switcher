@@ -82,6 +82,9 @@ export const apiClient = {
   refreshAccount: (id: number) =>
     api<{ account: Account }>(`/api/accounts/${id}/refresh`, { method: "POST" }),
 
+  selectAccount: (id: number) =>
+    api<void>(`/api/accounts/${id}/select`, { method: "POST" }),
+
   setEnabled: (id: number, enabled: boolean) =>
     api<void>(`/api/accounts/${id}/${enabled ? "enable" : "disable"}`, {
       method: "POST",
