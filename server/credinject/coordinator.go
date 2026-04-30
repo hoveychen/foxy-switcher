@@ -151,8 +151,52 @@ func (c *Coordinator) loadState() {
 	c.mu.Unlock()
 }
 
+// choose decides which account reconcile should target this tick. The policy
+// is sticky-with-explicit-pin: keep the currently-injected account if it's
+// still eligible (active, not in cooldown) AND no other account has had its
+// last_used_at zeroed (the MarkForNextPick sentinel used by /select and
+// fresh-add). Otherwise fall back to the LRU selector.
+//
+// Why: without stickiness, every 5s reconcile re-runs LRU; MarkUsed bumps the
+// just-injected account to "now", which makes the *other* eligible account
+// look least-recently-used, so the next tick flips to it — and so on
+// forever. The "In use" badge in the UI ping-pongs every refresh.
+func (c *Coordinator) choose(ctx context.Context) (*store.Account, error) {
+	c.mu.Lock()
+	currentID := c.currentAccountID
+	c.mu.Unlock()
+	if currentID == 0 {
+		return c.pickFn(ctx, c.store, c.clock())
+	}
+	accs, err := c.listFn(ctx, c.store)
+	if err != nil {
+		return c.pickFn(ctx, c.store, c.clock())
+	}
+	nowMs := c.clock().UnixMilli()
+	var cur *store.Account
+	var pinnedOther bool
+	for i := range accs {
+		a := accs[i]
+		if a.Status != "active" || a.CooldownUntil > nowMs {
+			continue
+		}
+		if a.ID == currentID {
+			ac := a
+			cur = &ac
+			continue
+		}
+		if a.LastUsedAt == 0 {
+			pinnedOther = true
+		}
+	}
+	if cur != nil && !pinnedOther {
+		return cur, nil
+	}
+	return c.pickFn(ctx, c.store, c.clock())
+}
+
 func (c *Coordinator) reconcile(ctx context.Context) {
-	a, err := c.pickFn(ctx, c.store, c.clock())
+	a, err := c.choose(ctx)
 	if err != nil {
 		if errors.Is(err, selector.ErrNoAvailable) {
 			c.handleNoAvailable()

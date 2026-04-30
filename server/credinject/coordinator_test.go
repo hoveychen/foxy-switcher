@@ -308,6 +308,63 @@ func TestRestoreOnShutdown_NoBackup_ClearsKeychain(t *testing.T) {
 	}
 }
 
+// TestReconcile_StickyAcrossRepeatedTicks pins down the regression where
+// repeated reconciles ping-ponged between two equally-eligible accounts
+// because LRU + MarkUsed kept inverting which one looked least-recently-used.
+func TestReconcile_StickyAcrossRepeatedTicks(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	seedActive(t, st, "beta", "sk-ant-oat01-beta")
+
+	// Drain initial last_used_at=0 sentinels by reconciling enough times
+	// that both accounts have been touched at least once.
+	c.reconcile(context.Background())
+	c.reconcile(context.Background())
+	settled := c.CurrentAccountID()
+	if settled == 0 {
+		t.Fatal("settle: no current account picked")
+	}
+	settledWrites := be.writes
+
+	// Once settled, reconcile must be a no-op: no flip, no keychain writes.
+	for i := 0; i < 6; i++ {
+		c.reconcile(context.Background())
+		if got := c.CurrentAccountID(); got != settled {
+			t.Fatalf("reconcile #%d flipped: got %d want %d", i+1, got, settled)
+		}
+	}
+	if be.writes != settledWrites {
+		t.Errorf("unexpected keychain writes during sticky window: %d → %d",
+			settledWrites, be.writes)
+	}
+}
+
+// TestReconcile_RespectsManualSelect verifies that stickiness yields when an
+// account has been pinned via store.MarkForNextPick (the path /api/accounts/
+// {id}/select takes).
+func TestReconcile_RespectsManualSelect(t *testing.T) {
+	c, _, st, _ := newCoord(t)
+	idA := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	idB := seedActive(t, st, "beta", "sk-ant-oat01-beta")
+
+	c.reconcile(context.Background())
+	c.reconcile(context.Background())
+	current := c.CurrentAccountID()
+	other := idA
+	if current == idA {
+		other = idB
+	}
+
+	if err := st.MarkForNextPick(context.Background(), other); err != nil {
+		t.Fatalf("MarkForNextPick: %v", err)
+	}
+	c.reconcile(context.Background())
+
+	if got := c.CurrentAccountID(); got != other {
+		t.Errorf("after MarkForNextPick(%d): CurrentAccountID=%d", other, got)
+	}
+}
+
 func TestNilCoordinator_TriggerAndShutdownAreSafe(t *testing.T) {
 	var c *Coordinator
 	c.Trigger() // must not panic
