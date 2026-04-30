@@ -25,7 +25,7 @@ type Account struct {
 	RefreshToken     string
 	ExpiresAt        int64 // unix millis
 	Scopes           string
-	SubscriptionType string // "max" | "pro" | "free"
+	SubscriptionType string // "max" | "pro" | "team_premium" | "team" | "free"
 	OrganizationUUID string
 	Status           string // "active" | "disabled"
 	CooldownUntil    int64  // unix millis; 0 = no cooldown
@@ -38,7 +38,7 @@ type Account struct {
 	Email            string
 	FullName         string
 	OrganizationName string
-	Plan             string // "Claude Max" | "Claude Pro" | "API / Free"
+	Plan             string // "Claude Max" | "Claude Pro" | "Claude Team Premium" | "Claude Team" | "API / Free"
 
 	// Usage fields refreshed periodically from /api/oauth/usage.
 	// Utilization is 0–100 (percent). ResetsAt is RFC3339; empty when the

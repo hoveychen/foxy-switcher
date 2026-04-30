@@ -37,12 +37,16 @@ type Profile struct {
 	Email            string
 	FullName         string
 	OrganizationName string
-	// Plan is a human-readable label derived from has_claude_max /
-	// has_claude_pro booleans on the response. Values: "Claude Max",
-	// "Claude Pro", "API / Free".
+	// Plan is a human-readable label. Personal plans come from
+	// has_claude_max / has_claude_pro on `account`. Org-level plans come from
+	// organization.organization_type ("claude_team"); within Team we split
+	// Premium vs standard by rate_limit_tier (Premium reports max-parity
+	// limits like "default_claude_max_5x"). Values: "Claude Max",
+	// "Claude Pro", "Claude Team Premium", "Claude Team", "API / Free".
 	Plan string
-	// SubscriptionType is the lower-case raw token: "max", "pro", "free".
-	// Useful for programmatic comparisons; UI should prefer Plan.
+	// SubscriptionType is the lower-case raw token. Values: "max", "pro",
+	// "team_premium", "team", "free". Useful for programmatic comparisons;
+	// UI should prefer Plan.
 	SubscriptionType string
 }
 
@@ -77,6 +81,8 @@ func FetchProfile(ctx context.Context, accessToken string) (*Profile, error) {
 
 	hasMax, _ := acct["has_claude_max"].(bool)
 	hasPro, _ := acct["has_claude_pro"].(bool)
+	orgType, _ := org["organization_type"].(string)
+	rateTier, _ := org["rate_limit_tier"].(string)
 
 	var plan, subType string
 	switch {
@@ -84,6 +90,15 @@ func FetchProfile(ctx context.Context, accessToken string) (*Profile, error) {
 		plan, subType = "Claude Max", "max"
 	case hasPro:
 		plan, subType = "Claude Pro", "pro"
+	case orgType == "claude_team":
+		// Premium gets Max-parity rate limits (e.g. "default_claude_max_5x");
+		// the standard Team tier reports pro-level limits. Verified against
+		// one Team Premium response; the standard-tier mapping is inferred.
+		if strings.Contains(rateTier, "claude_max") {
+			plan, subType = "Claude Team Premium", "team_premium"
+		} else {
+			plan, subType = "Claude Team", "team"
+		}
 	default:
 		plan, subType = "API / Free", "free"
 	}

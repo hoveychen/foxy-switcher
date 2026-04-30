@@ -60,6 +60,55 @@ func TestFetchProfile_ProFallback(t *testing.T) {
 	}
 }
 
+func TestFetchProfile_TeamPremium(t *testing.T) {
+	// Real-shape response captured from a Claude Team Premium account: max/pro
+	// flags are false on `account`, the team signal lives on `organization`,
+	// and rate_limit_tier carries the "claude_max" parity that distinguishes
+	// Premium from the standard Team tier.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "account": {"email":"x@y.com","full_name":"X","has_claude_max":false,"has_claude_pro":false},
+		  "organization": {"name":"Acme","organization_type":"claude_team","rate_limit_tier":"default_claude_max_5x","seat_tier":"team_tier_1"}
+		}`))
+	}))
+	defer srv.Close()
+	old := BaseURL
+	BaseURL = srv.URL
+	defer func() { BaseURL = old }()
+
+	p, err := FetchProfile(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("FetchProfile: %v", err)
+	}
+	if p.Plan != "Claude Team Premium" || p.SubscriptionType != "team_premium" {
+		t.Errorf("expected Team Premium, got plan=%q subType=%q", p.Plan, p.SubscriptionType)
+	}
+}
+
+func TestFetchProfile_TeamStandard(t *testing.T) {
+	// Standard Team tier: organization_type is still claude_team, but
+	// rate_limit_tier reflects pro-level limits (not max). Field value is
+	// inferred from user-supplied schema knowledge, not a captured response.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "account": {"has_claude_max":false,"has_claude_pro":false},
+		  "organization": {"organization_type":"claude_team","rate_limit_tier":"default_claude_pro"}
+		}`))
+	}))
+	defer srv.Close()
+	old := BaseURL
+	BaseURL = srv.URL
+	defer func() { BaseURL = old }()
+
+	p, err := FetchProfile(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("FetchProfile: %v", err)
+	}
+	if p.Plan != "Claude Team" || p.SubscriptionType != "team" {
+		t.Errorf("expected Team, got plan=%q subType=%q", p.Plan, p.SubscriptionType)
+	}
+}
+
 func TestFetchProfile_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "expired token", http.StatusUnauthorized)
