@@ -82,10 +82,11 @@ type Account struct {
 	UsageFetchedAt   int64        `json:"usage_fetched_at"`
 }
 
-// HookStatus mirrors handleHookStatus.
-type HookStatus struct {
-	Installed  bool   `json:"installed"`
-	HelperPath string `json:"helper_path"`
+// CredStatus mirrors handleCredStatus.
+type CredStatus struct {
+	ManagedAccountID    int64 `json:"managed_account_id"`
+	NativeBackupPresent bool  `json:"native_backup_present"`
+	InjectedAt          int64 `json:"injected_at"`
 }
 
 // LoginStart mirrors handleLoginStart.
@@ -104,10 +105,10 @@ func (c *Client) ListAccounts(ctx context.Context) ([]Account, error) {
 	return out.Accounts, nil
 }
 
-func (c *Client) HookStatus(ctx context.Context) (HookStatus, error) {
-	var out HookStatus
-	if err := c.do(ctx, http.MethodGet, "/api/hook/status", nil, &out); err != nil {
-		return HookStatus{}, err
+func (c *Client) CredStatus(ctx context.Context) (CredStatus, error) {
+	var out CredStatus
+	if err := c.do(ctx, http.MethodGet, "/api/cred/status", nil, &out); err != nil {
+		return CredStatus{}, err
 	}
 	return out, nil
 }

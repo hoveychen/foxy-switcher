@@ -1,13 +1,12 @@
-// Package httpapi exposes the localhost HTTP surface used by the apiKeyHelper
-// shell script, the Tauri front-end, and the curl-based install/uninstall
-// flow. Everything binds to 127.0.0.1 only — the server has no auth layer
-// because there's no remote attacker model in the single-user product.
+// Package httpapi exposes the localhost HTTP surface used by the Tauri
+// front-end and the TUI. Everything binds to 127.0.0.1 only — the server has
+// no auth layer because there's no remote attacker model in the single-user
+// product.
 package httpapi
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -15,28 +14,20 @@ import (
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/anthropic"
-	"github.com/hoveychen/foxy-switcher/server/assets"
 	"github.com/hoveychen/foxy-switcher/server/authz"
-	"github.com/hoveychen/foxy-switcher/server/hook"
+	"github.com/hoveychen/foxy-switcher/server/credinject"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
-	"github.com/hoveychen/foxy-switcher/server/selector"
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
-
-// JustInTimeRefreshThreshold is how close to expiry an access_token has to be
-// before /api/token blocks on a synchronous refresh. The background scheduler
-// already keeps tokens fresh proactively, but this guards the path where the
-// scheduler hasn't had a chance to run yet (e.g. server just started).
-const JustInTimeRefreshThreshold = 5 * time.Minute
 
 // Server bundles the dependencies of the HTTP layer. Construct with New.
 type Server struct {
 	Store     *store.Store
 	PKCE      *authz.PKCEStore
 	Refresher *refresh.Scheduler
-	DataDir   string           // ~/.foxy-switcher; used to resolve the apiKeyHelper path
-	Port      int              // populated after net.Listen, used by /install.sh
-	Hook      *HookCoordinator // optional; routes that change account state call .Trigger() — safe on nil
+	DataDir   string                  // ~/.foxy-switcher; used to resolve credinject state files
+	Port      int                     // populated after net.Listen
+	Cred      *credinject.Coordinator // optional; routes that change account state call .Trigger() — safe on nil
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {
@@ -47,7 +38,6 @@ func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir st
 // 127.0.0.1 only — there is no authentication.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/token", s.handleGetToken)
 	mux.HandleFunc("GET /api/accounts", s.handleListAccounts)
 	mux.HandleFunc("POST /api/accounts/login", s.handleLoginStart)
 	mux.HandleFunc("POST /api/accounts/callback", s.handleLoginCallback)
@@ -56,9 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/{id}/enable", s.handleEnable)
 	mux.HandleFunc("POST /api/accounts/{id}/cooldown", s.handleCooldown)
 	mux.HandleFunc("POST /api/accounts/{id}/refresh", s.handleRefreshNow)
-	mux.HandleFunc("GET /install.sh", s.handleInstallScript)
-	mux.HandleFunc("GET /uninstall.sh", s.handleUninstallScript)
-	mux.HandleFunc("GET /api/hook/status", s.handleHookStatus)
+	mux.HandleFunc("GET /api/cred/status", s.handleCredStatus)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
@@ -82,50 +70,6 @@ func cors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// --- /api/token ------------------------------------------------------------
-
-func (s *Server) handleGetToken(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	a, err := selector.Pick(ctx, s.Store, time.Now())
-	if err != nil {
-		if errors.Is(err, selector.ErrNoAvailable) {
-			// Pool just went unavailable from the caller's perspective. Nudge
-			// the coordinator so the hook is yanked before the next request,
-			// instead of waiting up to one tick interval.
-			s.Hook.Trigger()
-			http.Error(w, "no available account", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Just-in-time refresh: if the picked token is about to expire, swap it
-	// before handing it to the caller. The scheduler usually beats us to it,
-	// but cover the fresh-process / paused-laptop case.
-	remaining := time.Duration(a.ExpiresAt-time.Now().UnixMilli()) * time.Millisecond
-	if remaining < JustInTimeRefreshThreshold {
-		if err := s.Refresher.RefreshOne(ctx, a.ID); err != nil {
-			http.Error(w, "refresh failed: "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		// Re-read so we hand out the fresh token.
-		a, err = s.Store.Get(ctx, a.ID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	if err := s.Store.MarkUsed(ctx, a.ID); err != nil {
-		// Log-only — handing out the token is more important than the LRU stamp.
-		_ = err
-	}
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprint(w, a.AccessToken)
 }
 
 // --- /api/accounts ---------------------------------------------------------
@@ -275,7 +219,7 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "save account: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.Hook.Trigger()
+	s.Cred.Trigger()
 
 	// Best-effort initial usage pull so the new card lights up immediately
 	// instead of waiting for the next 5-minute tick. Failures are logged
@@ -336,7 +280,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.Hook.Trigger()
+	s.Cred.Trigger()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -358,7 +302,7 @@ func (s *Server) setStatus(w http.ResponseWriter, r *http.Request, status string
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.Hook.Trigger()
+	s.Cred.Trigger()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -389,7 +333,7 @@ func (s *Server) handleCooldown(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.Hook.Trigger()
+	s.Cred.Trigger()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -403,7 +347,7 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	s.Hook.Trigger()
+	s.Cred.Trigger()
 	a, err := s.Store.Get(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -422,27 +366,13 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"account": toView(*a)})
 }
 
-// --- install / uninstall scripts -------------------------------------------
+// --- credinject status ----------------------------------------------------
 
-func (s *Server) handleInstallScript(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
-	fmt.Fprint(w, assets.RenderInstallScript(s.Port))
-}
-
-func (s *Server) handleUninstallScript(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
-	fmt.Fprint(w, assets.RenderUninstallScript())
-}
-
-// handleHookStatus reports whether the apiKeyHelper hook is currently
-// installed and pointing at our helper. The frontend uses this to display the
-// status badge — install/uninstall is no longer user-driven; the server owns
-// the hook lifecycle (install on startup, uninstall on graceful shutdown).
-func (s *Server) handleHookStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"installed":   hook.IsInstalled(s.DataDir),
-		"helper_path": hook.HelperPath(s.DataDir),
-	})
+// handleCredStatus reports the credinject coordinator's current state for the
+// frontend / TUI status surface. Returns zero values when no Coordinator is
+// wired (e.g. --no-cred-inject mode).
+func (s *Server) handleCredStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.Cred.Status())
 }
 
 // --- helpers ---------------------------------------------------------------

@@ -43,7 +43,7 @@ type model struct {
 	mode mode
 
 	accounts []Account
-	hook     HookStatus
+	cred     CredStatus
 	cursor   int
 
 	width  int
@@ -117,7 +117,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.fatalErr = ""
 			m.accounts = msg.accounts
-			m.hook = msg.hook
+			m.cred = msg.cred
 			if m.cursor >= len(m.accounts) {
 				m.cursor = max(0, len(m.accounts)-1)
 			}
@@ -327,7 +327,7 @@ func tickCmd() tea.Cmd {
 
 type accountsMsg struct {
 	accounts []Account
-	hook     HookStatus
+	cred     CredStatus
 	err      error
 }
 
@@ -340,11 +340,11 @@ func (m *model) refreshCmd() tea.Cmd {
 		if err != nil {
 			return accountsMsg{err: err}
 		}
-		hook, err := c.HookStatus(ctx)
+		cred, err := c.CredStatus(ctx)
 		if err != nil {
 			return accountsMsg{err: err}
 		}
-		return accountsMsg{accounts: accs, hook: hook}
+		return accountsMsg{accounts: accs, cred: cred}
 	}
 }
 
@@ -415,13 +415,15 @@ var (
 func (m *model) viewList() string {
 	var b strings.Builder
 
-	hookText := warnStyle.Render("hook: not installed")
-	if m.hook.Installed {
-		hookText = okStyle.Render("hook: installed")
+	credText := warnStyle.Render("cred: idle")
+	if m.cred.ManagedAccountID != 0 {
+		credText = okStyle.Render(fmt.Sprintf("cred: managing acct #%d", m.cred.ManagedAccountID))
+	} else if m.cred.NativeBackupPresent {
+		credText = okStyle.Render("cred: idle (native restored)")
 	}
 	b.WriteString(titleStyle.Render("foxy-switcher"))
 	b.WriteString("  ")
-	b.WriteString(hookText)
+	b.WriteString(credText)
 	b.WriteString("  ")
 	b.WriteString(dimStyle.Render(fmt.Sprintf("%d account(s)", len(m.accounts))))
 	if !m.lastRefresh.IsZero() {

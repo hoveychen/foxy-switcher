@@ -90,8 +90,10 @@ export const apiClient = {
   deleteAccount: (id: number) =>
     api<void>(`/api/accounts/${id}`, { method: "DELETE" }),
 
-  fetchToken: () => api<string>("/api/token"),
-
-  hookStatus: () =>
-    api<{ installed: boolean; helper_path: string }>("/api/hook/status"),
+  credStatus: () =>
+    api<{
+      managed_account_id: number;
+      native_backup_present: boolean;
+      injected_at: number;
+    }>("/api/cred/status"),
 };

@@ -1,7 +1,7 @@
 // Package store wraps a SQLite database holding the credential pool used by
 // the foxy-switcher account selector. The schema is intentionally tiny: one
 // row per Claude subscription account, plus a couple of denormalised counters
-// the selector reads on every /api/token call.
+// the selector reads on every credinject reconcile.
 package store
 
 import (

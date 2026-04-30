@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/authz"
-	"github.com/hoveychen/foxy-switcher/server/hook"
+	"github.com/hoveychen/foxy-switcher/server/credinject"
 	"github.com/hoveychen/foxy-switcher/server/httpapi"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
 	"github.com/hoveychen/foxy-switcher/server/store"
@@ -36,18 +36,19 @@ func main() {
 	}
 
 	var (
-		dataDir   = flag.String("data-dir", "", "directory for state.db / port file (default ~/.foxy-switcher)")
-		port      = flag.Int("port", 0, "TCP port to bind on 127.0.0.1; 0 = random")
-		parentPID = flag.Int("parent-pid", 0, "if non-zero, exit when this pid disappears (sidecar-mode safety net)")
-		noHook    = flag.Bool("no-hook", false, "don't manage the apiKeyHelper hook (no install/uninstall, no reconcile loop) — useful for debugging /api/token in isolation")
+		dataDir      = flag.String("data-dir", "", "directory for state.db / port file (default ~/.foxy-switcher)")
+		port         = flag.Int("port", 0, "TCP port to bind on 127.0.0.1; 0 = random")
+		parentPID    = flag.Int("parent-pid", 0, "if non-zero, exit when this pid disappears (sidecar-mode safety net)")
+		noCredInject = flag.Bool("no-cred-inject", false, "don't manage Claude Code's credential storage (no inject, no reverse-sync, no restore) — useful when running side-by-side with a real native login for debugging")
 	)
 	flag.Parse()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmicroseconds)
 
-	// Use os.Exit through a deferred closure so cleanup defers (hook.Uninstall,
-	// store.Close, port file removal) run before we surface a non-zero exit
-	// code. os.Exit itself skips defers — that's why log.Fatalf is unsafe here.
+	// Use os.Exit through a deferred closure so cleanup defers
+	// (cc.RestoreOnShutdown, store.Close, port file removal) run before we
+	// surface a non-zero exit code. os.Exit itself skips defers — that's why
+	// log.Fatalf is unsafe here.
 	exitCode := 0
 	defer func() { os.Exit(exitCode) }()
 
@@ -90,20 +91,24 @@ func main() {
 	}
 	defer os.Remove(portFile)
 
-	// Don't install the hook eagerly — let the coordinator decide based on
-	// pool availability (avoid blocking Claude Code during bootstrap when the
-	// pool is empty, or during periods when every account is rate-limited).
-	// The deferred Uninstall is the final safety net for graceful shutdown.
+	// The credinject Coordinator owns Claude Code's keychain entries while
+	// the daemon runs and restores the user's native login on graceful exit.
+	// Defer Restore so Ctrl-C / SIGTERM / parent-pid death all converge on
+	// the same cleanup path.
 	//
-	// --no-hook skips both sides: nothing to uninstall on shutdown, no
-	// reconcile loop on startup. Used to debug /api/token without the helper
-	// rewriting ~/.claude/settings.json.
-	if !*noHook {
+	// --no-cred-inject skips the entire lifecycle: no inject, no reverse-sync,
+	// no restore. Used to run the daemon alongside a real native login for
+	// debugging without clobbering it.
+	var cc *credinject.Coordinator
+	if !*noCredInject {
+		backend, err := credinject.NewBackend()
+		if err != nil {
+			logger.Fatalf("credinject backend: %v", err)
+		}
+		cc = credinject.New(st, backend, dir, logger)
 		defer func() {
-			if err := hook.Uninstall(dir); err != nil {
-				logger.Printf("warning: uninstall apiKeyHelper hook: %v", err)
-			} else {
-				logger.Print("apiKeyHelper hook removed")
+			if err := cc.RestoreOnShutdown(); err != nil {
+				logger.Printf("warning: restore native credentials: %v", err)
 			}
 		}()
 	}
@@ -115,17 +120,19 @@ func main() {
 		go watchParent(ctx, cancel, *parentPID, 2*time.Second, logger)
 	}
 
-	if !*noHook {
-		hookCoord := server.NewHookCoordinator(logger, 5*time.Second)
-		server.Hook = hookCoord
+	if cc != nil {
+		server.Cred = cc
 		// Wire callbacks BEFORE Start so the spawned goroutines see them on
 		// their first tick. Trigger() is non-blocking and idempotent, so it's
-		// safe to fire even before hookCoord.Run starts consuming.
-		rf.OnChange = hookCoord.Trigger
-		up.OnChange = hookCoord.Trigger
-		go hookCoord.Run(ctx)
+		// safe to fire even before cc.Run starts consuming.
+		rf.OnChange = cc.Trigger
+		up.OnChange = cc.Trigger
+		// Skip the currently-injected account in the refresh scheduler:
+		// Claude Code owns its rotation while it holds the keychain.
+		rf.SkipAccountID = cc.CurrentAccountID
+		go cc.Run(ctx)
 	} else {
-		logger.Print("--no-hook: apiKeyHelper hook lifecycle disabled")
+		logger.Print("--no-cred-inject: keychain lifecycle disabled")
 	}
 
 	rf.Start(ctx)
@@ -148,7 +155,7 @@ func main() {
 	serveErr := httpSrv.Serve(ln)
 	if serveErr != nil && serveErr != http.ErrServerClosed {
 		// Don't log.Fatalf here — os.Exit would skip the deferred
-		// hook.Uninstall. Log it; arrange exit(1) via a defer scheduled
+		// cc.RestoreOnShutdown. Log it; arrange exit(1) via a defer scheduled
 		// AFTER all the cleanup defers so they run first (LIFO order).
 		logger.Printf("serve: %v", serveErr)
 		exitCode = 1

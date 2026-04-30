@@ -61,7 +61,7 @@ func seedAccount(t *testing.T, st *store.Store, name string) int64 {
 	return a.ID
 }
 
-func TestClient_ListAndHook_EmptyPool(t *testing.T) {
+func TestClient_ListAndCred_EmptyPool(t *testing.T) {
 	c, _, cleanup := startServer(t)
 	defer cleanup()
 
@@ -73,15 +73,18 @@ func TestClient_ListAndHook_EmptyPool(t *testing.T) {
 	if len(accs) != 0 {
 		t.Fatalf("expected empty pool, got %d accounts", len(accs))
 	}
-	hook, err := c.HookStatus(ctx)
+	cred, err := c.CredStatus(ctx)
 	if err != nil {
-		t.Fatalf("hook: %v", err)
+		t.Fatalf("cred: %v", err)
 	}
-	if hook.Installed {
-		t.Fatalf("hook should not be installed in fresh data dir")
+	// Server has no Coordinator wired here (httpapi.New only); Status() on
+	// a nil receiver returns a zero struct, which is exactly what we want
+	// to assert: no managed account, no native backup yet.
+	if cred.ManagedAccountID != 0 {
+		t.Fatalf("expected ManagedAccountID=0 with no coordinator, got %d", cred.ManagedAccountID)
 	}
-	if hook.HelperPath == "" {
-		t.Fatalf("hook helper path should be populated even when not installed")
+	if cred.NativeBackupPresent {
+		t.Fatalf("expected NativeBackupPresent=false with no coordinator")
 	}
 }
 

@@ -36,11 +36,18 @@ type Scheduler struct {
 	done   chan struct{}
 	logger *log.Logger
 
-	// OnChange fires after a successful token rotation. The HookCoordinator
-	// uses it to reconcile the apiKeyHelper hook immediately instead of
+	// OnChange fires after a successful token rotation. The credinject
+	// Coordinator uses it to reconcile the keychain immediately instead of
 	// waiting up to 5s for its next ticker. Must be set before Start; safe
 	// to leave nil (no-op).
 	OnChange func()
+
+	// SkipAccountID, if non-nil, returns the account ID currently injected
+	// into Claude Code's keychain. While an account is injected, Claude Code
+	// owns its refresh path — running our own refresh in parallel would race
+	// the one-time-use refresh_token. The Coordinator wires this so the
+	// scheduler simply skips the injected account each tick.
+	SkipAccountID func() int64
 }
 
 func New(st *store.Store, logger *log.Logger) *Scheduler {
@@ -92,9 +99,16 @@ func (s *Scheduler) tick(ctx context.Context) {
 		return
 	}
 	now := time.Now()
+	var skip int64
+	if s.SkipAccountID != nil {
+		skip = s.SkipAccountID()
+	}
 	for i := range accs {
 		a := accs[i]
 		if a.Status != "active" || a.RefreshToken == "" {
+			continue
+		}
+		if skip != 0 && a.ID == skip {
 			continue
 		}
 		remaining := time.Duration(a.ExpiresAt-now.UnixMilli()) * time.Millisecond
