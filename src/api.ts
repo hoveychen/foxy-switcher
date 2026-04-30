@@ -91,16 +91,7 @@ export const apiClient = {
     api<void>(`/api/accounts/${id}`, { method: "DELETE" }),
 
   fetchToken: () => api<string>("/api/token"),
+
+  hookStatus: () =>
+    api<{ installed: boolean; helper_path: string }>("/api/hook/status"),
 };
-
-export async function installHook(): Promise<string> {
-  return invoke<string>("install_hook");
-}
-
-export async function uninstallHook(purge: boolean): Promise<string> {
-  return invoke<string>("uninstall_hook", { purge });
-}
-
-export async function isHookInstalled(): Promise<boolean> {
-  return invoke<boolean>("is_hook_installed");
-}

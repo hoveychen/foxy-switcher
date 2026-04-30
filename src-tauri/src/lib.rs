@@ -3,12 +3,14 @@
 // Responsibilities:
 //   1. Spawn the Go server as a sidecar bound to a random port on 127.0.0.1
 //   2. Surface the chosen port to the React frontend via `get_server_port`
-//   3. Expose install/uninstall_hook commands that mirror the curl-based
-//      installer (write get-token.sh + patch ~/.claude/settings.json)
-//   4. Provide a system tray that keeps the sidecar alive when the window
+//   3. Provide a system tray that keeps the sidecar alive when the window
 //      is closed (hide-on-close pattern; quit only via tray menu)
+//
+// The apiKeyHelper hook lifecycle is owned by the Go sidecar (install on
+// startup, uninstall on graceful shutdown), so the Tauri layer no longer has
+// any hook commands. SIGTERM in sidecar::shutdown is what gives the sidecar
+// a chance to run its cleanup defers — see the comment there.
 
-mod hook;
 mod sidecar;
 
 use std::sync::Mutex;
@@ -31,27 +33,6 @@ fn get_server_port(state: tauri::State<'_, ServerState>) -> Result<u16, String> 
         .lock()
         .unwrap()
         .ok_or_else(|| "server not started yet".to_string())
-}
-
-#[tauri::command]
-fn install_hook(app: AppHandle) -> Result<String, String> {
-    let port = app
-        .state::<ServerState>()
-        .port
-        .lock()
-        .unwrap()
-        .ok_or_else(|| "server not started yet".to_string())?;
-    hook::install(port).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn uninstall_hook(purge: bool) -> Result<String, String> {
-    hook::uninstall(purge).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn is_hook_installed() -> Result<bool, String> {
-    hook::is_installed().map_err(|e| e.to_string())
 }
 
 // Hook SIGTERM/SIGINT (Ctrl-C on Windows) into the same exit path the tray
@@ -99,12 +80,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .manage(ServerState::default())
-        .invoke_handler(tauri::generate_handler![
-            get_server_port,
-            install_hook,
-            uninstall_hook,
-            is_hook_installed,
-        ])
+        .invoke_handler(tauri::generate_handler![get_server_port])
         .setup(|app| {
             let handle = app.handle().clone();
             sidecar::spawn(&handle)?;

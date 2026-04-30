@@ -12,7 +12,7 @@ import (
 // browser blocks it without proper CORS headers.
 
 func TestCORS_PreflightAllowsLocalhost(t *testing.T) {
-	srv := New(nil, nil, nil)
+	srv := New(nil, nil, nil, "")
 	req := httptest.NewRequest(http.MethodOptions, "/api/accounts/login", nil)
 	req.Header.Set("Origin", "http://127.0.0.1:1420")
 	req.Header.Set("Access-Control-Request-Method", "POST")
@@ -35,7 +35,7 @@ func TestCORS_PreflightAllowsLocalhost(t *testing.T) {
 }
 
 func TestCORS_SimpleResponseHasOriginHeader(t *testing.T) {
-	srv := New(nil, nil, nil)
+	srv := New(nil, nil, nil, "")
 	// /healthz is a simple GET — won't trigger a preflight, but the response
 	// still needs Access-Control-Allow-Origin or the browser swallows it.
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)

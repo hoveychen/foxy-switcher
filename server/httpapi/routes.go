@@ -17,6 +17,7 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/anthropic"
 	"github.com/hoveychen/foxy-switcher/server/assets"
 	"github.com/hoveychen/foxy-switcher/server/authz"
+	"github.com/hoveychen/foxy-switcher/server/hook"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
 	"github.com/hoveychen/foxy-switcher/server/selector"
 	"github.com/hoveychen/foxy-switcher/server/store"
@@ -33,11 +34,13 @@ type Server struct {
 	Store     *store.Store
 	PKCE      *authz.PKCEStore
 	Refresher *refresh.Scheduler
-	Port      int // populated after net.Listen, used by /install.sh
+	DataDir   string           // ~/.foxy-switcher; used to resolve the apiKeyHelper path
+	Port      int              // populated after net.Listen, used by /install.sh
+	Hook      *HookCoordinator // optional; routes that change account state call .Trigger() — safe on nil
 }
 
-func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler) *Server {
-	return &Server{Store: st, PKCE: pk, Refresher: rf}
+func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {
+	return &Server{Store: st, PKCE: pk, Refresher: rf, DataDir: dataDir}
 }
 
 // Handler returns the *http.ServeMux wired with every route. Bind it on
@@ -55,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/{id}/refresh", s.handleRefreshNow)
 	mux.HandleFunc("GET /install.sh", s.handleInstallScript)
 	mux.HandleFunc("GET /uninstall.sh", s.handleUninstallScript)
+	mux.HandleFunc("GET /api/hook/status", s.handleHookStatus)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
@@ -87,6 +91,10 @@ func (s *Server) handleGetToken(w http.ResponseWriter, r *http.Request) {
 	a, err := selector.Pick(ctx, s.Store, time.Now())
 	if err != nil {
 		if errors.Is(err, selector.ErrNoAvailable) {
+			// Pool just went unavailable from the caller's perspective. Nudge
+			// the coordinator so the hook is yanked before the next request,
+			// instead of waiting up to one tick interval.
+			s.Hook.Trigger()
 			http.Error(w, "no available account", http.StatusServiceUnavailable)
 			return
 		}
@@ -271,6 +279,7 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "save account: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.Hook.Trigger()
 
 	// Best-effort initial usage pull so the new card lights up immediately
 	// instead of waiting for the next 5-minute tick. Failures are logged
@@ -316,6 +325,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.Hook.Trigger()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -337,6 +347,7 @@ func (s *Server) setStatus(w http.ResponseWriter, r *http.Request, status string
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.Hook.Trigger()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -367,6 +378,7 @@ func (s *Server) handleCooldown(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.Hook.Trigger()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -380,6 +392,7 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	s.Hook.Trigger()
 	a, err := s.Store.Get(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -408,6 +421,17 @@ func (s *Server) handleInstallScript(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleUninstallScript(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	fmt.Fprint(w, assets.RenderUninstallScript())
+}
+
+// handleHookStatus reports whether the apiKeyHelper hook is currently
+// installed and pointing at our helper. The frontend uses this to display the
+// status badge — install/uninstall is no longer user-driven; the server owns
+// the hook lifecycle (install on startup, uninstall on graceful shutdown).
+func (s *Server) handleHookStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"installed":   hook.IsInstalled(s.DataDir),
+		"helper_path": hook.HelperPath(s.DataDir),
+	})
 }
 
 // --- helpers ---------------------------------------------------------------

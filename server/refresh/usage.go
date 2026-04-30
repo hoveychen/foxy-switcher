@@ -25,6 +25,12 @@ type UsagePoller struct {
 	stop   chan struct{}
 	done   chan struct{}
 	logger *log.Logger
+
+	// OnChange fires once per tick if any account's usage row was updated.
+	// The HookCoordinator uses it to reconcile the apiKeyHelper hook
+	// immediately when, e.g., a 5h window resets and an account becomes
+	// usable again. Must be set before Start; safe to leave nil.
+	OnChange func()
 }
 
 func NewUsagePoller(st *store.Store, logger *log.Logger) *UsagePoller {
@@ -76,6 +82,7 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		p.logger.Printf("[usage] list accounts: %v", err)
 		return
 	}
+	changed := false
 	for i := range accs {
 		a := accs[i]
 		if a.Status != "active" || a.AccessToken == "" {
@@ -109,7 +116,12 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		}
 		if err := writeUsage(ctx, p.st, a.ID, u); err != nil {
 			p.logger.Printf("[usage] account %d store: %v", a.ID, err)
+			continue
 		}
+		changed = true
+	}
+	if changed && p.OnChange != nil {
+		p.OnChange()
 	}
 }
 

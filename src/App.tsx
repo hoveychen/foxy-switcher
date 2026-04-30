@@ -1,12 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  Account,
-  UsageWindow,
-  apiClient,
-  installHook,
-  isHookInstalled,
-  uninstallHook,
-} from "./api";
+import { Account, UsageWindow, apiClient } from "./api";
 
 type LoginState =
   | { phase: "idle" }
@@ -91,10 +84,10 @@ export default function App() {
     try {
       const [list, hook] = await Promise.all([
         apiClient.listAccounts(),
-        isHookInstalled(),
+        apiClient.hookStatus(),
       ]);
       setAccounts(list);
-      setHookInstalled(hook);
+      setHookInstalled(hook.installed);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -154,24 +147,6 @@ export default function App() {
     }
   }
 
-  async function onInstall() {
-    try {
-      await installHook();
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function onUninstall() {
-    try {
-      await uninstallHook(false);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
   async function onRefreshAccount(id: number) {
     try {
       await apiClient.refreshAccount(id);
@@ -197,9 +172,6 @@ export default function App() {
         <h1>foxy-switcher</h1>
         <div className={`hook ${hookInstalled ? "ok" : "off"}`}>
           {hookInstalled ? "Hook installed" : "Hook not installed"}
-          <button onClick={hookInstalled ? onUninstall : onInstall}>
-            {hookInstalled ? "Uninstall" : "Install"}
-          </button>
         </div>
       </header>
 

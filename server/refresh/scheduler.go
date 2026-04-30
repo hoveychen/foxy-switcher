@@ -35,6 +35,12 @@ type Scheduler struct {
 	stop   chan struct{}
 	done   chan struct{}
 	logger *log.Logger
+
+	// OnChange fires after a successful token rotation. The HookCoordinator
+	// uses it to reconcile the apiKeyHelper hook immediately instead of
+	// waiting up to 5s for its next ticker. Must be set before Start; safe
+	// to leave nil (no-op).
+	OnChange func()
 }
 
 func New(st *store.Store, logger *log.Logger) *Scheduler {
@@ -140,6 +146,9 @@ func (s *Scheduler) RefreshOne(ctx context.Context, id int64) error {
 	}
 	s.logger.Printf("[refresh] account %d (%s) rotated; next expiry in %s",
 		a.ID, a.Name, time.Until(time.UnixMilli(expiresAt)).Round(time.Second))
+	if s.OnChange != nil {
+		s.OnChange()
+	}
 	return nil
 }
 

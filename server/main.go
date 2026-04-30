@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/authz"
+	"github.com/hoveychen/foxy-switcher/server/hook"
 	"github.com/hoveychen/foxy-switcher/server/httpapi"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
 	"github.com/hoveychen/foxy-switcher/server/store"
@@ -32,6 +33,12 @@ func main() {
 	flag.Parse()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmicroseconds)
+
+	// Use os.Exit through a deferred closure so cleanup defers (hook.Uninstall,
+	// store.Close, port file removal) run before we surface a non-zero exit
+	// code. os.Exit itself skips defers — that's why log.Fatalf is unsafe here.
+	exitCode := 0
+	defer func() { os.Exit(exitCode) }()
 
 	dir, err := resolveDataDir(*dataDir)
 	if err != nil {
@@ -55,7 +62,7 @@ func main() {
 	rf := refresh.New(st, logger)
 	up := refresh.NewUsagePoller(st, logger)
 
-	server := httpapi.New(st, pkce, rf)
+	server := httpapi.New(st, pkce, rf, dir)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	ln, err := net.Listen("tcp", addr)
@@ -72,12 +79,33 @@ func main() {
 	}
 	defer os.Remove(portFile)
 
+	// Don't install the hook eagerly — let the coordinator decide based on
+	// pool availability (avoid blocking Claude Code during bootstrap when the
+	// pool is empty, or during periods when every account is rate-limited).
+	// The deferred Uninstall is the final safety net for graceful shutdown.
+	defer func() {
+		if err := hook.Uninstall(dir); err != nil {
+			logger.Printf("warning: uninstall apiKeyHelper hook: %v", err)
+		} else {
+			logger.Print("apiKeyHelper hook removed")
+		}
+	}()
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	if *parentPID > 0 {
 		go watchParent(ctx, cancel, *parentPID, 2*time.Second, logger)
 	}
+
+	hookCoord := server.NewHookCoordinator(logger, 5*time.Second)
+	server.Hook = hookCoord
+	// Wire callbacks BEFORE Start so the spawned goroutines see them on
+	// their first tick. Trigger() is non-blocking and idempotent, so it's
+	// safe to fire even before hookCoord.Run starts consuming.
+	rf.OnChange = hookCoord.Trigger
+	up.OnChange = hookCoord.Trigger
+	go hookCoord.Run(ctx)
 
 	rf.Start(ctx)
 	defer rf.Stop()
@@ -96,8 +124,13 @@ func main() {
 	}()
 
 	logger.Printf("foxy-switcher listening on http://%s (data: %s)", tcp.String(), dir)
-	if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
-		logger.Fatalf("serve: %v", err)
+	serveErr := httpSrv.Serve(ln)
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		// Don't log.Fatalf here — os.Exit would skip the deferred
+		// hook.Uninstall. Log it; arrange exit(1) via a defer scheduled
+		// AFTER all the cleanup defers so they run first (LIFO order).
+		logger.Printf("serve: %v", serveErr)
+		exitCode = 1
 	}
 	logger.Print("shutdown complete")
 }

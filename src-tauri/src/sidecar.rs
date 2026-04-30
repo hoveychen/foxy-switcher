@@ -5,9 +5,11 @@
 // and stash it in ServerState so the React frontend can fetch /api/* against
 // the right address.
 //
-// On exit we send a kill signal to the child so the port file is released and
-// the database WAL is checkpointed cleanly. The sidecar's own SIGTERM handler
-// also runs `os.Remove(portFile)` for defence in depth.
+// On exit we send SIGTERM (Unix) so the sidecar's signal handler runs its
+// graceful shutdown path: release the port file, checkpoint the DB WAL, and
+// crucially uninstall the apiKeyHelper hook from ~/.claude/settings.json. A
+// plain `child.kill()` (SIGKILL) skips that cleanup, leaving the hook orphaned.
+// The sidecar's parent-pid watchdog covers the SIGKILL-the-GUI case.
 
 use std::{
     sync::{Arc, Mutex},
@@ -109,7 +111,29 @@ pub fn spawn(app: &AppHandle) -> Result<()> {
 pub fn shutdown(app: &AppHandle) {
     if let Some(handle) = app.try_state::<Arc<ChildHandle>>() {
         if let Some(child) = handle.0.lock().unwrap().take() {
-            let _ = child.kill();
+            #[cfg(unix)]
+            {
+                // SIGTERM lets the Go server run its deferred cleanup
+                // (hook.Uninstall + port file removal). The orphaned child
+                // finishes shutdown after we exit; we don't block on it.
+                let pid = child.pid();
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                }
+                // Drop the handle without invoking kill(). std::process::Child::Drop
+                // is a no-op (intentional Rust design), so the OS process keeps
+                // running and processes the SIGTERM.
+                std::mem::drop(child);
+            }
+            #[cfg(not(unix))]
+            {
+                // No clean equivalent on Windows from a separate process.
+                // TerminateProcess will skip the Go-side hook uninstall; the
+                // hook will stay in settings.json until the next launch
+                // overwrites it. The helper script itself handles a missing
+                // port file gracefully so Claude Code won't lock up.
+                let _ = child.kill();
+            }
         }
     }
 }
