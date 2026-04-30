@@ -36,6 +36,16 @@ build() {
       go build -trimpath -ldflags="$LDFLAGS" -o "$out" . )
 }
 
+# Tauri's `--target universal-apple-darwin` resolves sidecars by that exact
+# triple, so we lipo the two per-arch builds into a fat binary alongside them.
+build_darwin_universal() {
+  local arm="$OUT/foxy-switcher-server-aarch64-apple-darwin"
+  local x86="$OUT/foxy-switcher-server-x86_64-apple-darwin"
+  local out="$OUT/foxy-switcher-server-universal-apple-darwin"
+  echo "==> lipo universal  →  $(basename "$out")"
+  lipo -create "$arm" "$x86" -output "$out"
+}
+
 mode="${1:-all}"
 
 case "$mode" in
@@ -57,10 +67,12 @@ case "$mode" in
   darwin)
     build darwin arm64 aarch64-apple-darwin
     build darwin amd64 x86_64-apple-darwin
+    build_darwin_universal
     ;;
   all|"")
     build darwin arm64 aarch64-apple-darwin
     build darwin amd64 x86_64-apple-darwin
+    build_darwin_universal
     build windows amd64 x86_64-pc-windows-msvc
     build linux amd64 x86_64-unknown-linux-gnu
     ;;
