@@ -35,3 +35,6 @@ src-tauri/gen
 /vite.config.js
 /vite.config.d.ts
 /*.tsbuildinfo
+
+# Claude Code runtime state
+.claude/scheduled_tasks.lock
