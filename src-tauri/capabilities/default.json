@@ -11,7 +11,13 @@
     "core:window:allow-set-focus",
     "core:window:allow-close",
     "core:event:default",
-    "opener:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "http://127.0.0.1:*" },
+        { "url": "http://localhost:*" }
+      ]
+    },
     {
       "identifier": "shell:allow-execute",
       "allow": [
@@ -22,10 +28,16 @@
             "--port",
             { "validator": "\\d+" },
             "--data-dir",
-            { "validator": ".*" }
+            { "validator": ".*" },
+            "--parent-pid",
+            { "validator": "\\d+" }
           ]
         }
       ]
+    },
+    {
+      "identifier": "shell:allow-open",
+      "allow": [{ "validator": "^https?://" }]
     }
   ]
 }
