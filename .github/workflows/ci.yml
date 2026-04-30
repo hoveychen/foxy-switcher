@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs on the same ref when a newer commit lands.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macos
+            os: macos-latest
+            tauri_args: --target universal-apple-darwin --bundles app
+            sidecar_mode: darwin
+          - label: windows
+            os: windows-latest
+            tauri_args: --bundles msi
+            sidecar_mode: host
+          - label: linux
+            os: ubuntu-latest
+            # Linux is verify-only — build a deb so we exercise the full
+            # bundling pipeline without committing to a release format.
+            tauri_args: --bundles deb
+            sidecar_mode: host
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system deps
+        if: matrix.label == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libxdo-dev \
+            patchelf
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Universal mac build needs both architectures; harmless on other hosts.
+          targets: ${{ matrix.label == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.label }}
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend build
+        run: pnpm build
+
+      - name: Build Go sidecar
+        shell: bash
+        run: scripts/build-server.sh ${{ matrix.sidecar_mode }}
+
+      - name: Tauri build
+        shell: bash
+        run: pnpm tauri build ${{ matrix.tauri_args }}
+
+      - name: Wrap .app into .pkg
+        if: matrix.label == 'macos'
+        shell: bash
+        run: scripts/build-pkg.sh universal-apple-darwin

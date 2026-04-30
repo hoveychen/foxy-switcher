@@ -1,0 +1,186 @@
+name: Release
+
+# Tag-driven release: push `vX.Y.Z` to build & upload signed .pkg + .msi as a
+# draft GitHub Release.
+#
+# ============================================================================
+# Required GitHub Secrets (signing is auto-skipped when a secret is unset, so
+# you can dry-run the workflow before configuring everything).
+# ============================================================================
+#
+# macOS — Developer ID signing + notarization:
+#   APPLE_CERTIFICATE                 base64(p12) of "Developer ID Application"
+#   APPLE_CERTIFICATE_PASSWORD        password for the Application p12
+#   APPLE_INSTALLER_CERTIFICATE       base64(p12) of "Developer ID Installer"
+#   APPLE_INSTALLER_CERTIFICATE_PASSWORD
+#   APPLE_SIGNING_IDENTITY            e.g. "Developer ID Application: Name (TEAMID)"
+#   APPLE_INSTALLER_SIGNING_IDENTITY  e.g. "Developer ID Installer: Name (TEAMID)"
+#   APPLE_ID                          your Apple ID (email)
+#   APPLE_TEAM_ID                     10-char team id
+#   APPLE_APP_SPECIFIC_PASSWORD       app-specific password from appleid.apple.com
+#   KEYCHAIN_PASSWORD                 any throwaway password for the temp keychain
+#
+# Windows — Authenticode signing:
+#   WINDOWS_CERTIFICATE               base64(pfx)
+#   WINDOWS_CERTIFICATE_PASSWORD
+#
+# Encode certs with: `base64 -i cert.p12 | pbcopy`  (macOS)
+#                    `base64 -w0 cert.pfx`           (Linux)
+# ============================================================================
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macos
+            os: macos-latest
+            tauri_args: --target universal-apple-darwin --bundles app
+            sidecar_mode: darwin
+            artifact_glob: src-tauri/target/universal-apple-darwin/release/bundle/macos/*.pkg
+          - label: windows
+            os: windows-latest
+            tauri_args: --bundles msi
+            sidecar_mode: host
+            artifact_glob: src-tauri/target/release/bundle/msi/*.msi
+
+    env:
+      # Surface secrets as env so step-level `if: env.X != ''` can gate signing
+      # without conditionally referencing `secrets.*` (which isn't allowed in
+      # `if`). Unset secrets evaluate to '' and the step is skipped.
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+      APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.label == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: release-${{ matrix.label }}
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend build
+        run: pnpm build
+
+      - name: Build Go sidecar
+        shell: bash
+        run: scripts/build-server.sh ${{ matrix.sidecar_mode }}
+
+      # ---- macOS: import signing certs into a temp keychain -----------------
+      - name: Import Apple certificates
+        if: matrix.label == 'macos' && env.APPLE_CERTIFICATE != ''
+        shell: bash
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/app.p12"
+          security import "$RUNNER_TEMP/app.p12" \
+            -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm "$RUNNER_TEMP/app.p12"
+
+          if [ -n "$APPLE_INSTALLER_CERTIFICATE" ]; then
+            echo "$APPLE_INSTALLER_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/installer.p12"
+            security import "$RUNNER_TEMP/installer.p12" \
+              -k "$KEYCHAIN_PATH" -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+              -T /usr/bin/productsign -T /usr/bin/security
+            rm "$RUNNER_TEMP/installer.p12"
+          fi
+
+          security set-key-partition-list \
+            -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+      - name: Tauri build
+        shell: bash
+        run: pnpm tauri build ${{ matrix.tauri_args }}
+
+      - name: Wrap (and sign) .pkg
+        if: matrix.label == 'macos'
+        shell: bash
+        run: scripts/build-pkg.sh universal-apple-darwin
+
+      - name: Notarize and staple .pkg
+        if: matrix.label == 'macos' && env.APPLE_ID != ''
+        shell: bash
+        run: |
+          PKG="$(ls src-tauri/target/universal-apple-darwin/release/bundle/macos/*.pkg | head -n1)"
+          echo "==> notarizing $PKG"
+          xcrun notarytool submit "$PKG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$PKG"
+
+      # ---- Windows: signtool over the produced .msi -------------------------
+      - name: Sign MSI
+        if: matrix.label == 'windows' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+            | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          if (-not $signtool) { throw "signtool.exe not found" }
+          Get-ChildItem "src-tauri\target\release\bundle\msi\*.msi" | ForEach-Object {
+            & $signtool sign /fd SHA256 /td SHA256 `
+              /tr "http://timestamp.digicert.com" `
+              /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+              $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed on $($_.FullName)" }
+          }
+          Remove-Item $pfx
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact_glob }}
+          draft: true
+          fail_on_unmatched_files: true

@@ -24,14 +24,16 @@ pnpm build
 case "$mode" in
   mac)
     scripts/build-server.sh darwin
-    pnpm tauri build --target universal-apple-darwin
+    # Tauri only emits .app/.dmg on macOS — wrap into .pkg via pkgbuild.
+    pnpm tauri build --target universal-apple-darwin --bundles app
+    scripts/build-pkg.sh universal-apple-darwin
     ;;
   win)
-    scripts/build-server.sh all   # Windows host only needs the windows triple
-    pnpm tauri build
+    scripts/build-server.sh host
+    pnpm tauri build --bundles msi
     ;;
   linux)
-    scripts/build-server.sh all
+    scripts/build-server.sh host
     pnpm tauri build
     ;;
   dev)
