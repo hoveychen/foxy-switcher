@@ -22,9 +22,19 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/httpapi"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
 	"github.com/hoveychen/foxy-switcher/server/store"
+	"github.com/hoveychen/foxy-switcher/server/tui"
 )
 
 func main() {
+	// Subcommand dispatch. Default (no args, or flag-prefixed args) keeps
+	// the daemon's existing CLI surface intact so the Tauri sidecar
+	// invocation `foxy-switcher --port=N --parent-pid=P …` still works
+	// unchanged.
+	if len(os.Args) > 1 && os.Args[1] == "tui" {
+		runTUI(os.Args[2:])
+		return
+	}
+
 	var (
 		dataDir   = flag.String("data-dir", "", "directory for state.db / port file (default ~/.foxy-switcher)")
 		port      = flag.Int("port", 0, "TCP port to bind on 127.0.0.1; 0 = random")
@@ -155,4 +165,25 @@ func writePortFile(path string, port int) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// runTUI handles the `tui` subcommand. Re-parses flags from the post-`tui`
+// argv tail so `foxy-switcher tui --data-dir=…` works the same way the
+// daemon understands its --data-dir flag.
+func runTUI(args []string) {
+	fs := flag.NewFlagSet("tui", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "", "directory containing the daemon's port/state files (default ~/.foxy-switcher)")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	dir, err := resolveDataDir(*dataDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "resolve data dir:", err)
+		os.Exit(1)
+	}
+	if err := tui.Run(dir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
