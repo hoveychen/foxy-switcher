@@ -19,7 +19,6 @@ type mode int
 
 const (
 	modeList mode = iota
-	modeAddName
 	modeAddPaste
 	modeCooldown
 	modeConfirmDelete
@@ -51,11 +50,9 @@ type model struct {
 	height int
 
 	// Add-account flow state.
-	addName        textinput.Model
-	addPaste       textinput.Model
-	pendingState   string
-	pendingURL     string
-	pendingNameVal string
+	addPaste     textinput.Model
+	pendingState string
+	pendingURL   string
 
 	// Cooldown picker state. Indexes into cooldownPresets.
 	cooldownChoice int
@@ -82,11 +79,6 @@ var cooldownPresets = []struct {
 }
 
 func newModel(c *Client) *model {
-	name := textinput.New()
-	name.Placeholder = "Account alias (optional)"
-	name.CharLimit = 64
-	name.Prompt = "› "
-
 	paste := textinput.New()
 	paste.Placeholder = "Paste code#state from browser"
 	paste.CharLimit = 512
@@ -95,7 +87,6 @@ func newModel(c *Client) *model {
 	return &model{
 		client:   c,
 		mode:     modeList,
-		addName:  name,
 		addPaste: paste,
 	}
 }
@@ -162,12 +153,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward to whichever input is focused.
-	switch m.mode {
-	case modeAddName:
-		var cmd tea.Cmd
-		m.addName, cmd = m.addName.Update(msg)
-		return m, cmd
-	case modeAddPaste:
+	if m.mode == modeAddPaste {
 		var cmd tea.Cmd
 		m.addPaste, cmd = m.addPaste.Update(msg)
 		return m, cmd
@@ -179,8 +165,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeList:
 		return m.handleListKey(msg)
-	case modeAddName:
-		return m.handleAddNameKey(msg)
 	case modeAddPaste:
 		return m.handleAddPasteKey(msg)
 	case modeCooldown:
@@ -242,31 +226,11 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeConfirmDelete
 		}
 	case "a":
-		// Kick off OAuth: ask for an alias first, then hit /login.
-		m.addName.SetValue("")
-		m.addName.Focus()
-		m.mode = modeAddName
-		return m, textinput.Blink
-	}
-	return m, nil
-}
-
-func (m *model) handleAddNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.addName.Blur()
-		m.mode = modeList
-		return m, nil
-	case "enter":
-		m.pendingNameVal = strings.TrimSpace(m.addName.Value())
-		m.addName.Blur()
-		// Move into a "starting login" state; the loginStartMsg will flip us
-		// into modeAddPaste once we have the authorize URL.
+		// Kick off OAuth directly — the account name is derived from the
+		// profile fetched after the token exchange, so there's no alias prompt.
 		return m, m.loginStartCmd()
 	}
-	var cmd tea.Cmd
-	m.addName, cmd = m.addName.Update(msg)
-	return m, cmd
+	return m, nil
 }
 
 func (m *model) handleAddPasteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -283,13 +247,12 @@ func (m *model) handleAddPasteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		state := m.pendingState
-		name := m.pendingNameVal
 		m.addPaste.Blur()
 		m.mode = modeList
 		m.pendingState = ""
 		m.pendingURL = ""
 		return m, m.opCmd("Account added", func(ctx context.Context) error {
-			return m.client.LoginCallback(ctx, pasted, state, name)
+			return m.client.LoginCallback(ctx, pasted, state)
 		})
 	}
 	var cmd tea.Cmd
@@ -426,8 +389,6 @@ func (m *model) loginStartCmd() tea.Cmd {
 
 func (m *model) View() string {
 	switch m.mode {
-	case modeAddName:
-		return m.viewAddName()
 	case modeAddPaste:
 		return m.viewAddPaste()
 	case modeCooldown:
@@ -504,17 +465,6 @@ func (m *model) viewList() string {
 	b.WriteString("\n\n")
 
 	b.WriteString(helpStyle.Render("↑/↓ move · a add · r refresh · e enable · d disable · c cooldown · x delete · R reload · q quit"))
-	return b.String()
-}
-
-func (m *model) viewAddName() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Add account"))
-	b.WriteString("\n\n")
-	b.WriteString("Optional alias for this account (leave empty for default):\n")
-	b.WriteString(m.addName.View())
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("enter continue · esc cancel"))
 	return b.String()
 }
 

@@ -75,7 +75,6 @@ export default function App() {
   const [hookInstalled, setHookInstalled] = useState<boolean>(false);
   const [loginState, setLoginState] = useState<LoginState>({ phase: "idle" });
   const [pasted, setPasted] = useState("");
-  const [accountName, setAccountName] = useState("");
   const [now, setNow] = useState<number>(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -133,13 +132,8 @@ export default function App() {
     if (loginState.phase !== "started") return;
     setLoginState({ phase: "submitting" });
     try {
-      await apiClient.finishLogin(
-        loginState.state,
-        pasted.trim(),
-        accountName.trim() || `account-${Date.now()}`,
-      );
+      await apiClient.finishLogin(loginState.state, pasted.trim());
       setPasted("");
-      setAccountName("");
       setLoginState({ phase: "idle" });
       await refresh();
     } catch (e) {
@@ -282,11 +276,6 @@ export default function App() {
               {copied ? "Copied" : "Copy"}
             </button>
           </div>
-          <input
-            placeholder="account label (optional)"
-            value={accountName}
-            onChange={(e) => setAccountName(e.target.value)}
-          />
           <input
             placeholder="paste code#state here"
             value={pasted}

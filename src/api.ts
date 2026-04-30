@@ -73,10 +73,10 @@ export const apiClient = {
       method: "POST",
     }),
 
-  finishLogin: (state: string, pasted: string, name: string) =>
+  finishLogin: (state: string, pasted: string) =>
     api<{ account: Account }>("/api/accounts/callback", {
       method: "POST",
-      json: { state, pasted, name },
+      json: { state, pasted },
     }),
 
   refreshAccount: (id: number) =>

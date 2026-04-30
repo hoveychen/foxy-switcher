@@ -214,7 +214,6 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, _ *http.Request) {
 type callbackReq struct {
 	Pasted string `json:"pasted"` // "code#state" copy-pasted from platform.claude.com
 	State  string `json:"state"`  // the state returned from /login
-	Name   string `json:"name"`   // user-supplied alias for the account
 }
 
 func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +258,7 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a := store.Account{
-		Name:             strings.TrimSpace(req.Name),
+		Name:             deriveAccountName(prof),
 		AccessToken:      tr.AccessToken,
 		RefreshToken:     tr.RefreshToken,
 		ExpiresAt:        expiresAt,
@@ -271,9 +270,6 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		SubscriptionType: prof.SubscriptionType,
 		// OrganizationUUID is currently not surfaced by /api/oauth/profile;
 		// we keep the column for future use when Anthropic exposes it.
-	}
-	if a.Name == "" {
-		a.Name = fmt.Sprintf("Account %d", time.Now().Unix())
 	}
 	if err := s.Store.Upsert(r.Context(), &a); err != nil {
 		http.Error(w, "save account: "+err.Error(), http.StatusInternalServerError)
@@ -293,6 +289,21 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"account": toView(a)})
+}
+
+// deriveAccountName picks a human-recognisable label for a freshly-added
+// account from its profile. We previously asked the user for an alias, but
+// the profile already exposes email / full name, so the prompt was busywork.
+// Email is preferred because it's unique per account; full_name and a
+// timestamp fallback handle the rare case where the profile is sparse.
+func deriveAccountName(prof *anthropic.Profile) string {
+	if e := strings.TrimSpace(prof.Email); e != "" {
+		return e
+	}
+	if n := strings.TrimSpace(prof.FullName); n != "" {
+		return n
+	}
+	return fmt.Sprintf("Account %d", time.Now().Unix())
 }
 
 // applyUsage writes a Usage snapshot to the store. Nil windows become zeroed

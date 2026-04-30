@@ -147,8 +147,8 @@ func (c *Client) LoginStart(ctx context.Context) (LoginStart, error) {
 	return out, nil
 }
 
-func (c *Client) LoginCallback(ctx context.Context, pasted, state, name string) error {
-	body := map[string]string{"pasted": pasted, "state": state, "name": name}
+func (c *Client) LoginCallback(ctx context.Context, pasted, state string) error {
+	body := map[string]string{"pasted": pasted, "state": state}
 	return c.do(ctx, http.MethodPost, "/api/accounts/callback", body, nil)
 }
 
