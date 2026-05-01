@@ -89,12 +89,28 @@ func TestKeyChip(t *testing.T) {
 	}
 }
 
-func TestAccentRail(t *testing.T) {
-	if w := lipgloss.Width(accentRail(true)); w != 1 {
-		t.Errorf("accentRail(true) width = %d, want 1", w)
+func TestRowRail(t *testing.T) {
+	cases := []struct {
+		name     string
+		selected bool
+		inUse    bool
+		want     string
+	}{
+		{"plain", false, false, " "},
+		{"cursor", true, false, "▍"},
+		{"in-use", false, true, "▶"},
+		{"in-use+cursor", true, true, "▶"},
 	}
-	if w := lipgloss.Width(accentRail(false)); w != 1 {
-		t.Errorf("accentRail(false) width = %d, want 1", w)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rowRail(tc.selected, tc.inUse)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("rowRail(%v,%v) = %q, want %q", tc.selected, tc.inUse, got, tc.want)
+			}
+			if w := lipgloss.Width(got); w != 1 {
+				t.Errorf("rowRail(%v,%v) width = %d, want 1", tc.selected, tc.inUse, w)
+			}
+		})
 	}
 }
 

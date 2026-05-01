@@ -45,12 +45,14 @@ func planBadge(plan string) string {
 		Render("[" + plan + "]")
 }
 
-// inUseBadge renders `[ In use ]` with inverted accent colors.
-func inUseBadge() string {
+// inUseChip renders ` in use ` with inverted accent — used in list rows next
+// to the plan badge to flag the currently-injected account.
+func inUseChip() string {
 	return lipgloss.NewStyle().
 		Foreground(textOnAccent).
 		Background(accentBrand).
-		Render(" In use ")
+		Bold(true).
+		Render(" in use ")
 }
 
 const progressBarDefaultWidth = 10
@@ -108,13 +110,22 @@ func keyChipRow(chips ...string) string {
 	return strings.Join(chips, "   ")
 }
 
-// accentRail renders the leading column of a list row. Selected rows get a
-// colored ▍ glyph; unselected get a single space so columns align.
-func accentRail(selected bool) string {
-	if selected {
-		return lipgloss.NewStyle().Foreground(accentBrand).Render("▍")
+// rowRail renders the leading column of a list row. The in-use account always
+// wins so the marker stays visible when the cursor moves away.
+//
+//	in-use  → ▶ (orange bold)
+//	cursor  → ▍ (orange)
+//	neither → space
+func rowRail(selected, inUse bool) string {
+	style := lipgloss.NewStyle().Foreground(accentBrand)
+	switch {
+	case inUse:
+		return style.Bold(true).Render("▶")
+	case selected:
+		return style.Render("▍")
+	default:
+		return " "
 	}
-	return " "
 }
 
 // panel wraps body in a rounded border with title embedded in the top edge:

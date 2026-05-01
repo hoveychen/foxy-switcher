@@ -57,14 +57,20 @@ func (m *model) viewListWide() string {
 	}
 	detailW := m.width - listW - 1
 
-	var detailBody string
+	bodyH := m.computeBodyHeight()
+
+	var detailBody, listBody string
 	if len(m.accounts) == 0 {
+		listBody = dimStyle.Render("(no accounts — press 'a' to add)")
 		detailBody = renderEmptyState(detailW - 4)
 	} else {
+		listBody = m.renderAccountList(listW - 4)
 		detailBody = m.renderDetailBody(detailW - 4)
 	}
+	listBody = padBodyToHeight(listBody, bodyH)
+	detailBody = padBodyToHeight(detailBody, bodyH)
 
-	listPanel := panel("ACCOUNTS", m.renderAccountList(listW-4), listW)
+	listPanel := panel("ACCOUNTS", listBody, listW)
 	detailPanel := panel(m.detailTitle(), detailBody, detailW)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, listPanel, " ", detailPanel)
@@ -90,6 +96,7 @@ func (m *model) viewListRegular() string {
 	} else {
 		listBody = m.renderAccountListInline(listInner)
 	}
+	listBody = padBodyToHeight(listBody, m.computeBodyHeight())
 	listPanel := panel("ACCOUNTS", listBody, listW)
 
 	return joinSections(header, listPanel, m.renderStatusLine(), m.renderFooter())
@@ -110,8 +117,10 @@ func (m *model) viewListNarrow() string {
 		sb.WriteString(dimStyle.Render("(no accounts — press 'a' to add one)"))
 	} else {
 		nowMs := time.Now().UnixMilli()
+		inUseID := m.inUseAccountID()
 		for i, a := range m.accounts {
-			rail := accentRail(i == m.cursor)
+			isInUse := inUseID != 0 && a.ID == inUseID
+			rail := rowRail(i == m.cursor, isInUse)
 			dot := statusDot(a, nowMs)
 			line := rail + dot + " " + truncate(a.Name, m.width-6)
 			if i == m.cursor {
@@ -144,7 +153,11 @@ func (m *model) renderHeader() string {
 func (m *model) renderCredText() string {
 	switch {
 	case m.cred.ManagedAccountID != 0:
-		return okStyle.Render(fmt.Sprintf("● managing acct #%d", m.cred.ManagedAccountID))
+		name := m.lookupAccountName(m.cred.ManagedAccountID)
+		if name == "" {
+			name = fmt.Sprintf("acct #%d", m.cred.ManagedAccountID)
+		}
+		return okStyle.Render("● in use: " + name)
 	case m.cred.NativeBackupPresent:
 		return okStyle.Render("● idle (native restored)")
 	default:
@@ -152,38 +165,80 @@ func (m *model) renderCredText() string {
 	}
 }
 
+func (m *model) lookupAccountName(id int64) string {
+	for _, a := range m.accounts {
+		if a.ID == id {
+			return a.Name
+		}
+	}
+	return ""
+}
+
+// inUseAccountID returns the id of the account currently injected into Claude
+// Code's keychain, or 0 if none.
+func (m *model) inUseAccountID() int64 { return m.cred.ManagedAccountID }
+
 // renderAccountList lays out the wide-mode account list; one row per account.
 //
-//	▍● alice              [max20]
+//	▶● alice              [ in use ] [max20]
+//	▍● bob                          [max5]
 func (m *model) renderAccountList(innerW int) string {
 	if len(m.accounts) == 0 {
 		return dimStyle.Render("(no accounts — press 'a' to add)")
 	}
 	nowMs := time.Now().UnixMilli()
+	inUseID := m.inUseAccountID()
 	var lines []string
 	for i, a := range m.accounts {
-		rail := accentRail(i == m.cursor)
-		dot := statusDot(a, nowMs)
-		badge := planBadge(a.Plan)
-		// Visible widths: rail(1) + dot(1) + space(1) + name(?) + … + badge(W)
-		fixed := 1 + 1 + 1 + lipgloss.Width(badge)
-		nameMax := innerW - fixed - 1 // 1 space before badge
-		if nameMax < 4 {
-			nameMax = 4
-		}
-		name := truncate(a.Name, nameMax)
-		nameW := lipgloss.Width(name)
-		gap := innerW - fixed - nameW
-		if gap < 1 {
-			gap = 1
-		}
-		row := rail + dot + " " + name + strings.Repeat(" ", gap) + badge
-		if i == m.cursor {
-			row = selectedStyle.Width(innerW).Render(row)
-		}
+		isInUse := inUseID != 0 && a.ID == inUseID
+		row := m.renderAccountRow(a, i == m.cursor, isInUse, innerW, nowMs)
 		lines = append(lines, row)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderAccountRow renders one list row honoring width constraints. When
+// width is tight, the in-use chip wins over the plan badge so the active
+// account is always identifiable.
+func (m *model) renderAccountRow(a Account, selected, isInUse bool, innerW int, nowMs int64) string {
+	rail := rowRail(selected, isInUse)
+	dot := statusDot(a, nowMs)
+	plan := planBadge(a.Plan)
+	chip := ""
+	if isInUse {
+		chip = inUseChip()
+	}
+	suffix, suffixW := composeRowSuffix(chip, plan, innerW-3)
+	nameMax := innerW - 3 - suffixW - 1
+	if nameMax < 4 {
+		nameMax = 4
+	}
+	name := truncate(a.Name, nameMax)
+	nameW := lipgloss.Width(name)
+	gap := innerW - 3 - nameW - suffixW
+	if gap < 1 {
+		gap = 1
+	}
+	row := rail + dot + " " + name + strings.Repeat(" ", gap) + suffix
+	if selected {
+		row = selectedStyle.Width(innerW).Render(row)
+	}
+	return row
+}
+
+// composeRowSuffix joins the optional in-use chip and plan badge into one
+// trailing string, dropping the plan badge first if the combo would not fit.
+func composeRowSuffix(chip, plan string, budget int) (string, int) {
+	chipW := lipgloss.Width(chip)
+	planW := lipgloss.Width(plan)
+	switch {
+	case chip != "" && plan != "" && chipW+1+planW <= budget:
+		return chip + " " + plan, chipW + 1 + planW
+	case chip != "":
+		return chip, chipW
+	default:
+		return plan, planW
+	}
 }
 
 // renderAccountListInline expands the selected row in place with usage bars
@@ -193,26 +248,11 @@ func (m *model) renderAccountListInline(innerW int) string {
 		return dimStyle.Render("(no accounts — press 'a' to add)")
 	}
 	nowMs := time.Now().UnixMilli()
+	inUseID := m.inUseAccountID()
 	var lines []string
 	for i, a := range m.accounts {
-		rail := accentRail(i == m.cursor)
-		dot := statusDot(a, nowMs)
-		badge := planBadge(a.Plan)
-		fixed := 1 + 1 + 1 + lipgloss.Width(badge)
-		nameMax := innerW - fixed - 1
-		if nameMax < 4 {
-			nameMax = 4
-		}
-		name := truncate(a.Name, nameMax)
-		nameW := lipgloss.Width(name)
-		gap := innerW - fixed - nameW
-		if gap < 1 {
-			gap = 1
-		}
-		row := rail + dot + " " + name + strings.Repeat(" ", gap) + badge
-		if i == m.cursor {
-			row = selectedStyle.Width(innerW).Render(row)
-		}
+		isInUse := inUseID != 0 && a.ID == inUseID
+		row := m.renderAccountRow(a, i == m.cursor, isInUse, innerW, nowMs)
 		lines = append(lines, row)
 		if i == m.cursor {
 			lines = append(lines, m.renderInlineDetail(a, innerW))
@@ -319,8 +359,8 @@ func (m *model) renderStatusLine() string {
 	}
 }
 
-func (m *model) renderFooter() string {
-	chips := []string{
+func (m *model) footerChips() []string {
+	return []string{
 		keyChip("↑↓", "move"),
 		keyChip("a", "add"),
 		keyChip("r", "refresh"),
@@ -331,12 +371,24 @@ func (m *model) renderFooter() string {
 		keyChip("R", "reload"),
 		keyChip("q", "quit"),
 	}
+}
+
+func (m *model) renderFooter() string {
+	chips := m.footerChips()
 	row := keyChipRow(chips...)
 	if lipgloss.Width(row) <= m.width {
 		return row
 	}
 	mid := (len(chips) + 1) / 2
 	return keyChipRow(chips[:mid]...) + "\n" + keyChipRow(chips[mid:]...)
+}
+
+func (m *model) footerHeight() int {
+	row := keyChipRow(m.footerChips()...)
+	if lipgloss.Width(row) <= m.width {
+		return 1
+	}
+	return 2
 }
 
 // ============================================================================
@@ -410,4 +462,34 @@ func joinSections(parts ...string) string {
 		out = append(out, p)
 	}
 	return strings.Join(out, "\n")
+}
+
+// padBodyToHeight appends blank lines so a panel body fills target rows. Used
+// to push the bottom border down to the available height of the screen.
+func padBodyToHeight(body string, target int) string {
+	if target <= 0 {
+		return body
+	}
+	cur := 0
+	if body != "" {
+		cur = strings.Count(body, "\n") + 1
+	}
+	if cur >= target {
+		return body
+	}
+	return body + strings.Repeat("\n", target-cur)
+}
+
+// computeBodyHeight returns the number of body rows a panel can occupy so the
+// list view fills the screen exactly: header + blank + panel + blank +
+// statusLine + blank + footer == m.height. panel rows = bodyRows + 2 borders.
+func (m *model) computeBodyHeight() int {
+	footerH := m.footerHeight()
+	// 5 = header(1) + 3 single-row blank separators + statusLine(1).
+	// Subtract 2 for the panel's top + bottom border.
+	bodyH := m.height - 5 - footerH - 2
+	if bodyH < 4 {
+		bodyH = 4
+	}
+	return bodyH
 }
