@@ -12,7 +12,7 @@ import (
 
 	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/selector"
-	"github.com/hoveychen/foxy-switcher/server/store"
+	"github.com/hoveychen/foxy-switcher/server/vault"
 )
 
 // Default cadences for the Coordinator. The reconcile interval matches the
@@ -37,14 +37,11 @@ const (
 //   - On graceful shutdown, call RestoreOnShutdown to put the user's native
 //     credentials back.
 type Coordinator struct {
-	store    *store.Store
-	logger   *log.Logger
-	backend  Backend
-	dataDir  string
-	clock    func() time.Time
-	listFn   func(ctx context.Context, st *store.Store) ([]store.Account, error) // overridable in tests
-	pickFn   func(ctx context.Context, st *store.Store, now time.Time) (*store.Account, error)
-	updateFn func(ctx context.Context, st *store.Store, id int64, accessToken, refreshToken string, expiresAt int64) error
+	svc     vault.Service
+	logger  *log.Logger
+	backend Backend
+	dataDir string
+	clock   func() time.Time
 
 	// Bus is the optional activity hub the coordinator emits cred.injected /
 	// cred.restored / cred.failed events to. Nil-safe — set via SetBus once
@@ -78,12 +75,12 @@ func (c *Coordinator) SetBus(b *activity.Bus) {
 
 // New constructs a Coordinator. The dataDir is where injected.json /
 // native-cred-backup.json live (typically ~/.foxy-switcher).
-func New(st *store.Store, backend Backend, dataDir string, logger *log.Logger) *Coordinator {
+func New(svc vault.Service, backend Backend, dataDir string, logger *log.Logger) *Coordinator {
 	if logger == nil {
 		logger = log.Default()
 	}
 	return &Coordinator{
-		store:               st,
+		svc:                 svc,
 		logger:              logger,
 		backend:             backend,
 		dataDir:             dataDir,
@@ -91,16 +88,7 @@ func New(st *store.Store, backend Backend, dataDir string, logger *log.Logger) *
 		reconcileInterval:   DefaultReconcileInterval,
 		reverseSyncInterval: DefaultReverseSyncInterval,
 		trigger:             make(chan struct{}, 1),
-		pickFn: func(ctx context.Context, st *store.Store, now time.Time) (*store.Account, error) {
-			return selector.Pick(ctx, st, now)
-		},
-		listFn: func(ctx context.Context, st *store.Store) ([]store.Account, error) {
-			return st.List(ctx)
-		},
-		updateFn: func(ctx context.Context, st *store.Store, id int64, at, rt string, exp int64) error {
-			return st.UpdateTokens(ctx, id, at, rt, exp)
-		},
-		restoreOnQuit: true,
+		restoreOnQuit:       true,
 	}
 }
 
@@ -217,11 +205,11 @@ func (c *Coordinator) loadState() {
 // switch when the user explicitly pinned (MarkForNextPick → LastUsedAt==0) or
 // when the current account becomes ineligible. Without an eligible target,
 // return ErrNoAvailable so the caller restores the user's native creds.
-func (c *Coordinator) choose(ctx context.Context) (*store.Account, error) {
-	auto, err := c.store.GetAutoSwitch(ctx)
+func (c *Coordinator) choose(ctx context.Context) (*vault.Account, error) {
+	auto, err := c.svc.GetAutoSwitch(ctx)
 	if err != nil {
 		c.logger.Printf("[credinject] read auto-switch: %v", err)
-		auto = store.DefaultAutoSwitch
+		auto = vault.AutoSwitch{Enabled: true, Policy: "lru"}
 	}
 
 	c.mu.Lock()
@@ -233,14 +221,14 @@ func (c *Coordinator) choose(ctx context.Context) (*store.Account, error) {
 	}
 
 	if currentID == 0 {
-		return c.pickFn(ctx, c.store, c.clock())
+		return c.svc.Pick(ctx, c.clock())
 	}
-	accs, err := c.listFn(ctx, c.store)
+	accs, err := c.svc.ListAccounts(ctx)
 	if err != nil {
-		return c.pickFn(ctx, c.store, c.clock())
+		return c.svc.Pick(ctx, c.clock())
 	}
 	now := c.clock()
-	var cur *store.Account
+	var cur *vault.Account
 	var pinnedOther bool
 	for i := range accs {
 		a := accs[i]
@@ -263,7 +251,7 @@ func (c *Coordinator) choose(ctx context.Context) (*store.Account, error) {
 	if cur != nil && !pinnedOther {
 		return cur, nil
 	}
-	return c.pickFn(ctx, c.store, c.clock())
+	return c.svc.Pick(ctx, c.clock())
 }
 
 // chooseManual implements the auto-switch=off path. Order:
@@ -272,13 +260,13 @@ func (c *Coordinator) choose(ctx context.Context) (*store.Account, error) {
 //  2. Stick to the current account if it's still eligible.
 //  3. Otherwise no rotation — return ErrNoAvailable so credinject restores
 //     native creds rather than silently picking some other pool member.
-func (c *Coordinator) chooseManual(ctx context.Context, currentID int64) (*store.Account, error) {
-	accs, err := c.listFn(ctx, c.store)
+func (c *Coordinator) chooseManual(ctx context.Context, currentID int64) (*vault.Account, error) {
+	accs, err := c.svc.ListAccounts(ctx)
 	if err != nil {
 		return nil, err
 	}
 	now := c.clock()
-	var pinned, cur *store.Account
+	var pinned, cur *vault.Account
 	for i := range accs {
 		a := accs[i]
 		if !selector.IsEligible(a, now) {
@@ -350,7 +338,7 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 	// Bump LRU only on a real switch — re-injecting the same account because
 	// its token rotated isn't a fresh "use" from the pool's perspective.
 	if prev != a.ID {
-		if err := c.store.MarkUsed(ctx, a.ID); err != nil {
+		if err := c.svc.MarkUsed(ctx, a.ID); err != nil {
 			c.logger.Printf("[credinject] mark used (account %d): %v", a.ID, err)
 		}
 	}
@@ -434,7 +422,7 @@ func (c *Coordinator) reverseSync(ctx context.Context) {
 	if hash == prevHash {
 		return
 	}
-	if err := c.updateFn(ctx, c.store, id, at, rt, exp); err != nil {
+	if err := c.svc.UpdateTokens(ctx, id, at, rt, exp); err != nil {
 		c.logger.Printf("[credinject] reverse-sync update store (account %d): %v", id, err)
 		return
 	}
@@ -497,7 +485,7 @@ func (c *Coordinator) isFoxyOwned(blob []byte) bool {
 	if at == "" {
 		return false
 	}
-	accs, err := c.listFn(context.Background(), c.store)
+	accs, err := c.svc.ListAccounts(context.Background())
 	if err != nil {
 		return false
 	}

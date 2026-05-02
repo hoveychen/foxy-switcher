@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/store"
+	"github.com/hoveychen/foxy-switcher/server/vault"
 )
 
 // fakeBackend is an in-memory Backend used to drive Coordinator unit tests
@@ -85,7 +86,7 @@ func newCoord(t *testing.T) (*Coordinator, *fakeBackend, *store.Store, string) {
 	}
 	t.Cleanup(func() { st.Close() })
 	be := &fakeBackend{}
-	c := New(st, be, dir, log.New(io.Discard, "", 0))
+	c := New(vault.NewInProc(st), be, dir, log.New(io.Discard, "", 0))
 	return c, be, st, dir
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/refresh"
 	"github.com/hoveychen/foxy-switcher/server/store"
 	"github.com/hoveychen/foxy-switcher/server/tui"
+	"github.com/hoveychen/foxy-switcher/server/vault"
 )
 
 func main() {
@@ -166,7 +167,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 			ln.Close()
 			return fmt.Errorf("credinject backend: %w", err)
 		}
-		cc = credinject.New(st, backend, opts.DataDir, logger)
+		cc = credinject.New(vault.NewInProc(st), backend, opts.DataDir, logger)
 		cc.SetBus(bus)
 		cc.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
 		defer func() {
