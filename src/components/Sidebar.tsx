@@ -36,8 +36,8 @@ export function Sidebar({
       aria-label={t("sidebar.aria")}
     >
       <div className="sidebar-brand">
-        <span className="brand-mark sidebar-mark">
-          <BrandMark size={16} />
+        <span className="sidebar-mark">
+          <BrandMark size={28} />
         </span>
         <span className="brand-name">Foxy Switcher</span>
       </div>

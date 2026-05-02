@@ -69,18 +69,6 @@ input {
   gap: 10px;
 }
 
-.brand-mark {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: linear-gradient(135deg, var(--c-orange-400) 0%, var(--c-orange-600) 100%);
-  display: grid;
-  place-items: center;
-  color: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15),
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.4);
-}
-
 .brand-name {
   font-size: 15px;
   font-weight: 600;
@@ -517,6 +505,13 @@ input {
 .detail-meta dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
+}
+
+.detail-meta dd.detail-uuid {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  word-break: break-all;
+  user-select: text;
 }
 
 .detail-actions {
