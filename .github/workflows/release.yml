@@ -141,23 +141,42 @@ jobs:
         if: matrix.label == 'macos' && env.APPLE_CERTIFICATE != ''
         shell: bash
         run: |
+          set -euo pipefail
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+
+          # GitHub UI 粘贴 secret 时常带尾随 CR/LF；shell 展开后会让
+          # `security import -P` 拿到错密码并报 "MAC verification failed
+          # (wrong password?)"。这里统一剥掉换行/回车再用。
+          APPLE_CERTIFICATE_PASSWORD="$(printf '%s' "$APPLE_CERTIFICATE_PASSWORD" | tr -d '\r\n')"
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD="$(printf '%s' "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" | tr -d '\r\n')"
+          KEYCHAIN_PASSWORD="$(printf '%s' "$KEYCHAIN_PASSWORD" | tr -d '\r\n')"
+
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/app.p12"
-          security import "$RUNNER_TEMP/app.p12" \
-            -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          rm "$RUNNER_TEMP/app.p12"
+          import_p12() {
+            local label="$1" b64="$2" pwd="$3" p12="$RUNNER_TEMP/$1.p12"
+            shift 3
+            printf '%s' "$b64" | base64 --decode > "$p12"
+            local size sha
+            size="$(wc -c < "$p12" | tr -d ' ')"
+            sha="$(shasum -a 256 "$p12" | awk '{print $1}')"
+            echo "==> $label.p12 size=$size sha256=$sha pwd_len=${#pwd}"
+            if ! security import "$p12" -k "$KEYCHAIN_PATH" -P "$pwd" "$@"; then
+              echo "::error::failed to import $label — verify the password and base64 integrity of its GitHub secret"
+              rm -f "$p12"
+              return 1
+            fi
+            rm -f "$p12"
+          }
 
-          if [ -n "$APPLE_INSTALLER_CERTIFICATE" ]; then
-            echo "$APPLE_INSTALLER_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/installer.p12"
-            security import "$RUNNER_TEMP/installer.p12" \
-              -k "$KEYCHAIN_PATH" -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+          import_p12 app "$APPLE_CERTIFICATE" "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+
+          if [ -n "${APPLE_INSTALLER_CERTIFICATE:-}" ]; then
+            import_p12 installer "$APPLE_INSTALLER_CERTIFICATE" "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
               -T /usr/bin/productsign -T /usr/bin/security
-            rm "$RUNNER_TEMP/installer.p12"
           fi
 
           security set-key-partition-list \
