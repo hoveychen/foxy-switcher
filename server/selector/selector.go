@@ -1,8 +1,9 @@
 // Package selector picks which account in the pool credinject should inject
-// next. The strategy is intentionally simple — avoid any account that's still
-// inside its 429 cooldown window, then prefer the least-recently-used
-// candidate. Swap in a smarter scorer (rate-limit-tier weighting, usage-API
-// integration) by replacing Pick.
+// next. The strategy is intentionally simple — skip any account that's
+// paused, has an expired token, or has reached one of its per-window
+// utilization thresholds, then prefer the least-recently-used candidate.
+// Swap in a smarter scorer (rate-limit-tier weighting, fancier per-window
+// scoring) by replacing Pick.
 package selector
 
 import (
@@ -15,9 +16,10 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
 
-// ErrNoAvailable is returned when every account is either paused or still
-// in cooldown. The credinject Coordinator treats this as the trigger to
-// restore the user's native credentials.
+// ErrNoAvailable is returned when every account is paused, has an expired
+// token, or has reached its utilization threshold on at least one window.
+// The credinject Coordinator treats this as the trigger to restore the
+// user's native credentials.
 var ErrNoAvailable = errors.New("no available account")
 
 // Pick returns the best candidate account at time `now`. It does NOT mutate
@@ -56,9 +58,6 @@ func Pick(ctx context.Context, st *store.Store, now time.Time) (*store.Account, 
 // it's still eligible).
 func IsEligible(a store.Account, now time.Time) bool {
 	if a.Status != "active" {
-		return false
-	}
-	if a.CooldownUntil > now.UnixMilli() {
 		return false
 	}
 	if a.TokenExpired(now) {

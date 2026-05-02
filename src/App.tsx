@@ -52,7 +52,7 @@ export default function App() {
     theme: "system",
     sidebar_mode: "auto",
     usage_poll_interval_sec: 60,
-    cooldown_threshold_percent: 95,
+    default_threshold_percent: 95,
     restore_native_on_quit: true,
   });
 

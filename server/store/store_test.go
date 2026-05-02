@@ -319,9 +319,9 @@ func TestSettingsDefaultsAndRoundTrip(t *testing.T) {
 	in := Settings{
 		Theme:                    "dark",
 		SidebarMode:              "expanded",
-		UsagePollIntervalSec:     5, // below min, must clamp to 30
-		CooldownThresholdPercent: 250, // above max, must clamp to 100
-		RestoreNativeOnQuit:      false,
+		UsagePollIntervalSec:    5,   // below min, must clamp to 30
+		DefaultThresholdPercent: 250, // above max, must clamp to 100
+		RestoreNativeOnQuit:     false,
 	}
 	out, err := st.SetSettings(ctx, in)
 	if err != nil {
@@ -330,8 +330,8 @@ func TestSettingsDefaultsAndRoundTrip(t *testing.T) {
 	if out.UsagePollIntervalSec != 30 {
 		t.Fatalf("expected interval clamped to 30, got %d", out.UsagePollIntervalSec)
 	}
-	if out.CooldownThresholdPercent != 100 {
-		t.Fatalf("expected threshold clamped to 100, got %v", out.CooldownThresholdPercent)
+	if out.DefaultThresholdPercent != 100 {
+		t.Fatalf("expected threshold clamped to 100, got %v", out.DefaultThresholdPercent)
 	}
 	if out.RestoreNativeOnQuit {
 		t.Fatalf("RestoreNativeOnQuit should be false")
@@ -344,6 +344,35 @@ func TestSettingsDefaultsAndRoundTrip(t *testing.T) {
 	}
 	if got != out {
 		t.Fatalf("round-trip mismatch: got %+v want %+v", got, out)
+	}
+}
+
+// TestSettingsLegacyCooldownThresholdJSON proves that a kv blob persisted
+// before the cooldown→threshold rename still surfaces its threshold via the
+// new field name. The on-disk JSON shipped with key
+// `cooldown_threshold_percent`; old installs that already wrote a non-default
+// value must not silently revert to 95% just because the Go field was
+// renamed. Reason: forced reset would change rate-limit behaviour for users
+// who had deliberately tuned the threshold.
+func TestSettingsLegacyCooldownThresholdJSON(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	legacy := `{"theme":"dark","sidebar_mode":"auto","usage_poll_interval_sec":60,"cooldown_threshold_percent":67,"restore_native_on_quit":true}`
+	_, err := st.db.ExecContext(ctx,
+		`INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		settingsKey, legacy, time.Now().UnixMilli())
+	if err != nil {
+		t.Fatalf("seed legacy kv: %v", err)
+	}
+
+	got, err := st.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if got.DefaultThresholdPercent != 67 {
+		t.Fatalf("legacy cooldown_threshold_percent should land in DefaultThresholdPercent: got %v", got.DefaultThresholdPercent)
 	}
 }
 

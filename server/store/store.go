@@ -29,9 +29,7 @@ type Account struct {
 	SubscriptionType string // "max" | "pro" | "team_premium" | "team" | "free"
 	OrganizationUUID string
 	Status           string // "active" | "paused"
-	CooldownUntil    int64  // unix millis; 0 = no cooldown
 	LastUsedAt       int64  // unix millis
-	Last429At        int64  // unix millis
 	CreatedAt        int64
 	UpdatedAt        int64
 
@@ -91,9 +89,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   subscription_type          TEXT    NOT NULL DEFAULT '',
   organization_uuid          TEXT    NOT NULL DEFAULT '',
   status                     TEXT    NOT NULL DEFAULT 'active',
-  cooldown_until             INTEGER NOT NULL DEFAULT 0,
   last_used_at               INTEGER NOT NULL DEFAULT 0,
-  last_429_at                INTEGER NOT NULL DEFAULT 0,
   created_at                 INTEGER NOT NULL,
   updated_at                 INTEGER NOT NULL,
   email                      TEXT    NOT NULL DEFAULT '',
@@ -114,8 +110,8 @@ CREATE TABLE IF NOT EXISTS accounts (
 `
 
 const indexSchema = `
-CREATE INDEX IF NOT EXISTS accounts_status_cooldown
-  ON accounts (status, cooldown_until, last_used_at);
+CREATE INDEX IF NOT EXISTS accounts_status_lru
+  ON accounts (status, last_used_at);
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_uniq
   ON accounts (email) WHERE email != '';
 `
@@ -197,12 +193,23 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate legacy org-unique: %w", err)
 	}
+	if err := migrateDropCooldownColumns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate drop cooldown columns: %w", err)
+	}
 	// Rename legacy 'disabled' status to 'paused'. Idempotent: matches no rows
 	// once migration has run. The off-state was renamed when pause/resume
 	// replaced enable/disable in the desktop UI.
 	if _, err := db.Exec(`UPDATE accounts SET status='paused' WHERE status='disabled'`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate disabled->paused: %w", err)
+	}
+	// Drop the legacy cooldown index if it survived (e.g. from an older
+	// install). The replacement accounts_status_lru is created via indexSchema
+	// below.
+	if _, err := db.Exec(`DROP INDEX IF EXISTS accounts_status_cooldown`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("drop legacy cooldown index: %w", err)
 	}
 	if _, err := db.Exec(indexSchema); err != nil {
 		db.Close()
@@ -290,6 +297,75 @@ COMMIT;
 	return err
 }
 
+// migrateDropCooldownColumns drops the legacy `cooldown_until` and `last_429_at`
+// columns. They backed a manual / planned-429-driven cooldown feature that was
+// removed in favour of the per-window utilization thresholds (see
+// selector.exceedsThreshold) and the existing pause/resume controls.
+//
+// SQLite < 3.35 doesn't support DROP COLUMN, so we go through the same
+// table-rebuild dance as migrateLegacyOrgUnique. Idempotent: returns
+// immediately when the columns are already gone (fresh installs, or already-
+// migrated databases).
+func migrateDropCooldownColumns(db *sql.DB) error {
+	var sqlText string
+	row := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'`)
+	if err := row.Scan(&sqlText); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if !strings.Contains(sqlText, "cooldown_until") && !strings.Contains(sqlText, "last_429_at") {
+		return nil
+	}
+	const rebuild = `
+BEGIN TRANSACTION;
+CREATE TABLE accounts_new (
+  id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name                       TEXT    NOT NULL,
+  access_token               TEXT    NOT NULL,
+  refresh_token              TEXT    NOT NULL,
+  expires_at                 INTEGER NOT NULL,
+  scopes                     TEXT    NOT NULL DEFAULT '',
+  subscription_type          TEXT    NOT NULL DEFAULT '',
+  organization_uuid          TEXT    NOT NULL DEFAULT '',
+  status                     TEXT    NOT NULL DEFAULT 'active',
+  last_used_at               INTEGER NOT NULL DEFAULT 0,
+  created_at                 INTEGER NOT NULL,
+  updated_at                 INTEGER NOT NULL,
+  email                      TEXT    NOT NULL DEFAULT '',
+  full_name                  TEXT    NOT NULL DEFAULT '',
+  organization_name          TEXT    NOT NULL DEFAULT '',
+  plan                       TEXT    NOT NULL DEFAULT '',
+  five_hour_util             REAL    NOT NULL DEFAULT 0,
+  five_hour_resets_at        TEXT    NOT NULL DEFAULT '',
+  seven_day_util             REAL    NOT NULL DEFAULT 0,
+  seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
+  seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
+  seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
+  usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
+  five_hour_threshold        REAL    NOT NULL DEFAULT 95,
+  seven_day_threshold        REAL    NOT NULL DEFAULT 95,
+  seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95
+);
+INSERT INTO accounts_new SELECT
+  id, name, access_token, refresh_token, expires_at, scopes,
+  subscription_type, organization_uuid, status,
+  last_used_at, created_at, updated_at,
+  email, full_name, organization_name, plan,
+  five_hour_util, five_hour_resets_at,
+  seven_day_util, seven_day_resets_at,
+  seven_day_sonnet_util, seven_day_sonnet_resets_at,
+  usage_fetched_at,
+  five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold FROM accounts;
+DROP TABLE accounts;
+ALTER TABLE accounts_new RENAME TO accounts;
+COMMIT;
+`
+	_, err := db.Exec(rebuild)
+	return err
+}
+
 func isDuplicateColumn(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
@@ -322,10 +398,10 @@ func (s *Store) Upsert(ctx context.Context, a *Account) error {
 	const q = `
 INSERT INTO accounts
   (name, access_token, refresh_token, expires_at, scopes, subscription_type,
-   organization_uuid, status, cooldown_until, last_used_at,
-   last_429_at, created_at, updated_at,
+   organization_uuid, status, last_used_at,
+   created_at, updated_at,
    email, full_name, organization_name, plan)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(email) WHERE email != '' DO UPDATE SET
   name = excluded.name,
   access_token = excluded.access_token,
@@ -344,8 +420,8 @@ RETURNING id`
 	row := s.db.QueryRowContext(ctx, q,
 		a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
 		a.Scopes, a.SubscriptionType, a.OrganizationUUID,
-		ifEmpty(a.Status, "active"), a.CooldownUntil, a.LastUsedAt,
-		a.Last429At, a.CreatedAt, a.UpdatedAt,
+		ifEmpty(a.Status, "active"), a.LastUsedAt,
+		a.CreatedAt, a.UpdatedAt,
 		a.Email, a.FullName, a.OrganizationName, a.Plan,
 	)
 	return row.Scan(&a.ID)
@@ -474,20 +550,6 @@ func (s *Store) MarkForNextPick(ctx context.Context, id int64) error {
 	return err
 }
 
-// SetCooldown stamps cooldown_until and last_429_at. Pass time.Time{} as
-// cooldownUntil to clear.
-func (s *Store) SetCooldown(ctx context.Context, id int64, cooldownUntil time.Time) error {
-	now := time.Now().UnixMilli()
-	until := int64(0)
-	if !cooldownUntil.IsZero() {
-		until = cooldownUntil.UnixMilli()
-	}
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE accounts SET cooldown_until = ?, last_429_at = ?, updated_at = ? WHERE id = ?`,
-		until, now, now, id)
-	return err
-}
-
 // SetThresholds rewrites the per-window utilization thresholds for one
 // account. Inputs are clamped to [0, 100]. The selector skips accounts whose
 // util on any window has reached the matching threshold; the schema default
@@ -538,7 +600,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 const selectColumns = `
 id, name, access_token, refresh_token, expires_at, scopes,
 subscription_type, organization_uuid, status,
-cooldown_until, last_used_at, last_429_at, created_at, updated_at,
+last_used_at, created_at, updated_at,
 email, full_name, organization_name, plan,
 five_hour_util, five_hour_resets_at,
 seven_day_util, seven_day_resets_at,
@@ -582,8 +644,8 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 		if err := rows.Scan(
 			&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.ExpiresAt,
 			&a.Scopes, &a.SubscriptionType,
-			&a.OrganizationUUID, &a.Status, &a.CooldownUntil, &a.LastUsedAt,
-			&a.Last429At, &a.CreatedAt, &a.UpdatedAt,
+			&a.OrganizationUUID, &a.Status, &a.LastUsedAt,
+			&a.CreatedAt, &a.UpdatedAt,
 			&a.Email, &a.FullName, &a.OrganizationName, &a.Plan,
 			&a.FiveHourUtil, &a.FiveHourResetsAt,
 			&a.SevenDayUtil, &a.SevenDayResetsAt,
@@ -664,9 +726,11 @@ type Settings struct {
 	// server clamps. Applies on next daemon start (the existing ticker is
 	// fixed-period; rebuilding it on every PUT would race with in-flight ticks).
 	UsagePollIntervalSec int `json:"usage_poll_interval_sec"`
-	// CooldownThresholdPercent is the pool-wide default for new accounts'
-	// per-window thresholds. Existing accounts keep their own values.
-	CooldownThresholdPercent float64 `json:"cooldown_threshold_percent"`
+	// DefaultThresholdPercent is the pool-wide default for new accounts'
+	// per-window thresholds. Existing accounts keep their own values. The
+	// JSON form was historically `cooldown_threshold_percent`; GetSettings
+	// transparently lifts that legacy key so old persisted blobs survive.
+	DefaultThresholdPercent float64 `json:"default_threshold_percent"`
 	// RestoreNativeOnQuit gates the credinject Restore call at shutdown. Off
 	// is "leave whatever was last injected in place" — useful for users who
 	// don't want their native login auto-replaced on quit.
@@ -676,13 +740,13 @@ type Settings struct {
 const settingsKey = "settings"
 
 // DefaultSettings mirrors PRD §5.4 defaults: System theme, 60s poll interval,
-// 95% cooldown threshold, restore native on quit (matches prior behaviour).
+// 95% default per-window threshold, restore native on quit.
 var DefaultSettings = Settings{
-	Theme:                    "system",
-	SidebarMode:              "auto",
-	UsagePollIntervalSec:     60,
-	CooldownThresholdPercent: 95,
-	RestoreNativeOnQuit:      true,
+	Theme:                   "system",
+	SidebarMode:             "auto",
+	UsagePollIntervalSec:    60,
+	DefaultThresholdPercent: 95,
+	RestoreNativeOnQuit:     true,
 }
 
 // GetSettings reads the settings blob. Missing row → defaults. Corrupt JSON
@@ -700,6 +764,16 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	// Unmarshal into a copy of defaults so missing fields stay populated.
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
 		return DefaultSettings, nil
+	}
+	// Legacy fallback: blobs written before the cooldown→threshold rename
+	// stored the value under `cooldown_threshold_percent`. Lift it only when
+	// the new key is absent so a co-resident new key always wins.
+	var probe struct {
+		Default  *float64 `json:"default_threshold_percent"`
+		Cooldown *float64 `json:"cooldown_threshold_percent"`
+	}
+	if json.Unmarshal([]byte(raw), &probe) == nil && probe.Default == nil && probe.Cooldown != nil {
+		v.DefaultThresholdPercent = *probe.Cooldown
 	}
 	return mergeSettingsDefaults(v), nil
 }
@@ -742,10 +816,10 @@ func mergeSettingsDefaults(v Settings) Settings {
 	if v.UsagePollIntervalSec > 300 {
 		v.UsagePollIntervalSec = 300
 	}
-	if v.CooldownThresholdPercent <= 0 {
-		v.CooldownThresholdPercent = DefaultSettings.CooldownThresholdPercent
+	if v.DefaultThresholdPercent <= 0 {
+		v.DefaultThresholdPercent = DefaultSettings.DefaultThresholdPercent
 	}
-	v.CooldownThresholdPercent = clampPercent(v.CooldownThresholdPercent)
+	v.DefaultThresholdPercent = clampPercent(v.DefaultThresholdPercent)
 	return v
 }
 

@@ -117,42 +117,6 @@ func TestClient_StatusToggle(t *testing.T) {
 	}
 }
 
-func TestClient_CooldownSetAndClear(t *testing.T) {
-	c, st, cleanup := startServer(t)
-	defer cleanup()
-	id := seedAccount(t, st, "beta")
-
-	ctx := context.Background()
-	if err := c.SetCooldown(ctx, id, 30*time.Minute); err != nil {
-		t.Fatalf("set cooldown: %v", err)
-	}
-	accs, err := c.ListAccounts(ctx)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(accs) != 1 {
-		t.Fatalf("want 1 account, got %d", len(accs))
-	}
-	cd := accs[0].CooldownUntil
-	now := time.Now().UnixMilli()
-	// Allow a generous window — handler stamps now+30m, listing happens
-	// milliseconds later, so the lower bound is "near 30m" not "exactly 30m".
-	if cd < now+25*time.Minute.Milliseconds() || cd > now+35*time.Minute.Milliseconds() {
-		t.Fatalf("cooldown_until=%d not within ~30m of now=%d", cd, now)
-	}
-
-	if err := c.SetCooldown(ctx, id, 0); err != nil {
-		t.Fatalf("clear cooldown: %v", err)
-	}
-	accs, err = c.ListAccounts(ctx)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if accs[0].CooldownUntil != 0 {
-		t.Fatalf("cooldown_until should be 0 after clear, got %d", accs[0].CooldownUntil)
-	}
-}
-
 func TestClient_Delete(t *testing.T) {
 	c, st, cleanup := startServer(t)
 	defer cleanup()

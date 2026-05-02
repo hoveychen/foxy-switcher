@@ -5,7 +5,7 @@ import (
 )
 
 // handleMouse routes mouse events. Only modeList consumes them; modal screens
-// (add paste / cooldown / confirm) ignore mouse for now.
+// (add paste / confirm / thresholds / search) ignore mouse for now.
 func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.mode != modeList {
 		return m, nil

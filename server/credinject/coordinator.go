@@ -204,9 +204,9 @@ func (c *Coordinator) loadState() {
 
 // choose decides which account reconcile should target this tick. The policy
 // is sticky-with-explicit-pin: keep the currently-injected account if it's
-// still eligible (active, not in cooldown) AND no other account has had its
-// last_used_at zeroed (the MarkForNextPick sentinel used by /select and
-// fresh-add). Otherwise fall back to the LRU selector.
+// still eligible (active, token live, under threshold) AND no other account
+// has had its last_used_at zeroed (the MarkForNextPick sentinel used by
+// /select and fresh-add). Otherwise fall back to the LRU selector.
 //
 // Why: without stickiness, every 5s reconcile re-runs LRU; MarkUsed bumps the
 // just-injected account to "now", which makes the *other* eligible account
@@ -245,9 +245,9 @@ func (c *Coordinator) choose(ctx context.Context) (*store.Account, error) {
 	for i := range accs {
 		a := accs[i]
 		// Reuse the selector's eligibility predicate so the sticky path
-		// honours every disqualifier (paused, cooldown, expired token,
-		// usage threshold) — otherwise we'd happily re-inject a dead
-		// account just because it was the previous "in use" one.
+		// honours every disqualifier (paused, expired token, usage
+		// threshold) — otherwise we'd happily re-inject a dead account
+		// just because it was the previous "in use" one.
 		if !selector.IsEligible(a, now) {
 			continue
 		}

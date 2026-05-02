@@ -17,7 +17,7 @@ type settingsRowID int
 const (
 	rowThemePicker settingsRowID = iota
 	rowPollInterval
-	rowCooldownThreshold
+	rowDefaultThreshold
 	rowRestoreNative
 	rowAutoSwitchEnabled
 	rowAutoSwitchPolicy
@@ -28,7 +28,7 @@ func settingsRowOrder() []settingsRowID {
 	return []settingsRowID{
 		rowThemePicker,
 		rowPollInterval,
-		rowCooldownThreshold,
+		rowDefaultThreshold,
 		rowRestoreNative,
 		rowAutoSwitchEnabled,
 		rowAutoSwitchPolicy,
@@ -274,12 +274,12 @@ func (p *settingsPage) handleAction(c *Client, dir int) (tea.Cmd, bool) {
 		s := p.settings
 		s.UsagePollIntervalSec = clampInt(s.UsagePollIntervalSec+dir*30, 30, 300)
 		return settingsSaveCmd(c, s), true
-	case rowCooldownThreshold:
+	case rowDefaultThreshold:
 		if dir == 0 {
 			return nil, true
 		}
 		s := p.settings
-		s.CooldownThresholdPercent = clampFloat(s.CooldownThresholdPercent+float64(dir*5), 50, 100)
+		s.DefaultThresholdPercent = clampFloat(s.DefaultThresholdPercent+float64(dir*5), 50, 100)
 		return settingsSaveCmd(c, s), true
 	case rowRestoreNative:
 		s := p.settings
@@ -379,7 +379,7 @@ func (p *settingsPage) view() string {
 		),
 		p.section("Behavior",
 			p.renderRow(rowPollInterval, "Poll interval", fmt.Sprintf("%ds", p.settings.UsagePollIntervalSec)),
-			p.renderRow(rowCooldownThreshold, "Cooldown threshold", fmt.Sprintf("%.0f%%", p.settings.CooldownThresholdPercent)),
+			p.renderRow(rowDefaultThreshold, "Default threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultThresholdPercent)),
 			p.renderRow(rowRestoreNative, "Restore native on quit", boolValue(p.settings.RestoreNativeOnQuit)),
 		),
 		p.section("Auto-switch",
@@ -435,7 +435,7 @@ func formatValue(id settingsRowID, value string) string {
 	switch id {
 	case rowThemePicker, rowAutoSwitchPolicy:
 		return dimStyle.Render("◀ ") + value + dimStyle.Render(" ▶")
-	case rowPollInterval, rowCooldownThreshold:
+	case rowPollInterval, rowDefaultThreshold:
 		return dimStyle.Render("− ") + value + dimStyle.Render(" +")
 	case rowRestoreNative, rowAutoSwitchEnabled:
 		return value

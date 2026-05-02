@@ -200,21 +200,23 @@ func (p *dashboardPage) renderKPIRow() string {
 		cardW,
 	)
 
-	cdValue := "—"
-	cdSub := "none scheduled"
-	cdTone := pillNeutral
-	if k.NextCooldownAt > 0 {
-		left := time.Until(time.UnixMilli(k.NextCooldownAt)).Round(time.Second)
+	rstValue := "—"
+	rstSub := "none cooling"
+	rstTone := pillNeutral
+	if k.NextResetAt > 0 {
+		left := time.Until(time.UnixMilli(k.NextResetAt)).Round(time.Second)
 		if left < 0 {
 			left = 0
 		}
-		cdValue = humanCountdown(left)
-		cdSub = p.cooldownAccountName(k.NextCooldownAt)
-		cdTone = pillWarn
+		rstValue = humanCountdown(left)
+		rstSub = p.resetAccountName(k.NextResetAt)
+		rstTone = pillWarn
+	} else if k.CoolingCount > 0 {
+		rstSub = fmt.Sprintf("%d cooling", k.CoolingCount)
 	}
-	cd := kpiCard("Next cooldown", cdValue, cdSub, cdTone, cardW)
+	rst := kpiCard("Next reset", rstValue, rstSub, rstTone, cardW)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, pool, " ", peak, " ", cd)
+	return lipgloss.JoinHorizontal(lipgloss.Top, pool, " ", peak, " ", rst)
 }
 
 func (p *dashboardPage) renderTrend() string {
@@ -381,9 +383,19 @@ func (p *dashboardPage) peakAccountName() string {
 	return top.Name
 }
 
-func (p *dashboardPage) cooldownAccountName(at int64) string {
+// resetAccountName finds the account whose soonest throttled-window reset
+// matches the given timestamp (within one second, since the daemon and the
+// TUI both round to seconds). Empty when no match — the KPI then just shows
+// the countdown without a name.
+func (p *dashboardPage) resetAccountName(at int64) string {
+	target := time.UnixMilli(at)
+	now := time.Now()
 	for _, a := range p.accounts {
-		if a.CooldownUntil == at {
+		t, ok := accountResetAt(a, now)
+		if !ok {
+			continue
+		}
+		if delta := t.Sub(target); delta > -time.Second && delta < time.Second {
 			return a.Name
 		}
 	}

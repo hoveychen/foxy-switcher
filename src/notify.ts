@@ -1,7 +1,6 @@
 // Desktop notifications for the few activity events the user genuinely
 // cares about while the app is in the background:
 //
-//   - cooldown.entered  — a pool member just got rate-limited
 //   - cred.failed       — credinject couldn't write the keychain
 //   - error.*           — anything the daemon flagged as "this should not
 //                         have happened silently"
@@ -23,7 +22,6 @@ import type { ActivityEvent } from "./api";
 let permissionState: "unknown" | "granted" | "denied" | "pending" = "unknown";
 
 function shouldNotify(ev: ActivityEvent): boolean {
-  if (ev.type === "cooldown.entered") return true;
   if (ev.type === "cred.failed") return true;
   if (ev.type.startsWith("error.")) return true;
   return false;
@@ -52,7 +50,6 @@ async function ensurePermission(): Promise<boolean> {
 }
 
 function titleFor(ev: ActivityEvent): string {
-  if (ev.type === "cooldown.entered") return "Account in cooldown";
   if (ev.type === "cred.failed") return "Credential injection failed";
   if (ev.type.startsWith("error.")) return "Foxy Switcher error";
   return "Foxy Switcher";

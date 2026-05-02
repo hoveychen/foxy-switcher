@@ -311,20 +311,20 @@ export function SettingsPage({
             <div className="settings-row">
               <div className="settings-row-text">
                 <div className="settings-row-label">
-                  {t("settings.cooldown.label")}
+                  {t("settings.threshold_default.label")}
                 </div>
                 <div className="settings-row-sub text-meta">
-                  {t("settings.cooldown.sub")}
+                  {t("settings.threshold_default.sub")}
                 </div>
               </div>
               <NumberStepper
-                value={settings.cooldown_threshold_percent}
+                value={settings.default_threshold_percent}
                 min={50}
                 max={100}
                 step={5}
                 suffix="%"
                 onChange={(v) =>
-                  onSettingsChange({ cooldown_threshold_percent: v })
+                  onSettingsChange({ default_threshold_percent: v })
                 }
               />
             </div>

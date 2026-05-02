@@ -67,9 +67,7 @@ export interface Account {
   organization_uuid: string;
   subscription_type: string;
   expires_at: number;
-  cooldown_until: number;
   last_used_at: number;
-  last_429_at: number;
   scopes: string;
   created_at: number;
   updated_at: number;
@@ -93,6 +91,49 @@ export interface ThresholdInput {
   seven_day_sonnet: number;
 }
 
+// accountIsCooling mirrors selector.exceedsThreshold in the Go daemon: true
+// when any per-window utilization has reached the matching threshold. Use it
+// everywhere the UI needs to flag accounts the selector would skip.
+export function accountIsCooling(a: Account): boolean {
+  const w = [
+    [a.five_hour, a.five_hour_threshold] as const,
+    [a.seven_day, a.seven_day_threshold] as const,
+    [a.seven_day_sonnet, a.seven_day_sonnet_threshold] as const,
+  ];
+  for (const [u, t] of w) {
+    if (u && u.utilization >= t) return true;
+  }
+  return false;
+}
+
+// accountResetAt returns the soonest future reset (unix ms) across the
+// account's throttled windows, or 0 when no window is throttled / no
+// throttled window has a future parseable resets_at. Pair with
+// accountIsCooling to render "cooling — resets in N min".
+export function accountResetAt(a: Account, now: Date = new Date()): number {
+  const candidates: UsageWindow[] = [];
+  if (a.five_hour && a.five_hour.utilization >= a.five_hour_threshold) {
+    candidates.push(a.five_hour);
+  }
+  if (a.seven_day && a.seven_day.utilization >= a.seven_day_threshold) {
+    candidates.push(a.seven_day);
+  }
+  if (
+    a.seven_day_sonnet &&
+    a.seven_day_sonnet.utilization >= a.seven_day_sonnet_threshold
+  ) {
+    candidates.push(a.seven_day_sonnet);
+  }
+  let best = 0;
+  for (const c of candidates) {
+    if (!c.resets_at) continue;
+    const t = Date.parse(c.resets_at);
+    if (Number.isNaN(t) || t <= now.getTime()) continue;
+    if (best === 0 || t < best) best = t;
+  }
+  return best;
+}
+
 export type AutoSwitchPolicy = "lru" | "lowest" | "rr";
 
 export interface AutoSwitchSettings {
@@ -108,7 +149,7 @@ export interface Settings {
   sidebar_mode: SidebarMode;
   // 30–300; server clamps. Applies on next daemon restart.
   usage_poll_interval_sec: number;
-  cooldown_threshold_percent: number; // 0–100; server clamps
+  default_threshold_percent: number; // 0–100; server clamps
   restore_native_on_quit: boolean;
 }
 
@@ -138,7 +179,13 @@ export interface DashboardKPIs {
   pool_size: number;
   active_count: number;
   in_use_account_id: number;
-  next_cooldown_at: number;
+  // Number of accounts whose latest usage poll showed at least one window
+  // at or above its threshold (i.e. the daemon's selector would skip them).
+  cooling_count: number;
+  // Soonest reset (unix ms) across throttled windows of cooling accounts.
+  // 0 when no account is cooling or no throttled window has a parseable
+  // resets_at.
+  next_reset_at: number;
   peak_util_percent: number;
 }
 

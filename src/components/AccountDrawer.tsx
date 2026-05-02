@@ -1,5 +1,6 @@
 import React, { useCallback, useRef, useState } from "react";
 import type { Account, ThresholdInput, UsageWindow } from "../api";
+import { accountIsCooling, accountResetAt } from "../api";
 import { Drawer } from "./Drawer";
 import { FoxAvatar } from "./FoxAvatar";
 import { t, tf } from "../i18n";
@@ -27,11 +28,15 @@ function fmtResetsAt(rfc3339: string, nowMs: number): string {
 function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
   if (a.status !== "active") return { text: t("drawer.status.paused"), tone: "muted" };
   if (a.token_expired) return { text: t("drawer.status.token_expired"), tone: "danger" };
-  if (a.cooldown_until > nowMs) {
-    return {
-      text: tf("drawer.status.cooldown", { time: fmtRemaining(a.cooldown_until - nowMs) }),
-      tone: "warn",
-    };
+  if (accountIsCooling(a)) {
+    const reset = accountResetAt(a, new Date(nowMs));
+    if (reset > 0) {
+      return {
+        text: tf("drawer.status.cooling", { time: fmtRemaining(reset - nowMs) }),
+        tone: "warn",
+      };
+    }
+    return { text: t("drawer.status.cooling_no_reset"), tone: "warn" };
   }
   if (a.expires_at - nowMs < 5 * 60 * 1000) {
     return { text: t("drawer.status.refresh_due"), tone: "warn" };
@@ -39,9 +44,9 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
   return { text: t("drawer.status.active"), tone: "ok" };
 }
 
-function isSelectable(a: Account, nowMs: number): boolean {
+function isSelectable(a: Account): boolean {
   return (
-    a.status === "active" && !a.token_expired && a.cooldown_until <= nowMs
+    a.status === "active" && !a.token_expired && !accountIsCooling(a)
   );
 }
 
@@ -216,7 +221,7 @@ export function AccountDrawer({
             type="button"
             className="btn btn-primary"
             onClick={onSelect}
-            disabled={isInUse || !isSelectable(account, nowMs) || busy}
+            disabled={isInUse || !isSelectable(account) || busy}
           >
             {isInUse ? t("drawer.actions.in_use") : t("drawer.actions.use_now")}
           </button>

@@ -62,7 +62,6 @@ func helpAccounts() helpSection {
 			{"a", "add account"},
 			{"u", "pin in-use"},
 			{"p", "pause / resume"},
-			{"c", "set cooldown"},
 			{"r", "refresh now"},
 			{"d", "delete"},
 			{"/", "search by name"},
@@ -144,8 +143,8 @@ func helpFooterHint() string {
 
 // centerOverlay places overlay over a background-sized box of (width, height)
 // cells. Both inputs may be empty; the result is always exactly width×height
-// when background already is. Used by the App view to lay help/cooldown/etc.
-// modals on top of the chrome.
+// when background already is. Used by the App view to lay help / confirm /
+// thresholds modals on top of the chrome.
 func centerOverlay(background, overlay string, width, height int) string {
 	if overlay == "" {
 		return background

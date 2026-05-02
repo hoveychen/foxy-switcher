@@ -22,7 +22,6 @@ type mode int
 const (
 	modeList mode = iota
 	modeAddPaste
-	modeCooldown
 	modeConfirmDelete
 	modeError
 	modeSearch
@@ -85,9 +84,6 @@ type model struct {
 	thresholdValues    [3]float64
 	thresholdAccountID int64
 
-	// Cooldown picker state. Indexes into cooldownPresets.
-	cooldownChoice int
-
 	// Last user-facing message and any transient error. Both auto-dismiss
 	// after statusToastTTL via statusExpiredMsg.
 	statusMsg       string
@@ -119,7 +115,7 @@ const (
 	accFilterAll accountsFilterKey = iota
 	accFilterActive
 	accFilterPaused
-	accFilterCooldown
+	accFilterCooling
 )
 
 func accountsChips() []struct {
@@ -133,7 +129,7 @@ func accountsChips() []struct {
 		{accFilterAll, "All"},
 		{accFilterActive, "Active"},
 		{accFilterPaused, "Paused"},
-		{accFilterCooldown, "Cooldown"},
+		{accFilterCooling, "Cooling"},
 	}
 }
 
@@ -156,43 +152,31 @@ func applyAccountsView(all []Account, key accountsFilterKey, query string) []Acc
 	return out
 }
 
-// applyAccountsFilter returns the subset matching the given chip. Cooldown
-// uses a real-time check so the chip's count reflects the current second,
-// matching the dashboard's "next cooldown" KPI semantics.
+// applyAccountsFilter returns the subset matching the given chip. "Cooling"
+// reflects the live threshold-eligibility check used by the selector, so the
+// chip's count matches the dashboard's "Next reset" KPI.
 func applyAccountsFilter(all []Account, key accountsFilterKey) []Account {
 	if key == accFilterAll {
 		return all
 	}
-	now := time.Now().UnixMilli()
 	out := make([]Account, 0, len(all))
 	for _, a := range all {
 		switch key {
 		case accFilterActive:
-			if a.Status != "paused" && a.CooldownUntil <= now {
+			if a.Status != "paused" && !accountIsCooling(a) {
 				out = append(out, a)
 			}
 		case accFilterPaused:
 			if a.Status == "paused" {
 				out = append(out, a)
 			}
-		case accFilterCooldown:
-			if a.CooldownUntil > now {
+		case accFilterCooling:
+			if a.Status != "paused" && accountIsCooling(a) {
 				out = append(out, a)
 			}
 		}
 	}
 	return out
-}
-
-var cooldownPresets = []struct {
-	label string
-	d     time.Duration
-}{
-	{"Clear cooldown", 0},
-	{"5 minutes", 5 * time.Minute},
-	{"30 minutes", 30 * time.Minute},
-	{"1 hour", time.Hour},
-	{"6 hours", 6 * time.Hour},
 }
 
 func newModel(c *Client) *model {
@@ -236,7 +220,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		// Periodic refresh — keeps usage / cooldown counters live without the
+		// Periodic refresh — keeps usage / reset counters live without the
 		// user pressing R. 5s mirrors the daemon's hook reconcile cadence.
 		return m, tea.Batch(m.refreshCmd(), tickCmd())
 
@@ -324,8 +308,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleListKey(msg)
 	case modeAddPaste:
 		return m.handleAddPasteKey(msg)
-	case modeCooldown:
-		return m.handleCooldownKey(msg)
 	case modeConfirmDelete:
 		return m.handleConfirmDeleteKey(msg)
 	case modeSearch:
@@ -381,11 +363,6 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.startOp("Pausing "+a.Name+"…", "Paused "+a.Name, func(ctx context.Context) error {
 				return m.client.Pause(ctx, a.ID)
 			})
-		}
-	case "c":
-		if _, ok := m.selected(); ok {
-			m.cooldownChoice = 0
-			m.mode = modeCooldown
 		}
 	case "x":
 		if _, ok := m.selected(); ok {
@@ -486,37 +463,6 @@ func (m *model) handleAddPasteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.addPaste, cmd = m.addPaste.Update(msg)
 	return m, cmd
-}
-
-func (m *model) handleCooldownKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc", "q":
-		m.mode = modeList
-		return m, nil
-	case "up", "k":
-		if m.cooldownChoice > 0 {
-			m.cooldownChoice--
-		}
-	case "down", "j":
-		if m.cooldownChoice < len(cooldownPresets)-1 {
-			m.cooldownChoice++
-		}
-	case "enter":
-		choice := cooldownPresets[m.cooldownChoice]
-		a, ok := m.selected()
-		m.mode = modeList
-		if !ok {
-			return m, nil
-		}
-		label := "Cleared cooldown for " + a.Name
-		if choice.d > 0 {
-			label = fmt.Sprintf("Cooldown %s set on %s", choice.label, a.Name)
-		}
-		return m, m.startOp("Updating cooldown…", label, func(ctx context.Context) error {
-			return m.client.SetCooldown(ctx, a.ID, choice.d)
-		})
-	}
-	return m, nil
 }
 
 // handleSearchKey runs while the substring filter is being typed. Every
@@ -725,8 +671,6 @@ func (m *model) View() string {
 	switch m.mode {
 	case modeAddPaste:
 		return m.viewAddPaste()
-	case modeCooldown:
-		return m.viewCooldown()
 	case modeConfirmDelete:
 		return m.viewConfirmDelete()
 	case modeThresholds:
@@ -738,7 +682,7 @@ func (m *model) View() string {
 }
 
 // Style variables live in theme.go. View functions live in view_list.go,
-// view_add_paste.go, view_cooldown.go, view_confirm_delete.go.
+// view_add_paste.go, view_confirm_delete.go.
 
 // ============================================================================
 // Formatting helpers

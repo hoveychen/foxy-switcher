@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Account, UsageWindow, apiClient } from "../api";
+import { accountIsCooling, accountResetAt } from "../api";
 import { Icon } from "../components/Icon";
 import { Topbar } from "../components/Topbar";
 import { FoxAvatar } from "../components/FoxAvatar";
@@ -42,11 +43,15 @@ function fmtRemaining(ms: number): string {
 
 function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
   if (a.status !== "active") return { text: t("accounts.row.status.paused"), tone: "muted" };
-  if (a.cooldown_until > nowMs) {
-    return {
-      text: tf("accounts.row.status.cooldown", { time: fmtRemaining(a.cooldown_until - nowMs) }),
-      tone: "warn",
-    };
+  if (accountIsCooling(a)) {
+    const reset = accountResetAt(a, new Date(nowMs));
+    if (reset > 0) {
+      return {
+        text: tf("accounts.row.status.cooling", { time: fmtRemaining(reset - nowMs) }),
+        tone: "warn",
+      };
+    }
+    return { text: t("accounts.row.status.cooling_no_reset"), tone: "warn" };
   }
   if (a.expires_at - nowMs < 5 * 60 * 1000) {
     return { text: t("accounts.row.status.refresh_due"), tone: "warn" };
@@ -54,8 +59,8 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
   return { text: t("accounts.row.status.active"), tone: "ok" };
 }
 
-function isSelectable(a: Account, nowMs: number): boolean {
-  return a.status === "active" && a.cooldown_until <= nowMs;
+function isSelectable(a: Account): boolean {
+  return a.status === "active" && !accountIsCooling(a);
 }
 
 function peakUtilization(a: Account): number | null {
@@ -76,11 +81,11 @@ function matchesQuery(a: Account, q: string): boolean {
   return haystack.includes(lower);
 }
 
-function matchesStatus(a: Account, f: StatusFilter, nowMs: number): boolean {
+function matchesStatus(a: Account, f: StatusFilter): boolean {
   if (f === "all") return true;
   if (f === "paused") return a.status !== "active";
-  if (f === "active") return a.status === "active" && a.cooldown_until <= nowMs;
-  if (f === "cooling") return a.status === "active" && a.cooldown_until > nowMs;
+  if (f === "active") return a.status === "active" && !accountIsCooling(a);
+  if (f === "cooling") return a.status === "active" && accountIsCooling(a);
   return true;
 }
 
@@ -223,7 +228,7 @@ function AccountRow({
           {
             label: isInUse ? t("accounts.kebab.in_use") : t("accounts.kebab.use_now"),
             onClick: onUseNow,
-            disabled: isInUse || !isSelectable(a, nowMs),
+            disabled: isInUse || !isSelectable(a),
           },
           { label: t("accounts.kebab.refresh"), onClick: onRefresh },
           { label: paused ? t("accounts.kebab.resume") : t("accounts.kebab.pause"), onClick: onTogglePause },
@@ -308,7 +313,7 @@ export function AccountsPage({
 
   const filtered = useMemo(() => {
     return accounts.filter(
-      (a) => matchesQuery(a, search) && matchesStatus(a, statusFilter, nowMs),
+      (a) => matchesQuery(a, search) && matchesStatus(a, statusFilter),
     );
   }, [accounts, search, statusFilter, nowMs]);
 

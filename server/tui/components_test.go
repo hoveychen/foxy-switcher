@@ -10,6 +10,7 @@ import (
 
 func TestStatusDot(t *testing.T) {
 	now := time.Now().UnixMilli()
+	resets := time.Now().Add(time.Hour).Format(time.RFC3339)
 	cases := []struct {
 		name string
 		acc  Account
@@ -17,7 +18,11 @@ func TestStatusDot(t *testing.T) {
 	}{
 		{"active", Account{Status: "active"}, "●"},
 		{"paused", Account{Status: "paused"}, "○"},
-		{"cooldown", Account{Status: "active", CooldownUntil: now + 60_000}, "◐"},
+		{"cooling", Account{
+			Status:            "active",
+			FiveHourThreshold: 80,
+			FiveHour:          &UsageWindow{Utilization: 95, ResetsAt: resets},
+		}, "◐"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

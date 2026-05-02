@@ -422,7 +422,6 @@ func (m *model) footerChipDefs() []footerChipDef {
 		{"a", "add", "a"},
 		{"r", "refresh", "r"},
 		{"p", "pause/resume", "p"},
-		{"c", "cooldown", "c"},
 		{"x", "delete", "x"},
 		{"R", "reload", "R"},
 		{"?", "help", "?"},

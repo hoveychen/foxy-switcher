@@ -19,6 +19,7 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/authz"
 	"github.com/hoveychen/foxy-switcher/server/credinject"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
+	"github.com/hoveychen/foxy-switcher/server/selector"
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
 
@@ -30,10 +31,10 @@ type Server struct {
 	DataDir   string                  // ~/.foxy-switcher; used to resolve credinject state files
 	Port      int                     // populated after net.Listen
 	Cred      *credinject.Coordinator // optional; routes that change account state call .Trigger() — safe on nil
-	// Bus is the activity hub. Mutating handlers emit account.* / cooldown.*
-	// events through it so the Activity page reflects user actions
-	// immediately. Nil-safe — tests and the legacy --no-activity path leave
-	// it unset and the per-call Emit becomes a no-op.
+	// Bus is the activity hub. Mutating handlers emit account.* events
+	// through it so the Activity page reflects user actions immediately.
+	// Nil-safe — tests and the legacy --no-activity path leave it unset and
+	// the per-call Emit becomes a no-op.
 	Bus *activity.Bus
 	// StartedAt is the daemon's wall-clock start time, surfaced by
 	// /api/about so the Settings page can show "uptime". Set in New so the
@@ -55,7 +56,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /api/accounts/{id}/resume", s.handleResume)
-	mux.HandleFunc("POST /api/accounts/{id}/cooldown", s.handleCooldown)
 	mux.HandleFunc("POST /api/accounts/{id}/refresh", s.handleRefreshNow)
 	mux.HandleFunc("POST /api/accounts/{id}/select", s.handleSelect)
 	mux.HandleFunc("POST /api/accounts/{id}/thresholds", s.handleSetThresholds)
@@ -112,13 +112,11 @@ type accountView struct {
 	// TokenExpired is a derived flag (ExpiresAt <= now). Persisted state is
 	// just ExpiresAt; this exists so UIs don't all need the same clock-math
 	// to render the "can't be used" state. The selector treats this as a
-	// disqualifier alongside Status==paused / cooldown.
-	TokenExpired  bool  `json:"token_expired"`
-	CooldownUntil int64 `json:"cooldown_until"`
-	LastUsedAt       int64  `json:"last_used_at"`
-	Last429At        int64  `json:"last_429_at"`
-	CreatedAt        int64  `json:"created_at"`
-	UpdatedAt        int64  `json:"updated_at"`
+	// disqualifier alongside Status==paused / threshold-throttled.
+	TokenExpired bool  `json:"token_expired"`
+	LastUsedAt   int64 `json:"last_used_at"`
+	CreatedAt    int64 `json:"created_at"`
+	UpdatedAt    int64 `json:"updated_at"`
 	// Profile fields populated at login.
 	Email            string `json:"email"`
 	FullName         string `json:"full_name"`
@@ -142,9 +140,9 @@ func toView(a store.Account) accountView {
 		ID: a.ID, Name: a.Name, ExpiresAt: a.ExpiresAt, Scopes: a.Scopes,
 		SubscriptionType: a.SubscriptionType,
 		OrganizationUUID: a.OrganizationUUID, Status: a.Status,
-		TokenExpired:  a.TokenExpired(time.Now()),
-		CooldownUntil: a.CooldownUntil, LastUsedAt: a.LastUsedAt,
-		Last429At: a.Last429At, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		TokenExpired: a.TokenExpired(time.Now()),
+		LastUsedAt:   a.LastUsedAt,
+		CreatedAt:    a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		Email: a.Email, FullName: a.FullName,
 		OrganizationName: a.OrganizationName, Plan: a.Plan,
 		UsageFetchedAt:          a.UsageFetchedAt,
@@ -306,6 +304,45 @@ func applyUsage(ctx context.Context, st *store.Store, id int64, u *anthropic.Usa
 	return st.SetUsage(ctx, id, fhU, fhR, sdU, sdR, ssU, ssR)
 }
 
+// earliestThrottledReset returns the soonest resets_at (as unix millis) among
+// the windows where this account's utilization has reached the matching
+// threshold. The bool is false when no window is currently throttling — the
+// caller treats that as "this account isn't cooling".
+//
+// resets_at strings that fail to parse or are empty are skipped: the API is
+// authoritative on RFC3339 formatting, but we'd rather omit a problematic
+// window from the KPI than return a bogus 0.
+func earliestThrottledReset(a store.Account, now time.Time) (int64, bool) {
+	candidates := []struct {
+		util, threshold float64
+		resetsAt        string
+	}{
+		{a.FiveHourUtil, a.FiveHourThreshold, a.FiveHourResetsAt},
+		{a.SevenDayUtil, a.SevenDayThreshold, a.SevenDayResetsAt},
+		{a.SevenDaySonnetUtil, a.SevenDaySonnetThreshold, a.SevenDaySonnetResetsAt},
+	}
+	var best int64
+	found := false
+	for _, c := range candidates {
+		if c.resetsAt == "" || c.util < c.threshold {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, c.resetsAt)
+		if err != nil {
+			continue
+		}
+		ms := t.UnixMilli()
+		if ms <= now.UnixMilli() {
+			continue
+		}
+		if !found || ms < best {
+			best = ms
+			found = true
+		}
+	}
+	return best, found
+}
+
 // --- mutations -------------------------------------------------------------
 
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -364,48 +401,6 @@ func (s *Server) setStatus(w http.ResponseWriter, r *http.Request, status string
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type cooldownReq struct {
-	UntilMillis int64 `json:"until_millis"` // absolute unix-millis; 0 clears
-	DurationMS  int64 `json:"duration_ms"`  // alternative — relative offset
-}
-
-func (s *Server) handleCooldown(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	var req cooldownReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	var until time.Time
-	switch {
-	case req.UntilMillis > 0:
-		until = time.UnixMilli(req.UntilMillis)
-	case req.DurationMS > 0:
-		until = time.Now().Add(time.Duration(req.DurationMS) * time.Millisecond)
-	}
-	if err := s.Store.SetCooldown(r.Context(), id, until); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	name := fmt.Sprintf("#%d", id)
-	if a, err := s.Store.Get(r.Context(), id); err == nil {
-		name = a.Name
-	}
-	if until.IsZero() {
-		s.Bus.EmitInfo(activity.TypeCooldownCleared, id,
-			fmt.Sprintf("Cleared cooldown on %s", name))
-	} else {
-		s.Bus.EmitWarn(activity.TypeCooldownEntered, id,
-			fmt.Sprintf("Cooled down %s until %s", name, until.Format(time.RFC3339)))
-	}
-	s.Cred.Trigger()
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -438,7 +433,8 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 // handleSelect promotes one account to the front of the LRU queue so the
 // next credinject reconcile picks it. One-shot: subsequent rotations follow
 // normal LRU. Rejects accounts that the selector would skip anyway —
-// paused or in cooldown — with 409, so the UI can surface a clear reason.
+// paused, token-expired, or threshold-throttled — with 409, so the UI can
+// surface a clear reason.
 func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -454,12 +450,8 @@ func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if a.Status != "active" {
-		http.Error(w, "account is not active", http.StatusConflict)
-		return
-	}
-	if a.CooldownUntil > time.Now().UnixMilli() {
-		http.Error(w, "account is in cooldown", http.StatusConflict)
+	if !selector.IsEligible(*a, time.Now()) {
+		http.Error(w, "account is not eligible", http.StatusConflict)
 		return
 	}
 	if err := s.Store.MarkForNextPick(r.Context(), id); err != nil {
@@ -686,13 +678,19 @@ func writeSSEEvent(w http.ResponseWriter, ev activity.Event) bool {
 
 // --- dashboard ------------------------------------------------------------
 
-// DashboardKPIs are the four pool-level numbers shown above the trend chart.
+// DashboardKPIs are the pool-level numbers shown above the trend chart.
 type DashboardKPIs struct {
-	PoolSize         int   `json:"pool_size"`
-	ActiveCount      int   `json:"active_count"`
-	InUseAccountID   int64 `json:"in_use_account_id"`   // 0 = none injected
-	NextCooldownAt   int64 `json:"next_cooldown_at"`    // unix millis; 0 = none scheduled
-	PeakUtilPercent  int   `json:"peak_util_percent"`   // max across windows, all accounts
+	PoolSize        int   `json:"pool_size"`
+	ActiveCount     int   `json:"active_count"`
+	InUseAccountID  int64 `json:"in_use_account_id"` // 0 = none injected
+	// CoolingCount is how many active accounts are currently throttled by
+	// the per-window utilization threshold (selector.exceedsThreshold).
+	CoolingCount int `json:"cooling_count"`
+	// NextResetAt is the soonest reset across the windows that are currently
+	// throttling an active account, in unix millis. 0 means no account is
+	// throttled (or none of the throttled windows reported a resets_at yet).
+	NextResetAt     int64 `json:"next_reset_at"`
+	PeakUtilPercent int   `json:"peak_util_percent"` // max across windows, all accounts
 }
 
 // DashboardTrendBucket is one hour of usage history aggregated across the
@@ -732,24 +730,33 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	if s.Cred != nil {
 		kpis.InUseAccountID = s.Cred.Status().ManagedAccountID
 	}
-	var nextCd int64
+	var nextReset int64
 	var peak float64
 	for _, a := range accs {
 		if a.Status == "active" {
 			kpis.ActiveCount++
-		}
-		if a.CooldownUntil > now.UnixMilli() {
-			if nextCd == 0 || a.CooldownUntil < nextCd {
-				nextCd = a.CooldownUntil
-			}
 		}
 		for _, u := range []float64{a.FiveHourUtil, a.SevenDayUtil, a.SevenDaySonnetUtil} {
 			if u > peak {
 				peak = u
 			}
 		}
+		if a.Status != "active" {
+			continue
+		}
+		// Throttled-window contributions to NextResetAt: pick the soonest
+		// reset across all (account, window) pairs that are currently above
+		// threshold. We require the matching resets_at to be non-empty —
+		// freshly added accounts haven't been polled yet and shouldn't show
+		// up as "cooling forever".
+		if soonest, ok := earliestThrottledReset(a, now); ok {
+			kpis.CoolingCount++
+			if nextReset == 0 || soonest < nextReset {
+				nextReset = soonest
+			}
+		}
 	}
-	kpis.NextCooldownAt = nextCd
+	kpis.NextResetAt = nextReset
 	kpis.PeakUtilPercent = int(peak + 0.5) // round to nearest
 
 	since := now.Add(-24 * time.Hour).UnixMilli()

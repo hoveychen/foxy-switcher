@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Topbar } from "../components/Topbar";
 import { FoxAvatar } from "../components/FoxAvatar";
 import {
+  accountIsCooling,
+  accountResetAt,
   apiClient,
   type Account,
   type ActivityEvent,
@@ -92,7 +94,7 @@ export function DashboardPage({
     (acc, a) => {
       if (a.status !== "active") acc.paused += 1;
       else if (a.token_expired) acc.expired += 1;
-      else if (a.cooldown_until > nowMs) acc.cooling += 1;
+      else if (accountIsCooling(a)) acc.cooling += 1;
       else acc.healthy += 1;
       return acc;
     },
@@ -109,10 +111,20 @@ export function DashboardPage({
     }
   }
 
-  const cooling = accounts
-    .filter((a) => a.status === "active" && a.cooldown_until > nowMs)
-    .sort((a, b) => a.cooldown_until - b.cooldown_until);
-  const nextCooldown = cooling[0] ?? null;
+  // Pair each cooling account with its soonest throttled-window reset, then
+  // pick the row with the earliest reset for the "Next reset" KPI. Accounts
+  // whose throttled windows have no parseable resets_at fall to last so they
+  // don't crowd out a real countdown.
+  const coolingWithReset = accounts
+    .filter((a) => a.status === "active" && accountIsCooling(a))
+    .map((a) => ({ a, reset: accountResetAt(a, new Date(nowMs)) }))
+    .sort((x, y) => {
+      if (x.reset === 0 && y.reset === 0) return 0;
+      if (x.reset === 0) return 1;
+      if (y.reset === 0) return -1;
+      return x.reset - y.reset;
+    });
+  const nextReset = coolingWithReset[0] ?? null;
 
   // Fetch the 24h trend on mount + every 5 min. Lives here (not in App.tsx)
   // because no other page needs it — re-mounting the chart on tab return is
@@ -198,7 +210,7 @@ export function DashboardPage({
                     ? t("dashboard.kpi.no_accounts_yet")
                     : [
                         tf("dashboard.kpi.paused", { count: totals.paused }),
-                        tf("dashboard.kpi.in_cooldown", { count: totals.cooling }),
+                        tf("dashboard.kpi.cooling", { count: totals.cooling }),
                         ...(totals.expired > 0
                           ? [tf("dashboard.kpi.expired", { count: totals.expired })]
                           : []),
@@ -217,18 +229,18 @@ export function DashboardPage({
                 tone={peakPct >= 0 ? utilizationTone(peakPct) : "muted"}
               />
               <KpiCard
-                label={t("dashboard.kpi.next_cooldown")}
+                label={t("dashboard.kpi.next_reset")}
                 value={
-                  nextCooldown
-                    ? fmtRemaining(nextCooldown.cooldown_until - nowMs)
-                    : t("dashboard.kpi.no_cooldown")
+                  nextReset && nextReset.reset > 0
+                    ? fmtRemaining(nextReset.reset - nowMs)
+                    : t("dashboard.kpi.no_reset")
                 }
                 sub={
-                  nextCooldown
-                    ? tf("dashboard.kpi.thaws_next", { name: nextCooldown.name })
-                    : t("dashboard.kpi.no_in_cooldown")
+                  nextReset
+                    ? tf("dashboard.kpi.resets_next", { name: nextReset.a.name })
+                    : t("dashboard.kpi.no_cooling")
                 }
-                tone={nextCooldown ? "warn" : "muted"}
+                tone={nextReset ? "warn" : "muted"}
               />
             </div>
 
@@ -594,11 +606,12 @@ function CompactRow({
   } else if (a.token_expired) {
     statusTone = "danger";
     statusText = t("dashboard.compact.token_expired");
-  } else if (a.cooldown_until > nowMs) {
+  } else if (accountIsCooling(a)) {
     statusTone = "warn";
-    statusText = tf("dashboard.compact.cooldown", {
-      time: fmtRemaining(a.cooldown_until - nowMs),
-    });
+    const reset = accountResetAt(a, new Date(nowMs));
+    statusText = reset > 0
+      ? tf("dashboard.compact.cooling", { time: fmtRemaining(reset - nowMs) })
+      : t("dashboard.compact.cooling_no_reset");
   } else if (a.expires_at - nowMs < 5 * 60 * 1000) {
     statusTone = "warn";
     statusText = t("dashboard.compact.refresh_due");

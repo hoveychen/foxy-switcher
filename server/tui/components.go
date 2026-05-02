@@ -12,16 +12,16 @@ import (
 // Pair with statusLabel so the status is conveyed by character + text, not
 // color alone (matters on NO_COLOR / 8-color terminals).
 //
-// Priority: paused > expired > cooldown > active. Paused wins because it's
-// an explicit user action; expired beats cooldown because a dead token
-// blocks injection regardless of the 429 timer.
+// Priority: paused > expired > cooling > active. Paused wins because it's
+// an explicit user action; expired beats cooling because a dead token
+// blocks injection regardless of how soon the limit resets.
 func statusDot(a Account, nowMs int64) string {
 	switch {
 	case a.Status == "paused":
 		return lipgloss.NewStyle().Foreground(textTertiary).Render("○")
 	case a.TokenExpired:
 		return lipgloss.NewStyle().Foreground(tokenDanger).Render("⊘")
-	case a.CooldownUntil > nowMs:
+	case accountIsCooling(a):
 		return lipgloss.NewStyle().Foreground(tokenWarn).Render("◐")
 	default:
 		return lipgloss.NewStyle().Foreground(tokenOK).Render("●")
@@ -36,11 +36,65 @@ func statusLabel(a Account, nowMs int64) string {
 	if a.TokenExpired {
 		return errStyle.Render("token expired")
 	}
-	if a.CooldownUntil > nowMs {
-		left := time.Until(time.UnixMilli(a.CooldownUntil)).Round(time.Second)
-		return warnStyle.Render("cooldown " + left.String())
+	if reset, ok := accountResetAt(a, time.UnixMilli(nowMs)); ok {
+		left := time.Until(reset).Round(time.Second)
+		return warnStyle.Render("cooling " + left.String())
+	}
+	if accountIsCooling(a) {
+		return warnStyle.Render("cooling")
 	}
 	return okStyle.Render("active")
+}
+
+// accountIsCooling reports whether any of the account's per-window
+// utilizations has reached the matching threshold. Mirrors
+// selector.exceedsThreshold so the TUI shows the same eligibility state the
+// daemon's selector enforces.
+func accountIsCooling(a Account) bool {
+	if a.FiveHour != nil && a.FiveHour.Utilization >= a.FiveHourThreshold {
+		return true
+	}
+	if a.SevenDay != nil && a.SevenDay.Utilization >= a.SevenDayThreshold {
+		return true
+	}
+	if a.SevenDaySonnet != nil && a.SevenDaySonnet.Utilization >= a.SevenDaySonnetThreshold {
+		return true
+	}
+	return false
+}
+
+// accountResetAt returns the soonest future reset across the windows that are
+// currently above their threshold. Returns ok=false when no window is
+// throttled, when none of the throttled windows have a parseable resets_at,
+// or when every reset has already passed (the next usage poll will clear
+// utilization shortly).
+func accountResetAt(a Account, now time.Time) (time.Time, bool) {
+	candidates := []*UsageWindow{}
+	if a.FiveHour != nil && a.FiveHour.Utilization >= a.FiveHourThreshold {
+		candidates = append(candidates, a.FiveHour)
+	}
+	if a.SevenDay != nil && a.SevenDay.Utilization >= a.SevenDayThreshold {
+		candidates = append(candidates, a.SevenDay)
+	}
+	if a.SevenDaySonnet != nil && a.SevenDaySonnet.Utilization >= a.SevenDaySonnetThreshold {
+		candidates = append(candidates, a.SevenDaySonnet)
+	}
+	var best time.Time
+	found := false
+	for _, c := range candidates {
+		if c.ResetsAt == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, c.ResetsAt)
+		if err != nil || !t.After(now) {
+			continue
+		}
+		if !found || t.Before(best) {
+			best = t
+			found = true
+		}
+	}
+	return best, found
 }
 
 // planBadge renders the plan as a soft accent pill. Empty plan → "".

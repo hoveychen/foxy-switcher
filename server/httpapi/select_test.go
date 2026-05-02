@@ -43,17 +43,25 @@ func TestSelect_ZeroesLastUsedAt(t *testing.T) {
 	}
 }
 
-// Cooldown'd accounts shouldn't be selectable — the reconcile would skip
-// them, so the UI needs to know up-front rather than silently no-op.
-func TestSelect_RejectsCooldown(t *testing.T) {
+// Threshold-throttled accounts shouldn't be selectable — the reconcile would
+// skip them, so the UI needs to know up-front rather than silently no-op.
+func TestSelect_RejectsThrottled(t *testing.T) {
 	st, _ := newTestStore(t)
 	ctx := context.Background()
-	a := &store.Account{Name: "a", Email: "a@x", AccessToken: "at", RefreshToken: "rt", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	a := &store.Account{
+		Name:              "a",
+		Email:             "a@x",
+		AccessToken:       "at",
+		RefreshToken:      "rt",
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+		FiveHourThreshold: 80,
+	}
 	if err := st.Upsert(ctx, a); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := st.SetCooldown(ctx, a.ID, time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("setcooldown: %v", err)
+	resets := time.Now().Add(time.Hour).Format(time.RFC3339)
+	if err := st.SetUsage(ctx, a.ID, 95, resets, 0, "", 0, ""); err != nil {
+		t.Fatalf("setusage: %v", err)
 	}
 	srv := New(st, nil, nil, "")
 

@@ -169,7 +169,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // acceptsGlobalKey returns true when the App is allowed to intercept its
 // global shortcuts. We refuse while the accounts page is in a modal (paste,
-// cooldown, confirm) so digit/letter keys can't be stolen from textinput.
+// confirm, thresholds, search) so digit/letter keys can't be stolen from
+// textinput.
 func (a *App) acceptsGlobalKey() bool {
 	if a.screen != screenAccounts {
 		return true

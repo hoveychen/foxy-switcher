@@ -69,9 +69,7 @@ type Account struct {
 	OrganizationUUID string       `json:"organization_uuid"`
 	Status           string       `json:"status"`
 	TokenExpired     bool         `json:"token_expired"`
-	CooldownUntil    int64        `json:"cooldown_until"`
 	LastUsedAt       int64        `json:"last_used_at"`
-	Last429At        int64        `json:"last_429_at"`
 	CreatedAt        int64        `json:"created_at"`
 	UpdatedAt        int64        `json:"updated_at"`
 	Email            string       `json:"email"`
@@ -132,17 +130,6 @@ func (c *Client) Delete(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/accounts/%d", id), nil, nil)
 }
 
-// SetCooldown sets a relative cooldown (now + d). Pass d=0 to clear.
-func (c *Client) SetCooldown(ctx context.Context, id int64, d time.Duration) error {
-	body := map[string]int64{}
-	if d > 0 {
-		body["duration_ms"] = d.Milliseconds()
-	} else {
-		body["until_millis"] = 0
-	}
-	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/accounts/%d/cooldown", id), body, nil)
-}
-
 func (c *Client) RefreshNow(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/accounts/%d/refresh", id), nil, nil)
 }
@@ -172,7 +159,8 @@ type DashboardKPIs struct {
 	PoolSize        int   `json:"pool_size"`
 	ActiveCount     int   `json:"active_count"`
 	InUseAccountID  int64 `json:"in_use_account_id"`
-	NextCooldownAt  int64 `json:"next_cooldown_at"`
+	CoolingCount    int   `json:"cooling_count"`
+	NextResetAt     int64 `json:"next_reset_at"`
 	PeakUtilPercent int   `json:"peak_util_percent"`
 }
 
@@ -248,11 +236,11 @@ type ActivityFilter struct {
 // callers can submit raw values and rely on the response to echo the canonical
 // form (the TUI snaps its row state to the response).
 type Settings struct {
-	Theme                    string  `json:"theme"`
-	SidebarMode              string  `json:"sidebar_mode"`
-	UsagePollIntervalSec     int     `json:"usage_poll_interval_sec"`
-	CooldownThresholdPercent float64 `json:"cooldown_threshold_percent"`
-	RestoreNativeOnQuit      bool    `json:"restore_native_on_quit"`
+	Theme                   string  `json:"theme"`
+	SidebarMode             string  `json:"sidebar_mode"`
+	UsagePollIntervalSec    int     `json:"usage_poll_interval_sec"`
+	DefaultThresholdPercent float64 `json:"default_threshold_percent"`
+	RestoreNativeOnQuit     bool    `json:"restore_native_on_quit"`
 }
 
 func (c *Client) GetSettings(ctx context.Context) (Settings, error) {
