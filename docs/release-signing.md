@@ -62,18 +62,27 @@ You'll see lines like:
 
 Copy each full quoted string (without quotes).
 
-### 4. Get the team ID and app-specific password
+### 4. Get the team ID and an App Store Connect API key
 
 - **Team ID** — <https://developer.apple.com/account> → Membership → "Team ID"
   (10 chars).
-- **App-specific password** — <https://appleid.apple.com> → Sign-In and
-  Security → App-Specific Passwords → Generate. You'll see it once, save it.
+- **API key** — <https://appstoreconnect.apple.com/access/integrations/api>
+  → "+" → role **Developer** (notarization requires this role or higher).
+  Download the resulting `AuthKey_<KEYID>.p8` **immediately** — Apple only
+  lets you do that once. From the same page, copy the **Key ID** (10 chars)
+  and the **Issuer ID** (UUID at the top of the page).
 
-### 5. Base64-encode the `.p12` files
+> Notarization used to accept Apple-ID + app-specific-password. We've moved
+> to API keys because they don't expire by Apple-ID logout/2FA churn and
+> can be scoped per-key. The notarize step in CI uses
+> `xcrun notarytool submit --key/--key-id/--issuer`.
+
+### 5. Base64-encode the `.p12` files and `.p8` key
 
 ```bash
 base64 -i app.p12 | pbcopy        # paste into APPLE_CERTIFICATE
 base64 -i installer.p12 | pbcopy  # paste into APPLE_INSTALLER_CERTIFICATE
+base64 -i AuthKey_<KEYID>.p8 | pbcopy  # paste into APPLE_API_KEY
 ```
 
 ### 6. Add the secrets
@@ -86,13 +95,15 @@ base64 -i installer.p12 | pbcopy  # paste into APPLE_INSTALLER_CERTIFICATE
 | `APPLE_INSTALLER_CERTIFICATE_PASSWORD` | the password you set when exporting `installer.p12`            |
 | `APPLE_SIGNING_IDENTITY`               | `Developer ID Application: Your Name (TEAMID1234)`             |
 | `APPLE_INSTALLER_SIGNING_IDENTITY`     | `Developer ID Installer: Your Name (TEAMID1234)`               |
-| `APPLE_ID`                             | your Apple ID email                                            |
 | `APPLE_TEAM_ID`                        | the 10-char team id                                            |
-| `APPLE_APP_SPECIFIC_PASSWORD`          | the app-specific password from step 4                          |
+| `APPLE_API_KEY`                        | base64 of the `.p8` from step 4                                |
+| `APPLE_API_KEY_ID`                     | 10-char Key ID shown next to the key in App Store Connect      |
+| `APPLE_API_ISSUER`                     | UUID Issuer ID from App Store Connect → Keys                   |
 | `KEYCHAIN_PASSWORD`                    | any throwaway string — used to lock the runner's temp keychain |
 
-> Delete the local `.p12` files after uploading. They are reusable — back
-> them up to a password manager — but should not stay in your Downloads.
+> Delete the local `.p12` and `.p8` files after uploading. They are reusable
+> — back them up to a password manager — but should not stay in your
+> Downloads.
 
 ---
 
@@ -153,7 +164,9 @@ If a step shows "skipped", the matching secret is empty or unset.
 
 - **Apple Developer ID** certificates last 5 years. Re-export `.p12` and
   rotate the secrets when they expire.
-- **Apple app-specific passwords** never auto-expire but can be revoked.
+- **App Store Connect API keys** don't auto-expire but can be revoked from
+  App Store Connect → Users and Access → Keys. Rotate proactively when a
+  team member with key access leaves.
 - **Windows code-signing certificates** typically last 1–3 years. Plan
   rotation before expiry — already-signed `.msi` files keep verifying past
   expiry as long as they include a timestamp (the workflow always adds one).
