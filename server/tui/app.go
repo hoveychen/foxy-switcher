@@ -57,6 +57,8 @@ func (a *App) Init() tea.Cmd {
 		a.accounts.Init(),
 		dashboardLoadCmd(a.accounts.client),
 		dashboardTickCmd(),
+		activityLoadCmd(a.accounts.client, a.activity.filter),
+		activityTickCmd(),
 	)
 }
 
@@ -67,14 +69,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case dashboardTickMsg:
 		return a, tea.Batch(dashboardLoadCmd(a.accounts.client), dashboardTickCmd())
+	case activityLoadedMsg, activityTickMsg:
+		cmd, _ := a.activity.Update(msg, a.accounts.client)
+		return a, cmd
 	case accountsMsg:
 		// Forward to the inner Accounts model so its existing handler runs,
-		// then mirror the fresh slice into the Dashboard so it doesn't have
-		// to re-fetch accounts on its own clock.
+		// then mirror the fresh slice into the Dashboard / Activity pages so
+		// they don't have to re-fetch accounts on their own clock.
 		updated, cmd := a.accounts.Update(msg)
 		a.accounts = updated.(*model)
 		if msg.err == nil {
 			a.dashboard.setAccounts(a.accounts.accounts, a.accounts.cred)
+			a.activity.setAccounts(a.accounts.accounts)
 		}
 		return a, cmd
 
@@ -106,11 +112,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, cmd
 			}
 		}
-		// Forward to active page. Only Accounts has its own input handling in
-		// Phase 1; the placeholder pages ignore keys.
+		// Forward to active page. Accounts and Activity have their own input
+		// handling; Dashboard/Settings are read-only in Phase 1–3.
 		if a.screen == screenAccounts {
 			updated, cmd := a.accounts.Update(msg)
 			a.accounts = updated.(*model)
+			return a, cmd
+		}
+		if a.screen == screenActivity {
+			cmd, _ := a.activity.Update(msg, a.accounts.client)
 			return a, cmd
 		}
 		return a, nil
