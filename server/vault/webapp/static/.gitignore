@@ -1,0 +1,7 @@
+# The build pipeline (`scripts/build-server.sh`) copies pnpm's dist/
+# output here so `//go:embed all:static` bundles the React account
+# panel into the vault binary. Only .gitkeep is tracked so go:embed
+# always finds at least one file; everything else is build output.
+*
+!.gitignore
+!.gitkeep

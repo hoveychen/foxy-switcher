@@ -37,6 +37,13 @@ type Server struct {
 	// user where to enter the user_code. Empty falls back to the request
 	// host, which is fine for combined-mode loopback.
 	PublicBaseURL string
+	// HasWebApp tells the Web UI handlers whether the React account
+	// panel was bundled into this binary (set by main when
+	// webapp.Available()). When true, the bare home page redirects
+	// signed-in users to /app instead of rendering the fallback
+	// summary. Defaults to false so a binary built without `pnpm build`
+	// still serves something.
+	HasWebApp bool
 }
 
 // New constructs the handler. svc and st are non-nil. PublicBaseURL is set

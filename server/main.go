@@ -35,6 +35,7 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/tui"
 	"github.com/hoveychen/foxy-switcher/server/vault"
 	"github.com/hoveychen/foxy-switcher/server/vault/httpserver"
+	"github.com/hoveychen/foxy-switcher/server/vault/webapp"
 )
 
 func main() {
@@ -357,15 +358,27 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 		}
 	}()
 
-	// Compose three handlers on one listener:
-	//   - /agent/v1/*  — agent surface (Bearer-auth'd vault.Service)
-	//   - /setup, /login, /, /pair, /devices, /password — admin Web UI
-	//   - /api/*, /healthz — existing frontend httpapi (catch-all)
+	// Compose handlers on one listener:
+	//   - /agent/v1/*           — agent surface (Bearer-auth'd vault.Service)
+	//   - /setup, /login, /pair,
+	//     /devices, /password   — admin Web UI (cookie sessions)
+	//   - /app, /app/, /assets/*— embedded React account panel (cookie or Bearer)
+	//   - /api/*, /healthz      — existing frontend httpapi (catch-all)
 	// More specific patterns win over the catch-all "/" mount.
 	rootMux := http.NewServeMux()
 	vaultHTTP := httpserver.New(vaultSvc, st)
 	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
 	vaultHTTP.RegisterWebRoutes(rootMux)
+	if webapp.Available() {
+		appHandler := webapp.Handler()
+		rootMux.Handle("/app", appHandler)
+		rootMux.Handle("/app/", appHandler)
+		rootMux.Handle("/assets/", appHandler)
+		vaultHTTP.HasWebApp = true
+		// Other top-level static files vite emits (favicon, etc.) get
+		// captured by the catch-all "/" below — they 404 today and that's
+		// fine; they're decorative.
+	}
 	// /healthz must remain reachable without credentials so a load
 	// balancer / uptime probe can monitor a public vault. Register it
 	// on the root mux above the catch-all so the vault-mode Bearer

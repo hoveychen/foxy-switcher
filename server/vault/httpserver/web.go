@@ -152,7 +152,17 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // --- / -------------------------------------------------------------------
 
+// handleHome is signed-in users' landing page. When the React account
+// panel was bundled into this binary (webapp.Available), we send them
+// straight there so the embedded UI is the canonical experience and
+// the bare server-rendered home stays a fallback. Otherwise the
+// fallback summary still renders, so a deployment without `pnpm build`
+// run is debuggable.
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	if s.HasWebApp {
+		http.Redirect(w, r, "/app", http.StatusSeeOther)
+		return
+	}
 	devs, err := s.st.ListDevices(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

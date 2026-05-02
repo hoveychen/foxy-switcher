@@ -199,11 +199,15 @@ This means the existing Tauri React build, the TUI, and any external scripts tha
 
 Step 6 closes the auth gap on `/api/*`. When `--mode=vault` runs, main installs `httpserver.BearerAuth` as middleware on the frontend `httpapi.Server`, so every `/api/*` route requires a paired device's bearer token. Combined mode leaves the middleware slice empty — loopback is its own attacker model and existing local Tauri / TUI clients keep working without changes. `/healthz` is registered on the root mux above the wrap so liveness probes still succeed without credentials. The agent's reverse proxy already injects Bearer on every forwarded request, so an `--mode=agent` topology gets through transparently.
 
-Optionally a future step ships the React build embedded in the vault binary under `/web/` so a user without Tauri can manage accounts from any browser. Out of scope for Step 5.
+Step 9 ships an embedded React account panel: the vault binary ships the React build (via `//go:embed all:static`) and exposes it at `/app`, `/app/`, and `/assets/*`. The same React build also runs inside Tauri unchanged — `src/api.ts` detects whether it's hosted by Tauri (via `__TAURI_INTERNALS__`) and either calls Tauri commands or falls back to plain `window.location.origin` for API access. Tauri-only commands (autostart, reveal data dir, save agent config) reject with `NotInTauriError` in browser mode so the UI can render "this action is only available in the desktop app" cleanly instead of mistaking a missing host bridge for a network error.
+
+Auth in browser mode uses the same Web UI session cookie the admin console (`/setup`, `/login`, `/devices`) already uses; vault's `/api/*` middleware now accepts either a Bearer token (agent path) or a `foxy_session` cookie (browser path).
+
+The build pipeline (`scripts/build-server.sh`) bakes `dist/` into `server/vault/webapp/static/` before `go build`, so every cross-compiled sidecar travels with the React panel. A fresh checkout that hasn't run `pnpm build` yet still builds — `webapp.Available()` returns false at runtime and the vault home page falls back to the bare server-rendered template.
 
 ## Migration plan recap
 
-Steps 1–5 have all landed. Each step kept the boundary stable, so combined-mode behaviour is identical to the pre-split daemon and the only files a Step N+1 needed to touch were the ones whose semantics actually changed.
+Steps 1–9 have all landed. Each step kept the boundary stable, so combined-mode behaviour is identical to the pre-split daemon and the only files a Step N+1 needed to touch were the ones whose semantics actually changed.
 
 ## Migration plan
 

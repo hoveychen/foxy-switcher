@@ -18,11 +18,36 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/server"
 OUT="$ROOT/src-tauri/binaries"
+DIST="$ROOT/dist"
+EMBED="$SRC/vault/webapp/static"
 mkdir -p "$OUT"
 
 # Strip symbol tables to slim the binary; the helper script already echoes
 # the token verbatim so debug info has no caller-side use.
 LDFLAGS="-s -w"
+
+# bake_webapp populates the embed directory the vault binary's
+# `//go:embed all:static` directive picks up. We do this once before any
+# `go build` so every cross-compiled sidecar travels with the React
+# account panel. If `dist/` is missing (devs who haven't run `pnpm build`
+# yet) we leave the placeholder .gitkeep alone — webapp.Available()
+# returns false at runtime and the vault keeps serving the bare Web UI.
+bake_webapp() {
+  if [ ! -f "$DIST/index.html" ]; then
+    echo "==> webapp: dist/index.html missing, skipping embed (run \`pnpm build\` first)"
+    return
+  fi
+  echo "==> webapp: copying dist/ → server/vault/webapp/static/"
+  rm -rf "$EMBED"
+  mkdir -p "$EMBED"
+  cp -R "$DIST/"* "$EMBED/"
+  # Keep .gitkeep around so a `git clean` survivor still satisfies
+  # //go:embed; cp -R already overwrote it if dist had one, otherwise
+  # we replace it explicitly.
+  : > "$EMBED/.gitkeep"
+}
+
+bake_webapp
 
 build() {
   local goos="$1" goarch="$2" triple="$3"

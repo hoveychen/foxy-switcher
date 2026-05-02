@@ -1,13 +1,45 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fetch } from "@tauri-apps/plugin-http";
 
+// inTauri reflects whether this React build is running inside the
+// desktop shell. Step 9 lets the same React bundle also be served
+// directly from the cloud vault's embedded /app surface; in that path
+// `invoke` doesn't exist, the daemon is "attached" by definition, and
+// every API call should target the same origin instead of a port the
+// host shell would have resolved. Centralising the detection keeps the
+// Tauri-only commands isolated to call sites that gracefully degrade
+// when this is false.
+const inTauri =
+  typeof window !== "undefined" &&
+  ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+
 let cachedPort: number | null = null;
 
 async function getPort(): Promise<number> {
   if (cachedPort !== null) return cachedPort;
+  if (!inTauri) {
+    // Browser path: there's no sidecar lookup — the React build is
+    // served from the same origin as the API, so "port" maps to
+    // window.location.port (empty for default-port deployments).
+    const p = window.location.port;
+    const num = p === "" ? (window.location.protocol === "https:" ? 443 : 80) : Number(p);
+    cachedPort = num;
+    return num;
+  }
   const port = await invoke<number>("get_server_port");
   cachedPort = port;
   return port;
+}
+
+// apiBase returns the origin every API call targets. In Tauri the
+// sidecar listens on 127.0.0.1:<port>; in the browser the React build
+// sits on the same origin as the vault, so we just use whatever the
+// page was loaded from.
+function apiBase(port: number): string {
+  if (inTauri) {
+    return `http://127.0.0.1:${port}`;
+  }
+  return window.location.origin;
 }
 
 async function api<T>(
@@ -21,7 +53,7 @@ async function api<T>(
   const body = init?.json !== undefined ? JSON.stringify(init.json) : init?.body;
 
   const doFetch = (port: number) =>
-    fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers, body });
+    fetch(`${apiBase(port)}${path}`, { ...init, headers, body });
 
   const firstPort = await getPort();
   let res: Response;
@@ -322,8 +354,28 @@ export interface AboutResponse {
 
 export type DaemonMode = "attached" | "owned";
 
-export const getDaemonMode = (): Promise<DaemonMode> =>
-  invoke<DaemonMode>("get_daemon_mode");
+// isTauriHost lets UI surfaces hide / disable Tauri-only buttons (reveal
+// data dir, restart daemon, autostart toggle, save agent config) when
+// the same React build runs in the browser via the vault's /app embed.
+export const isTauriHost = (): boolean => inTauri;
+
+// NotInTauriError marks the deliberate browser-mode rejection. Callers
+// should catch this distinctly from network errors so they can render
+// "this action is only available in the desktop app" rather than
+// "request failed".
+export class NotInTauriError extends Error {
+  constructor(action: string) {
+    super(`${action} is only available in the desktop app`);
+    this.name = "NotInTauriError";
+  }
+}
+
+export const getDaemonMode = async (): Promise<DaemonMode> => {
+  // In a browser session there's no Tauri-owned sidecar — the daemon
+  // is by definition "attached" (managed elsewhere, we just connect).
+  if (!inTauri) return "attached";
+  return invoke<DaemonMode>("get_daemon_mode");
+};
 
 export const getServerPort = (): Promise<number> => getPort();
 
@@ -332,6 +384,7 @@ export const getServerPort = (): Promise<number> => getPort();
 // disconnect banner. The port cache is updated to the new value so the next
 // api() call hits the freshly-spawned daemon instead of the dead one.
 export const restartDaemon = async (): Promise<number> => {
+  if (!inTauri) throw new NotInTauriError("restart daemon");
   const port = await invoke<number>("restart_daemon");
   cachedPort = port;
   return port;
@@ -340,29 +393,41 @@ export const restartDaemon = async (): Promise<number> => {
 // Launch-at-login wrappers. The platform-specific work (LaunchAgent /
 // Run key / .desktop file) lives entirely in tauri-plugin-autostart; we
 // just relay the user's toggle through to it.
-export const autostartIsEnabled = (): Promise<boolean> =>
-  invoke<boolean>("autostart_is_enabled");
-export const autostartSet = (enabled: boolean): Promise<void> =>
-  invoke<void>("autostart_set", { enabled });
+export const autostartIsEnabled = async (): Promise<boolean> => {
+  if (!inTauri) return false;
+  return invoke<boolean>("autostart_is_enabled");
+};
+export const autostartSet = async (enabled: boolean): Promise<void> => {
+  if (!inTauri) throw new NotInTauriError("autostart");
+  return invoke<void>("autostart_set", { enabled });
+};
 
 // Settings § General — show the data dir and offer Reveal in Finder.
-export const dataDirPath = (): Promise<string> => invoke<string>("data_dir_path");
-export const revealDataDir = (): Promise<void> => invoke<void>("reveal_data_dir");
+export const dataDirPath = async (): Promise<string> => {
+  if (!inTauri) return "";
+  return invoke<string>("data_dir_path");
+};
+export const revealDataDir = async (): Promise<void> => {
+  if (!inTauri) throw new NotInTauriError("reveal data directory");
+  return invoke<void>("reveal_data_dir");
+};
 
 // saveAgentConfig writes the device-flow result to
 // ~/.foxy-switcher/agent-config.json. The next daemon launched with
 // --mode=agent reads this file to learn vault URL + bearer token. Returns
 // the file path so the UI can show "saved to …" feedback.
-export const saveAgentConfig = (params: {
+export const saveAgentConfig = async (params: {
   vault_url: string;
   device_id: string;
   device_token: string;
-}): Promise<string> =>
-  invoke<string>("save_agent_config", {
+}): Promise<string> => {
+  if (!inTauri) throw new NotInTauriError("save agent config");
+  return invoke<string>("save_agent_config", {
     vaultUrl: params.vault_url,
     deviceId: params.device_id,
     deviceToken: params.device_token,
   });
+};
 
 export const apiClient = {
   listAccounts: () =>
