@@ -38,22 +38,32 @@ use crate::ServerState;
 pub struct ChildHandle(pub Mutex<Option<CommandChild>>);
 
 pub fn spawn(app: &AppHandle) -> Result<()> {
+    // Install the ChildHandle exactly once. Subsequent restarts mutate this
+    // shared cell rather than calling app.manage again (which panics on a
+    // duplicate type). State retrieval after install always succeeds.
+    if app.try_state::<Arc<ChildHandle>>().is_none() {
+        app.manage(Arc::new(ChildHandle::default()));
+    }
+    spawn_into(app)
+}
+
+// spawn_into owns the spawn / attach machinery without touching app.manage.
+// Both first-launch and restart_daemon route through here.
+fn spawn_into(app: &AppHandle) -> Result<()> {
     let data_dir = data_dir()?;
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("create data dir {}", data_dir.display()))?;
     let port_file = data_dir.join("port");
 
     // Attach-first: if another daemon (TUI embedded mode, manual `go run .`)
-    // already owns the port file and answers /healthz, reuse it. Always install
-    // an empty ChildHandle so shutdown's lookup never has to handle "state
-    // missing entirely". Empty handle → shutdown is a no-op, which is exactly
-    // what we want when the daemon belongs to someone else.
+    // already owns the port file and answers /healthz, reuse it. The
+    // ChildHandle stays empty in attach mode — restart is intentionally a
+    // no-op for daemons we don't own.
     if let Some(port) = try_attach(&port_file) {
         eprintln!("[sidecar] attaching to existing daemon on port {port}");
         if let Some(state) = app.try_state::<ServerState>() {
             *state.port.lock().unwrap() = Some(port);
         }
-        app.manage(Arc::new(ChildHandle::default()));
         return Ok(());
     }
 
@@ -84,8 +94,9 @@ pub fn spawn(app: &AppHandle) -> Result<()> {
         .spawn()
         .map_err(|e| anyhow!("spawn sidecar: {e}"))?;
 
-    let handle = ChildHandle(Mutex::new(Some(child)));
-    app.manage(Arc::new(handle));
+    if let Some(handle) = app.try_state::<Arc<ChildHandle>>() {
+        *handle.0.lock().unwrap() = Some(child);
+    }
 
     // Drain stdout/stderr so the OS pipe buffer never fills up. Tauri delivers
     // both as CommandEvent variants; we just log them to the host process.
@@ -133,6 +144,40 @@ pub fn spawn(app: &AppHandle) -> Result<()> {
     });
 
     Ok(())
+}
+
+// restart performs a graceful SIGTERM + respawn. Refuses when the current
+// daemon was attached (we don't own its lifecycle, so killing it would harm
+// the TUI / manual `go run .` user that started it). Returns the new port,
+// or an error string the frontend can show in the disconnect banner.
+pub fn restart(app: &AppHandle) -> Result<u16, String> {
+    let owned = app
+        .try_state::<Arc<ChildHandle>>()
+        .map(|h| h.0.lock().unwrap().is_some())
+        .unwrap_or(false);
+    if !owned {
+        return Err("Daemon was attached, not owned — restart it externally.".into());
+    }
+    shutdown(app);
+    if let Some(state) = app.try_state::<ServerState>() {
+        *state.port.lock().unwrap() = None;
+    }
+    spawn_into(app).map_err(|e| format!("respawn: {e}"))?;
+
+    // Block briefly until the spawn watcher writes the new port. The watcher
+    // polls every 100ms with a 10s deadline; we tail it for up to 5s here so
+    // the frontend's invoke() resolves with a port instead of having to
+    // re-poll the state.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Some(state) = app.try_state::<ServerState>() {
+            if let Some(p) = *state.port.lock().unwrap() {
+                return Ok(p);
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err("daemon did not publish a port within 5s".into())
 }
 
 pub fn shutdown(app: &AppHandle) {

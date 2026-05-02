@@ -115,11 +115,23 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 		return fmt.Errorf("activity bus: %w", err)
 	}
 
+	// Load persisted user prefs once at startup. UsagePoller's interval and
+	// the credinject restore-on-quit flag both honour these. The frontend
+	// can mutate them live via PUT /api/settings, but the poller's cadence
+	// only re-reads on the next daemon launch (rebuilding the ticker mid-run
+	// would race with in-flight ticks, which is more cost than benefit for
+	// a one-time-per-session knob).
+	settings, err := st.GetSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+
 	pkce := authz.NewPKCEStore()
 	rf := refresh.New(st, logger)
 	rf.Bus = bus
 	up := refresh.NewUsagePoller(st, logger)
 	up.Bus = bus
+	up.Interval = time.Duration(settings.UsagePollIntervalSec) * time.Second
 
 	server := httpapi.New(st, pkce, rf, opts.DataDir)
 	server.Bus = bus
@@ -156,6 +168,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 		}
 		cc = credinject.New(st, backend, opts.DataDir, logger)
 		cc.SetBus(bus)
+		cc.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
 				logger.Printf("warning: restore native credentials: %v", err)

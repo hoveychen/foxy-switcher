@@ -100,12 +100,105 @@ export interface AutoSwitchSettings {
   policy: AutoSwitchPolicy;
 }
 
+export type Theme = "system" | "light" | "dark";
+export type SidebarMode = "expanded" | "auto";
+
+export interface Settings {
+  theme: Theme;
+  sidebar_mode: SidebarMode;
+  // 30–300; server clamps. Applies on next daemon restart.
+  usage_poll_interval_sec: number;
+  cooldown_threshold_percent: number; // 0–100; server clamps
+  restore_native_on_quit: boolean;
+}
+
+export type ActivitySeverity = "info" | "warn" | "error";
+
+// Mirrors server/activity.Event. Payload is rendered verbatim when present —
+// keep it small and JSON-shaped (the bus persists it as TEXT).
+export interface ActivityEvent {
+  id: number;
+  timestamp: number; // unix milliseconds
+  type: string;
+  severity: ActivitySeverity;
+  account_id?: number;
+  message: string;
+  payload?: unknown;
+}
+
+export interface ActivityFilter {
+  limit?: number;
+  since?: number;
+  // Comma-joined list; supports the "error.*" wildcard suffix the server honors.
+  type?: string;
+  severity?: ActivitySeverity;
+}
+
+export interface DashboardKPIs {
+  pool_size: number;
+  active_count: number;
+  in_use_account_id: number;
+  next_cooldown_at: number;
+  peak_util_percent: number;
+}
+
+export interface DashboardTrendBucket {
+  ts: number;
+  five_hour: number;
+  seven_day: number;
+  seven_day_sonnet: number;
+}
+
+export interface DashboardResponse {
+  kpis: DashboardKPIs;
+  trend: DashboardTrendBucket[];
+}
+
+export interface AboutResponse {
+  version: string;
+  commit: string;
+  commit_dirty: boolean;
+  build_time: string;
+  go_version: string;
+  os: string;
+  arch: string;
+  pid: number;
+  port: number;
+  data_dir: string;
+  sqlite_path: string;
+  sqlite_size_b: number;
+  started_at_ms: number;
+  uptime_seconds: number;
+}
+
 export type DaemonMode = "attached" | "owned";
 
 export const getDaemonMode = (): Promise<DaemonMode> =>
   invoke<DaemonMode>("get_daemon_mode");
 
 export const getServerPort = (): Promise<number> => getPort();
+
+// Returns the new port. Errors if the daemon is in attached mode (we don't
+// own its lifecycle) or the spawn fails — surface the message in the
+// disconnect banner. The port cache is updated to the new value so the next
+// api() call hits the freshly-spawned daemon instead of the dead one.
+export const restartDaemon = async (): Promise<number> => {
+  const port = await invoke<number>("restart_daemon");
+  cachedPort = port;
+  return port;
+};
+
+// Launch-at-login wrappers. The platform-specific work (LaunchAgent /
+// Run key / .desktop file) lives entirely in tauri-plugin-autostart; we
+// just relay the user's toggle through to it.
+export const autostartIsEnabled = (): Promise<boolean> =>
+  invoke<boolean>("autostart_is_enabled");
+export const autostartSet = (enabled: boolean): Promise<void> =>
+  invoke<void>("autostart_set", { enabled });
+
+// Settings § General — show the data dir and offer Reveal in Finder.
+export const dataDirPath = (): Promise<string> => invoke<string>("data_dir_path");
+export const revealDataDir = (): Promise<void> => invoke<void>("reveal_data_dir");
 
 export const apiClient = {
   listAccounts: () =>
@@ -153,4 +246,33 @@ export const apiClient = {
 
   setAutoSwitch: (v: AutoSwitchSettings) =>
     api<AutoSwitchSettings>("/api/auto-switch", { method: "POST", json: v }),
+
+  getSettings: () => api<Settings>("/api/settings"),
+  setSettings: (v: Partial<Settings>) =>
+    api<Settings>("/api/settings", { method: "PUT", json: v }),
+
+  getDashboard: () => api<DashboardResponse>("/api/dashboard"),
+
+  getAbout: () => api<AboutResponse>("/api/about"),
+
+  // Wipes state.db and exits the daemon. The Tauri shell respawns the
+  // sidecar; in attached mode the caller must restart their own daemon.
+  // The cached port is invalidated so the next api() call rediscovers the
+  // freshly-spawned daemon.
+  resetData: async () => {
+    await api<void>("/api/reset", { method: "POST" });
+    cachedPort = null;
+  },
+
+  listActivity: (filter: ActivityFilter = {}) => {
+    const q = new URLSearchParams();
+    if (filter.limit) q.set("limit", String(filter.limit));
+    if (filter.since) q.set("since", String(filter.since));
+    if (filter.type) q.set("type", filter.type);
+    if (filter.severity) q.set("severity", filter.severity);
+    const suffix = q.toString();
+    return api<{ events: ActivityEvent[] }>(
+      `/api/activity${suffix ? `?${suffix}` : ""}`,
+    ).then((r) => r.events);
+  },
 };

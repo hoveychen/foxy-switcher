@@ -301,6 +301,52 @@ func TestAutoSwitchDefaultsAndRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSettingsDefaultsAndRoundTrip covers the kv-backed user-prefs blob:
+// fresh DB returns DefaultSettings; Set persists clamped values; partial
+// objects merge into defaults rather than zeroing every untouched field.
+func TestSettingsDefaultsAndRoundTrip(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	got, err := st.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings (defaults): %v", err)
+	}
+	if got != DefaultSettings {
+		t.Fatalf("defaults: got %+v want %+v", got, DefaultSettings)
+	}
+
+	in := Settings{
+		Theme:                    "dark",
+		SidebarMode:              "expanded",
+		UsagePollIntervalSec:     5, // below min, must clamp to 30
+		CooldownThresholdPercent: 250, // above max, must clamp to 100
+		RestoreNativeOnQuit:      false,
+	}
+	out, err := st.SetSettings(ctx, in)
+	if err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+	if out.UsagePollIntervalSec != 30 {
+		t.Fatalf("expected interval clamped to 30, got %d", out.UsagePollIntervalSec)
+	}
+	if out.CooldownThresholdPercent != 100 {
+		t.Fatalf("expected threshold clamped to 100, got %v", out.CooldownThresholdPercent)
+	}
+	if out.RestoreNativeOnQuit {
+		t.Fatalf("RestoreNativeOnQuit should be false")
+	}
+
+	// Round-trip the persisted blob.
+	got, err = st.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings (after set): %v", err)
+	}
+	if got != out {
+		t.Fatalf("round-trip mismatch: got %+v want %+v", got, out)
+	}
+}
+
 // TestUpsertDefaultsLastUsedAtToNow guards the credinject sticky-selection
 // invariant: only MarkForNextPick should produce last_used_at = 0. New
 // accounts inserted with the zero default would otherwise be indistinguishable

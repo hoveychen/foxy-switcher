@@ -131,6 +131,28 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 `
 
+// usageHistorySchema records successful usage snapshots so the Dashboard can
+// render a 24h trend chart without re-fetching from Anthropic. UsagePoller
+// appends one row per account per successful tick; rows older than 7 days
+// are pruned (well past the 24h chart window, plenty of headroom).
+const usageHistorySchema = `
+CREATE TABLE IF NOT EXISTS usage_history (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id            INTEGER NOT NULL,
+  ts                    INTEGER NOT NULL,
+  five_hour_util        REAL NOT NULL DEFAULT 0,
+  seven_day_util        REAL NOT NULL DEFAULT 0,
+  seven_day_sonnet_util REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS usage_history_ts ON usage_history (ts DESC);
+CREATE INDEX IF NOT EXISTS usage_history_account_ts ON usage_history (account_id, ts DESC);
+`
+
+// UsageHistoryRetention is how far back we keep snapshots. 7 days is well
+// past the 24h chart window with enough slack to support a future "1 week"
+// view without a schema change.
+const UsageHistoryRetention = 7 * 24 * time.Hour
+
 // columnMigrations adds columns to existing databases. Each entry is run in
 // order and is idempotent (failures with "duplicate column" are silently
 // ignored, so re-running on an already-migrated DB is fine).
@@ -189,6 +211,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(kvSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply kv schema: %w", err)
+	}
+	if _, err := db.Exec(usageHistorySchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply usage_history schema: %w", err)
 	}
 	return &Store{db: db}, nil
 }
@@ -351,6 +377,59 @@ UPDATE accounts
 		email, fullName, organizationName, plan, subscriptionType,
 		time.Now().UnixMilli(), id)
 	return err
+}
+
+// UsageHistoryRow is one snapshot from usage_history. Always sorted ascending
+// by ts when returned from UsageHistorySince so chart code can plot directly.
+type UsageHistoryRow struct {
+	AccountID          int64
+	Timestamp          int64
+	FiveHourUtil       float64
+	SevenDayUtil       float64
+	SevenDaySonnetUtil float64
+}
+
+// AppendUsageHistory inserts one snapshot row, then prunes rows older than
+// UsageHistoryRetention so the table never grows unboundedly. UsagePoller
+// calls this from inside its tick after writeUsage succeeds.
+func (s *Store) AppendUsageHistory(ctx context.Context, accountID int64,
+	ts int64, fhU, sdU, ssU float64,
+) error {
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO usage_history (account_id, ts, five_hour_util, seven_day_util, seven_day_sonnet_util)
+VALUES (?, ?, ?, ?, ?)`, accountID, ts, fhU, sdU, ssU); err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-UsageHistoryRetention).UnixMilli()
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM usage_history WHERE ts < ?`, cutoff); err != nil {
+		return err
+	}
+	return nil
+}
+
+// UsageHistorySince returns every snapshot row with ts >= since, ordered
+// ascending by ts so the caller can iterate in time order. The Dashboard
+// trend handler buckets these into hours; tests use the raw rows.
+func (s *Store) UsageHistorySince(ctx context.Context, since int64) ([]UsageHistoryRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT account_id, ts, five_hour_util, seven_day_util, seven_day_sonnet_util
+  FROM usage_history
+ WHERE ts >= ?
+ ORDER BY ts ASC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UsageHistoryRow
+	for rows.Next() {
+		var r UsageHistoryRow
+		if err := rows.Scan(&r.AccountID, &r.Timestamp, &r.FiveHourUtil, &r.SevenDayUtil, &r.SevenDaySonnetUtil); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // SetUsage replaces the usage snapshot for one account. Pointer fields may be
@@ -568,6 +647,106 @@ func (s *Store) SetAutoSwitch(ctx context.Context, v AutoSwitch) error {
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
 		autoSwitchKey, string(buf), time.Now().UnixMilli())
 	return err
+}
+
+// Settings is the user-preference blob persisted under one kv row. Frontend
+// edits go through PUT /api/settings; backend components read at startup
+// (refresh interval) or on every consult (theme is frontend-only, restore
+// flag is read in the shutdown defer). Keep new fields backward-compatible
+// — missing fields fall back to DefaultSettings via a zero-aware merge.
+type Settings struct {
+	// Theme: "system" | "light" | "dark". Frontend-only — server stores
+	// verbatim and the UI applies via `data-theme` on the document root.
+	Theme string `json:"theme"`
+	// SidebarMode: "expanded" | "auto". Frontend-only.
+	SidebarMode string `json:"sidebar_mode"`
+	// UsagePollIntervalSec controls UsagePoller's ticker. Range 30–300; the
+	// server clamps. Applies on next daemon start (the existing ticker is
+	// fixed-period; rebuilding it on every PUT would race with in-flight ticks).
+	UsagePollIntervalSec int `json:"usage_poll_interval_sec"`
+	// CooldownThresholdPercent is the pool-wide default for new accounts'
+	// per-window thresholds. Existing accounts keep their own values.
+	CooldownThresholdPercent float64 `json:"cooldown_threshold_percent"`
+	// RestoreNativeOnQuit gates the credinject Restore call at shutdown. Off
+	// is "leave whatever was last injected in place" — useful for users who
+	// don't want their native login auto-replaced on quit.
+	RestoreNativeOnQuit bool `json:"restore_native_on_quit"`
+}
+
+const settingsKey = "settings"
+
+// DefaultSettings mirrors PRD §5.4 defaults: System theme, 60s poll interval,
+// 95% cooldown threshold, restore native on quit (matches prior behaviour).
+var DefaultSettings = Settings{
+	Theme:                    "system",
+	SidebarMode:              "auto",
+	UsagePollIntervalSec:     60,
+	CooldownThresholdPercent: 95,
+	RestoreNativeOnQuit:      true,
+}
+
+// GetSettings reads the settings blob. Missing row → defaults. Corrupt JSON
+// is treated like missing so a hand-edited kv row can't brick startup.
+func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
+	var raw string
+	row := s.db.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, settingsKey)
+	if err := row.Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DefaultSettings, nil
+		}
+		return Settings{}, err
+	}
+	v := DefaultSettings
+	// Unmarshal into a copy of defaults so missing fields stay populated.
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return DefaultSettings, nil
+	}
+	return mergeSettingsDefaults(v), nil
+}
+
+// SetSettings writes the settings blob, after clamping numeric ranges and
+// substituting defaults for empty strings — the frontend can submit raw
+// values and trust the server to land on a valid state.
+func (s *Store) SetSettings(ctx context.Context, v Settings) (Settings, error) {
+	v = mergeSettingsDefaults(v)
+	buf, err := json.Marshal(v)
+	if err != nil {
+		return Settings{}, fmt.Errorf("marshal settings: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		settingsKey, string(buf), time.Now().UnixMilli())
+	if err != nil {
+		return Settings{}, err
+	}
+	return v, nil
+}
+
+// mergeSettingsDefaults clamps numeric ranges and substitutes empty strings
+// with their default, so a partial PUT body (or a hand-edited kv row) lands
+// on a coherent value rather than a half-zeroed struct.
+func mergeSettingsDefaults(v Settings) Settings {
+	if v.Theme == "" {
+		v.Theme = DefaultSettings.Theme
+	}
+	if v.SidebarMode == "" {
+		v.SidebarMode = DefaultSettings.SidebarMode
+	}
+	if v.UsagePollIntervalSec <= 0 {
+		v.UsagePollIntervalSec = DefaultSettings.UsagePollIntervalSec
+	}
+	if v.UsagePollIntervalSec < 30 {
+		v.UsagePollIntervalSec = 30
+	}
+	if v.UsagePollIntervalSec > 300 {
+		v.UsagePollIntervalSec = 300
+	}
+	if v.CooldownThresholdPercent <= 0 {
+		v.CooldownThresholdPercent = DefaultSettings.CooldownThresholdPercent
+	}
+	v.CooldownThresholdPercent = clampPercent(v.CooldownThresholdPercent)
+	return v
 }
 
 func ifEmpty(s, dflt string) string {

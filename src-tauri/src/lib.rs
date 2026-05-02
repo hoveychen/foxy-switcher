@@ -20,6 +20,7 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Manager, RunEvent, WindowEvent,
 };
+use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
 #[derive(Default)]
 struct ServerState {
@@ -53,6 +54,53 @@ fn get_daemon_mode(app: AppHandle) -> &'static str {
     } else {
         "attached"
     }
+}
+
+// restart_daemon: SIGTERM the current sidecar and respawn. Only valid when
+// we own the child — for attached daemons the disconnect banner shows a
+// "the daemon belongs to another process" hint instead of this button.
+#[tauri::command]
+fn restart_daemon(app: AppHandle) -> Result<u16, String> {
+    sidecar::restart(&app)
+}
+
+// Launch-at-login wrappers around tauri-plugin-autostart. The frontend
+// hits these from Settings; the plugin handles per-platform persistence
+// (macOS LaunchAgent .plist, Windows Run key, Linux .desktop autostart).
+#[tauri::command]
+fn autostart_is_enabled(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn autostart_set(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let m = app.autolaunch();
+    if enabled {
+        m.enable().map_err(|e| e.to_string())
+    } else {
+        m.disable().map_err(|e| e.to_string())
+    }
+}
+
+// reveal_data_dir opens ~/.foxy-switcher in the OS file manager (Finder /
+// Explorer / nautilus). Backed by tauri-plugin-opener's reveal-in-dir which
+// highlights the directory itself, mirroring "Reveal in Finder" semantics.
+#[tauri::command]
+fn reveal_data_dir(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = sidecar::data_dir().map_err(|e| e.to_string())?;
+    app.opener()
+        .reveal_item_in_dir(dir.to_string_lossy().as_ref())
+        .map_err(|e| e.to_string())
+}
+
+// data_dir_path returns the resolved ~/.foxy-switcher so the Settings page
+// can show it without baking platform logic into the React side.
+#[tauri::command]
+fn data_dir_path() -> Result<String, String> {
+    sidecar::data_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
 }
 
 // Hook SIGTERM/SIGINT (Ctrl-C on Windows) into the same exit path the tray
@@ -100,12 +148,41 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        // AppleScript launcher works without bundle codesigning fuss; the
+        // empty arg list means autostart launches with no extra flags.
+        // Pass --start-minimized so a launchd / Run-key triggered launch can
+        // be distinguished from a manual one. The Tauri setup() consults the
+        // user's StartMinimized preference and hides the window only when
+        // both signals agree.
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::AppleScript,
+            Some(vec!["--start-minimized"]),
+        ))
         .manage(ServerState::default())
-        .invoke_handler(tauri::generate_handler![get_server_port, get_daemon_mode])
+        .invoke_handler(tauri::generate_handler![
+            get_server_port,
+            get_daemon_mode,
+            restart_daemon,
+            autostart_is_enabled,
+            autostart_set,
+            reveal_data_dir,
+            data_dir_path
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             sidecar::spawn(&handle)?;
             install_signal_handler(app.handle().clone());
+
+            // Tray-only launch: when the autostart entry fires, it passes
+            // --start-minimized so we know to hide the window. Manual launches
+            // never carry this flag, so this never blocks a regular open.
+            if std::env::args().any(|a| a == "--start-minimized") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
 
             let show_item = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;

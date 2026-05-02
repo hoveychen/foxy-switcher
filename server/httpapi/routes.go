@@ -35,10 +35,14 @@ type Server struct {
 	// immediately. Nil-safe — tests and the legacy --no-activity path leave
 	// it unset and the per-call Emit becomes a no-op.
 	Bus *activity.Bus
+	// StartedAt is the daemon's wall-clock start time, surfaced by
+	// /api/about so the Settings page can show "uptime". Set in New so the
+	// value matches the process even if main() does work before binding.
+	StartedAt time.Time
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {
-	return &Server{Store: st, PKCE: pk, Refresher: rf, DataDir: dataDir}
+	return &Server{Store: st, PKCE: pk, Refresher: rf, DataDir: dataDir, StartedAt: time.Now()}
 }
 
 // Handler returns the *http.ServeMux wired with every route. Bind it on
@@ -58,7 +62,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/cred/status", s.handleCredStatus)
 	mux.HandleFunc("GET /api/auto-switch", s.handleGetAutoSwitch)
 	mux.HandleFunc("POST /api/auto-switch", s.handleSetAutoSwitch)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handleSetSettings)
 	mux.HandleFunc("GET /api/activity", s.handleListActivity)
+	mux.HandleFunc("GET /api/activity/stream", s.handleActivityStream)
+	mux.HandleFunc("GET /api/dashboard", s.handleGetDashboard)
+	mux.HandleFunc("GET /api/about", s.handleGetAbout)
+	mux.HandleFunc("POST /api/reset", s.handleResetData)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
@@ -576,6 +586,253 @@ func (s *Server) handleListActivity(w http.ResponseWriter, r *http.Request) {
 		events = []activity.Event{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+// handleActivityStream is the SSE pendant of /api/activity. The frontend
+// opens an EventSource on this URL and gets a push for every new event the
+// bus publishes; on disconnect (browser closing the tab, daemon restart,
+// network) it can fall back to polling /api/activity until the stream
+// reattaches.
+//
+// Wire format: each event is a single SSE block —
+//
+//	id: 42\n
+//	event: activity\n
+//	data: {…json…}\n\n
+//
+// "id:" lets the browser send Last-Event-ID on reconnect; we honor it by
+// flushing every event with id > Last-Event-ID from the ring before
+// switching to live subscription. A 25s heartbeat keeps proxies / OS-level
+// idle timers from reaping the connection.
+func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // belt-and-suspenders for proxies
+	w.WriteHeader(http.StatusOK)
+
+	var lastID int64
+	if h := r.Header.Get("Last-Event-ID"); h != "" {
+		if n, err := strconv.ParseInt(h, 10, 64); err == nil {
+			lastID = n
+		}
+	}
+
+	// Replay anything the client missed since its Last-Event-ID. List()
+	// returns newest-first; reverse-iterate so the wire ordering is
+	// chronological — that matches the frontend's append-only render.
+	if lastID > 0 {
+		backlog := s.Bus.List(activity.Filter{SinceID: lastID, Limit: 200})
+		for i := len(backlog) - 1; i >= 0; i-- {
+			if !writeSSEEvent(w, backlog[i]) {
+				return
+			}
+		}
+		flusher.Flush()
+	}
+
+	// Subscribe BEFORE writing the initial "ready" comment to avoid a race
+	// where an event lands between replay and subscribe.
+	ch := make(chan activity.Event, 64)
+	subID := s.Bus.Subscribe(ch)
+	defer s.Bus.Unsubscribe(subID)
+
+	// Initial comment so browsers / curl know the stream is live and so
+	// reverse-proxies flush their buffers immediately.
+	if _, err := fmt.Fprintf(w, ": ready\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			if !writeSSEEvent(w, ev) {
+				return
+			}
+			flusher.Flush()
+		case <-heartbeat.C:
+			if _, err := fmt.Fprintf(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// writeSSEEvent encodes one activity.Event into the wire format. Returns
+// false if the underlying connection failed and the caller should give up.
+func writeSSEEvent(w http.ResponseWriter, ev activity.Event) bool {
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		return true // skip malformed event, keep stream alive
+	}
+	_, err = fmt.Fprintf(w, "id: %d\nevent: activity\ndata: %s\n\n", ev.ID, payload)
+	return err == nil
+}
+
+// --- dashboard ------------------------------------------------------------
+
+// DashboardKPIs are the four pool-level numbers shown above the trend chart.
+type DashboardKPIs struct {
+	PoolSize         int   `json:"pool_size"`
+	ActiveCount      int   `json:"active_count"`
+	InUseAccountID   int64 `json:"in_use_account_id"`   // 0 = none injected
+	NextCooldownAt   int64 `json:"next_cooldown_at"`    // unix millis; 0 = none scheduled
+	PeakUtilPercent  int   `json:"peak_util_percent"`   // max across windows, all accounts
+}
+
+// DashboardTrendBucket is one hour of usage history aggregated across the
+// pool. Each value is the max utilization observed in the bucket (so the
+// chart shows the worst-case headroom, which is what matters for
+// "is the pool about to throttle").
+type DashboardTrendBucket struct {
+	TS              int64   `json:"ts"` // unix millis at bucket start (top of hour)
+	FiveHour        float64 `json:"five_hour"`
+	SevenDay        float64 `json:"seven_day"`
+	SevenDaySonnet  float64 `json:"seven_day_sonnet"`
+}
+
+// DashboardResponse is the wire shape returned by GET /api/dashboard.
+type DashboardResponse struct {
+	KPIs  DashboardKPIs          `json:"kpis"`
+	Trend []DashboardTrendBucket `json:"trend"`
+}
+
+// handleGetDashboard backs the Dashboard page. Returns pool-level KPIs and a
+// 24h hour-bucketed utilization trend derived from usage_history rows.
+//
+// Aggregation rule per bucket: max across all accounts and all sample rows
+// that fall in the hour. We pick max over avg because the user's mental model
+// is "is anything close to throttling" — averaging would mask a single hot
+// account.
+func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	accs, err := s.Store.List(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	now := time.Now()
+	kpis := DashboardKPIs{PoolSize: len(accs)}
+	if s.Cred != nil {
+		kpis.InUseAccountID = s.Cred.Status().ManagedAccountID
+	}
+	var nextCd int64
+	var peak float64
+	for _, a := range accs {
+		if a.Status == "active" {
+			kpis.ActiveCount++
+		}
+		if a.CooldownUntil > now.UnixMilli() {
+			if nextCd == 0 || a.CooldownUntil < nextCd {
+				nextCd = a.CooldownUntil
+			}
+		}
+		for _, u := range []float64{a.FiveHourUtil, a.SevenDayUtil, a.SevenDaySonnetUtil} {
+			if u > peak {
+				peak = u
+			}
+		}
+	}
+	kpis.NextCooldownAt = nextCd
+	kpis.PeakUtilPercent = int(peak + 0.5) // round to nearest
+
+	since := now.Add(-24 * time.Hour).UnixMilli()
+	rows, err := s.Store.UsageHistorySince(ctx, since)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Bucket into 24 hourly slots aligned to the top of the current hour.
+	const buckets = 24
+	hourMs := int64(time.Hour / time.Millisecond)
+	bucketStart := now.Truncate(time.Hour).UnixMilli() - int64(buckets-1)*hourMs
+	type agg struct{ five, seven, sonnet float64 }
+	bucketed := make([]agg, buckets)
+	for _, row := range rows {
+		idx := int((row.Timestamp - bucketStart) / hourMs)
+		if idx < 0 || idx >= buckets {
+			continue
+		}
+		if row.FiveHourUtil > bucketed[idx].five {
+			bucketed[idx].five = row.FiveHourUtil
+		}
+		if row.SevenDayUtil > bucketed[idx].seven {
+			bucketed[idx].seven = row.SevenDayUtil
+		}
+		if row.SevenDaySonnetUtil > bucketed[idx].sonnet {
+			bucketed[idx].sonnet = row.SevenDaySonnetUtil
+		}
+	}
+	trend := make([]DashboardTrendBucket, buckets)
+	for i := 0; i < buckets; i++ {
+		trend[i] = DashboardTrendBucket{
+			TS:             bucketStart + int64(i)*hourMs,
+			FiveHour:       bucketed[i].five,
+			SevenDay:       bucketed[i].seven,
+			SevenDaySonnet: bucketed[i].sonnet,
+		}
+	}
+	writeJSON(w, http.StatusOK, DashboardResponse{KPIs: kpis, Trend: trend})
+}
+
+// --- settings -------------------------------------------------------------
+
+// handleGetSettings returns the persisted user-prefs blob, with defaults
+// substituted for any missing/clamped fields. Always 200 — a fresh install
+// returns DefaultSettings rather than 404 so the frontend can hydrate
+// uniformly on first launch.
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	v, err := s.Store.GetSettings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// handleSetSettings persists the supplied prefs. The store clamps numeric
+// fields and substitutes defaults for empty strings, so the frontend can
+// submit raw values; the response echoes the canonical form so the UI can
+// snap to it without re-fetching.
+//
+// Note: theme / sidebar are frontend-only (the server stores them verbatim);
+// usage_poll_interval_sec applies on next daemon start (the running poller
+// keeps its current cadence to avoid racing in-flight ticks);
+// restore_native_on_quit is read at shutdown by the credinject coordinator.
+func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
+	var req store.Settings
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	v, err := s.Store.SetSettings(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Push the restore flag to the coordinator so the shutdown path picks
+	// up the new value without a daemon restart.
+	if s.Cred != nil {
+		s.Cred.SetRestoreOnQuit(v.RestoreNativeOnQuit)
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 // --- credinject status ----------------------------------------------------

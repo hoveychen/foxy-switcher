@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -455,6 +456,19 @@ func (m *model) handleAddPasteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingState = ""
 		m.pendingURL = ""
 		return m, nil
+	case "ctrl+y":
+		if m.pendingURL == "" {
+			return m, nil
+		}
+		if err := clipboard.WriteAll(m.pendingURL); err != nil {
+			m.statusErr = "copy URL: " + err.Error()
+			m.statusMsg = ""
+		} else {
+			m.statusMsg = "URL copied to clipboard"
+			m.statusErr = ""
+		}
+		m.statusExpiresAt = time.Now().Add(statusToastTTL)
+		return m, statusExpireCmd()
 	case "enter":
 		pasted := strings.TrimSpace(m.addPaste.Value())
 		if pasted == "" {

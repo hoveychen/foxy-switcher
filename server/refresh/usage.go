@@ -28,6 +28,11 @@ type UsagePoller struct {
 	done   chan struct{}
 	logger *log.Logger
 
+	// Interval is the ticker period. Defaults to UsageInterval when zero.
+	// Wired from store.Settings.UsagePollIntervalSec at daemon start so the
+	// user's preference takes effect on the next launch.
+	Interval time.Duration
+
 	// OnChange fires once per tick if any account's usage row was updated.
 	// The credinject Coordinator uses it to reconcile the keychain
 	// immediately when, e.g., a 5h window resets and an account becomes
@@ -56,10 +61,14 @@ func NewUsagePoller(st *store.Store, logger *log.Logger) *UsagePoller {
 // first ticker fire so the UI doesn't have to wait 5 minutes for any usage
 // data after a sidecar restart.
 func (p *UsagePoller) Start(ctx context.Context) {
+	interval := p.Interval
+	if interval <= 0 {
+		interval = UsageInterval
+	}
 	go func() {
 		defer close(p.done)
 		p.tick(ctx)
-		t := time.NewTicker(UsageInterval)
+		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
 			select {
@@ -128,9 +137,16 @@ func (p *UsagePoller) tick(ctx context.Context) {
 				fmt.Sprintf("Usage poll for %s failed: %v", a.Name, err))
 			continue
 		}
+		fhU, sdU, ssU := flattenUsage(u)
 		if err := writeUsage(ctx, p.st, a.ID, u); err != nil {
 			p.logger.Printf("[usage] account %d store: %v", a.ID, err)
 			continue
+		}
+		// Append a history row so the Dashboard 24h trend can render. Failure
+		// is non-fatal — the live row in `accounts` is the source of truth;
+		// history is decorative.
+		if err := p.st.AppendUsageHistory(ctx, a.ID, time.Now().UnixMilli(), fhU, sdU, ssU); err != nil {
+			p.logger.Printf("[usage] account %d history: %v", a.ID, err)
 		}
 		polled++
 		changed = true
@@ -155,16 +171,29 @@ func pluralS(n int) string {
 // the helper in package httpapi (kept duplicated to avoid a circular import:
 // httpapi already depends on refresh).
 func writeUsage(ctx context.Context, st *store.Store, id int64, u *anthropic.Usage) error {
-	var fhU, sdU, ssU float64
+	fhU, sdU, ssU := flattenUsage(u)
 	var fhR, sdR, ssR string
 	if u.FiveHour != nil {
-		fhU, fhR = u.FiveHour.Utilization, u.FiveHour.ResetsAt
+		fhR = u.FiveHour.ResetsAt
 	}
 	if u.SevenDay != nil {
-		sdU, sdR = u.SevenDay.Utilization, u.SevenDay.ResetsAt
+		sdR = u.SevenDay.ResetsAt
 	}
 	if u.SevenDaySonnet != nil {
-		ssU, ssR = u.SevenDaySonnet.Utilization, u.SevenDaySonnet.ResetsAt
+		ssR = u.SevenDaySonnet.ResetsAt
 	}
 	return st.SetUsage(ctx, id, fhU, fhR, sdU, sdR, ssU, ssR)
+}
+
+func flattenUsage(u *anthropic.Usage) (fhU, sdU, ssU float64) {
+	if u.FiveHour != nil {
+		fhU = u.FiveHour.Utilization
+	}
+	if u.SevenDay != nil {
+		sdU = u.SevenDay.Utilization
+	}
+	if u.SevenDaySonnet != nil {
+		ssU = u.SevenDaySonnet.Utilization
+	}
+	return
 }
