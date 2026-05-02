@@ -107,6 +107,13 @@ type accountView struct {
 	ExpiresAt        int64  `json:"expires_at"`
 	Scopes           string `json:"scopes"`
 	SubscriptionType string `json:"subscription_type"`
+	// RateLimitTier is the authoritative quota label from
+	// /api/oauth/profile.organization.rate_limit_tier. Values:
+	// "default_claude_pro" | "default_claude_max_5x" | "default_claude_max_20x"
+	// (and "" for legacy rows backfilled on the next UsagePoller tick).
+	// Frontend dashboard pool aggregation keys off this — subscription_type
+	// can't tell personal Max 5x from Max 20x.
+	RateLimitTier    string `json:"rate_limit_tier"`
 	OrganizationUUID string `json:"organization_uuid"`
 	// AccountUUID is exposed for debug-surface use (e.g. spotting two local
 	// rows that map to the same Anthropic user). Empty for older rows that
@@ -143,6 +150,7 @@ func toView(a store.Account) accountView {
 	view := accountView{
 		ID: a.ID, Name: a.Name, ExpiresAt: a.ExpiresAt, Scopes: a.Scopes,
 		SubscriptionType: a.SubscriptionType,
+		RateLimitTier:    a.RateLimitTier,
 		OrganizationUUID: a.OrganizationUUID,
 		AccountUUID:      a.AccountUUID,
 		Status:           a.Status,
@@ -253,6 +261,7 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		OrganizationName: prof.OrganizationName,
 		Plan:             prof.Plan,
 		SubscriptionType: prof.SubscriptionType,
+		RateLimitTier:    prof.RateLimitTier,
 		// OrganizationUUID is currently not surfaced by /api/oauth/profile;
 		// we keep the column for future use when Anthropic exposes it.
 	}
@@ -704,11 +713,64 @@ type DashboardKPIs struct {
 // pool. Each value is the max utilization observed in the bucket (so the
 // chart shows the worst-case headroom, which is what matters for
 // "is the pool about to throttle").
+//
+// The *_used / *_capacity / *_pct fields mirror the dashboard's pool-wide
+// quota cards: each account contributes weighted by its subscription tier
+// (planWeight). used and capacity are in Pro-equivalents (Pro=1, Max5x=5,
+// TeamPremium=20 for 5h / 10 for 7d). For each bucket, used is the sum
+// over accounts of (peak_utilization_in_bucket / 100) * weight; capacity
+// is the sum of weights across all currently-tracked accounts (constant
+// across buckets, but emitted per-bucket to keep the chart self-contained).
 type DashboardTrendBucket struct {
 	TS              int64   `json:"ts"` // unix millis at bucket start (top of hour)
 	FiveHour        float64 `json:"five_hour"`
 	SevenDay        float64 `json:"seven_day"`
 	SevenDaySonnet  float64 `json:"seven_day_sonnet"`
+	FiveHourUsed     float64 `json:"five_hour_used"`
+	FiveHourCapacity float64 `json:"five_hour_capacity"`
+	FiveHourPct      float64 `json:"five_hour_pct"`
+	SevenDayUsed     float64 `json:"seven_day_used"`
+	SevenDayCapacity float64 `json:"seven_day_capacity"`
+	SevenDayPct      float64 `json:"seven_day_pct"`
+}
+
+// planWeight returns this account's Pro-equivalent (5h, 7d) weights.
+// Mirrors src/api.ts:planWeight — keep in sync.
+//
+// Primary key: rate_limit_tier from /api/oauth/profile.organization.
+// rate_limit_tier — the only field that distinguishes personal Max 5x
+// from Max 20x, and that reveals whether a Team Premium org actually
+// has Max-parity quota (one observed Team Premium org reports
+// "default_claude_max_5x", not 20x — so the old per-subscription_type
+// weight of 20/10 was over-counting Team Premium pools).
+//
+// Fallback: subscription_type for legacy rows whose tier hasn't been
+// backfilled by the next UsagePoller tick (RateLimitTier=="").
+func planWeight(rateTier, sub string) (w5h, w7d float64) {
+	switch rateTier {
+	case "default_claude_pro":
+		return 1, 1
+	case "default_claude_max_5x":
+		return 5, 5
+	case "default_claude_max_20x":
+		return 20, 10
+	}
+	// Legacy fallback for rows whose tier hasn't been backfilled.
+	// Conservatively assume Max=5x and Team Premium=5x (the observed
+	// value at our example org), erring on the side of under-stating
+	// rather than over-stating the pool.
+	switch sub {
+	case "pro":
+		return 1, 1
+	case "max":
+		return 5, 5
+	case "team":
+		return 5, 5
+	case "team_premium":
+		return 5, 5
+	default:
+		return 0, 0
+	}
 }
 
 // DashboardResponse is the wire shape returned by GET /api/dashboard.
@@ -779,6 +841,12 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	bucketStart := now.Truncate(time.Hour).UnixMilli() - int64(buckets-1)*hourMs
 	type agg struct{ five, seven, sonnet float64 }
 	bucketed := make([]agg, buckets)
+	// peakPerAccount tracks each account's peak utilization within each
+	// bucket, so we can compute the weighted sum correctly. Sample rows
+	// arrive every 5 min; using max-per-account avoids double-counting
+	// when an account had multiple polls in the same hour.
+	type pa struct{ five, seven float64 }
+	peakPerAccount := make(map[int]map[int64]pa) // bucketIdx -> accountID -> peaks
 	for _, row := range rows {
 		idx := int((row.Timestamp - bucketStart) / hourMs)
 		if idx < 0 || idx >= buckets {
@@ -793,14 +861,59 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		if row.SevenDaySonnetUtil > bucketed[idx].sonnet {
 			bucketed[idx].sonnet = row.SevenDaySonnetUtil
 		}
+		m, ok := peakPerAccount[idx]
+		if !ok {
+			m = make(map[int64]pa)
+			peakPerAccount[idx] = m
+		}
+		cur := m[row.AccountID]
+		if row.FiveHourUtil > cur.five {
+			cur.five = row.FiveHourUtil
+		}
+		if row.SevenDayUtil > cur.seven {
+			cur.seven = row.SevenDayUtil
+		}
+		m[row.AccountID] = cur
 	}
+
+	// accountWeights maps each currently-tracked account to its (5h, 7d)
+	// Pro-equivalent weights. Capacity is the constant sum across accounts
+	// — emitted per-bucket so the chart is self-contained.
+	accountWeights := make(map[int64]struct{ w5h, w7d float64 }, len(accs))
+	var cap5h, cap7d float64
+	for _, a := range accs {
+		w5h, w7d := planWeight(a.RateLimitTier, a.SubscriptionType)
+		accountWeights[a.ID] = struct{ w5h, w7d float64 }{w5h, w7d}
+		cap5h += w5h
+		cap7d += w7d
+	}
+
 	trend := make([]DashboardTrendBucket, buckets)
 	for i := 0; i < buckets; i++ {
+		var used5h, used7d float64
+		for accID, p := range peakPerAccount[i] {
+			w := accountWeights[accID]
+			used5h += (p.five / 100) * w.w5h
+			used7d += (p.seven / 100) * w.w7d
+		}
+		var pct5h, pct7d float64
+		if cap5h > 0 {
+			pct5h = used5h / cap5h * 100
+		}
+		if cap7d > 0 {
+			pct7d = used7d / cap7d * 100
+		}
 		trend[i] = DashboardTrendBucket{
-			TS:             bucketStart + int64(i)*hourMs,
-			FiveHour:       bucketed[i].five,
-			SevenDay:       bucketed[i].seven,
-			SevenDaySonnet: bucketed[i].sonnet,
+			TS:               bucketStart + int64(i)*hourMs,
+			FiveHour:         bucketed[i].five,
+			SevenDay:         bucketed[i].seven,
+			SevenDaySonnet:   bucketed[i].sonnet,
+			FiveHourUsed:     used5h,
+			FiveHourCapacity: cap5h,
+			FiveHourPct:      pct5h,
+			SevenDayUsed:     used7d,
+			SevenDayCapacity: cap7d,
+			SevenDayPct:      pct7d,
 		}
 	}
 	writeJSON(w, http.StatusOK, DashboardResponse{KPIs: kpis, Trend: trend})

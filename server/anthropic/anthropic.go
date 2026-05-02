@@ -53,6 +53,13 @@ type Profile struct {
 	// "team_premium", "team", "free". Useful for programmatic comparisons;
 	// UI should prefer Plan.
 	SubscriptionType string
+	// RateLimitTier is the raw `organization.rate_limit_tier` from the
+	// profile response — values like "default_claude_pro",
+	// "default_claude_max_5x", "default_claude_max_20x". This is the
+	// authoritative quota label: it distinguishes personal Max 5x from
+	// Max 20x (subscription_type maps both to "max"), and it tells us
+	// whether a Team Premium org actually has Max-parity quota.
+	RateLimitTier string
 }
 
 // UsageWindow is one rate-limit window. Utilization is the percent the
@@ -73,6 +80,37 @@ type Usage struct {
 	SevenDaySonnet *UsageWindow
 }
 
+// DerivePlan computes the human-readable plan label from the canonical
+// subscription_type + rate_limit_tier pair. Exposed so callers (e.g. the
+// usage poller's stale-label detector) can reproduce the FetchProfile
+// algorithm without a network round-trip. Keep in sync with FetchProfile;
+// rate_limit_tier is the only field that distinguishes personal Max 5x from
+// Max 20x — has_claude_max is true for both — so we surface it in the label.
+// Older responses without rate_limit_tier fall back to the unqualified label.
+func DerivePlan(subType, rateTier string) string {
+	switch subType {
+	case "max":
+		switch rateTier {
+		case "default_claude_max_20x":
+			return "Claude Max 20x"
+		case "default_claude_max_5x":
+			return "Claude Max 5x"
+		default:
+			return "Claude Max"
+		}
+	case "pro":
+		return "Claude Pro"
+	case "team_premium":
+		return "Claude Team Premium"
+	case "team":
+		return "Claude Team"
+	case "free":
+		return "API / Free"
+	default:
+		return ""
+	}
+}
+
 // FetchProfile calls GET /api/oauth/profile with the given access token.
 // Used at login time to populate owner / plan columns.
 func FetchProfile(ctx context.Context, accessToken string) (*Profile, error) {
@@ -89,24 +127,25 @@ func FetchProfile(ctx context.Context, accessToken string) (*Profile, error) {
 	orgType, _ := org["organization_type"].(string)
 	rateTier, _ := org["rate_limit_tier"].(string)
 
-	var plan, subType string
+	var subType string
 	switch {
 	case hasMax:
-		plan, subType = "Claude Max", "max"
+		subType = "max"
 	case hasPro:
-		plan, subType = "Claude Pro", "pro"
+		subType = "pro"
 	case orgType == "claude_team":
 		// Premium gets Max-parity rate limits (e.g. "default_claude_max_5x");
 		// the standard Team tier reports pro-level limits. Verified against
 		// one Team Premium response; the standard-tier mapping is inferred.
 		if strings.Contains(rateTier, "claude_max") {
-			plan, subType = "Claude Team Premium", "team_premium"
+			subType = "team_premium"
 		} else {
-			plan, subType = "Claude Team", "team"
+			subType = "team"
 		}
 	default:
-		plan, subType = "API / Free", "free"
+		subType = "free"
 	}
+	plan := DerivePlan(subType, rateTier)
 
 	return &Profile{
 		AccountUUID:      asString(acct["uuid"]),
@@ -115,6 +154,7 @@ func FetchProfile(ctx context.Context, accessToken string) (*Profile, error) {
 		OrganizationName: asString(org["name"]),
 		Plan:             plan,
 		SubscriptionType: subType,
+		RateLimitTier:    rateTier,
 	}, nil
 }
 

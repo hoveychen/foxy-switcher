@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -178,28 +179,54 @@ func (p *dashboardPage) renderKPIRow() string {
 	}
 
 	k := p.data.KPIs
-	cardW := (p.width - 4) / 3
-	if cardW < 18 {
-		cardW = 18
+	cardW := (p.width - 6) / 4
+	if cardW < 16 {
+		cardW = 16
 	}
 
-	pool := kpiCard(
-		"Pool",
-		fmt.Sprintf("%d active", k.ActiveCount),
-		fmt.Sprintf("%d total", k.PoolSize),
-		pillNeutral,
-		cardW,
-	)
+	// Available: same buckets as the desktop dashboard — count
+	// active+!expired+!cooling as "available", with cooling/paused split out
+	// in the sub-line.
+	var healthy, cooling, paused, expired int
+	for _, a := range p.accounts {
+		switch {
+		case a.Status != "active":
+			paused++
+		case a.TokenExpired:
+			expired++
+		case accountIsCooling(a):
+			cooling++
+		default:
+			healthy++
+		}
+	}
+	availTone := pillOK
+	if len(p.accounts) == 0 {
+		availTone = pillNeutral
+	} else if healthy == 0 {
+		availTone = pillWarn
+	}
+	availValue := fmt.Sprintf("%d", healthy)
+	if len(p.accounts) == 0 {
+		availValue = "—"
+	}
+	availSub := fmt.Sprintf("%d total · %d cool · %d paused", len(p.accounts), cooling, paused)
+	if len(p.accounts) == 0 {
+		availSub = "no accounts yet"
+	}
+	avail := kpiCard("Available", availValue, availSub, availTone, cardW)
 
-	peakTone := utilTone(float64(k.PeakUtilPercent))
-	peak := kpiCard(
-		"Peak util",
-		fmt.Sprintf("%d%%", k.PeakUtilPercent),
-		p.peakAccountName(),
-		peakTone,
-		cardW,
-	)
+	// 5h / 7d weighted pool — live snapshot from the local accounts slice
+	// (matches the frontend's poolWindowTotals call). We don't read the
+	// trend bucket's *_pct here because that's hour-aligned historical
+	// data; the KPI should reflect the latest poll.
+	used5h, cap5h, pct5h := poolWindowTotals(p.accounts, "five_hour")
+	used7d, cap7d, pct7d := poolWindowTotals(p.accounts, "seven_day")
 
+	five := poolKPI("5h pool", used5h, cap5h, pct5h, cardW)
+	seven := poolKPI("7d pool", used7d, cap7d, pct7d, cardW)
+
+	// Next reset: unchanged semantics — soonest reset across throttled windows.
 	rstValue := "—"
 	rstSub := "none cooling"
 	rstTone := pillNeutral
@@ -216,7 +243,29 @@ func (p *dashboardPage) renderKPIRow() string {
 	}
 	rst := kpiCard("Next reset", rstValue, rstSub, rstTone, cardW)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, pool, " ", peak, " ", rst)
+	return lipgloss.JoinHorizontal(lipgloss.Top, avail, " ", five, " ", seven, " ", rst)
+}
+
+// poolKPI renders one weighted-pool card (5h or 7d). Value is "used / cap x"
+// (e.g. "3.2 / 11x"); sub is the percent. Capacity 0 (empty pool) falls
+// back to a muted "—".
+func poolKPI(label string, used, capacity, percent float64, w int) string {
+	if capacity <= 0 {
+		return kpiCard(label, "—", "no quota", pillNeutral, w)
+	}
+	value := fmt.Sprintf("%s / %sx", fmtX(used), fmtX(capacity))
+	sub := fmt.Sprintf("%d%% used", int(percent+0.5))
+	return kpiCard(label, value, sub, utilTone(percent), w)
+}
+
+// fmtX trims trailing zeros from Pro-equivalent counts so "5.0" renders as
+// "5" but "3.5" stays "3.5". Mirrors src/pages/DashboardPage.tsx:fmtX so the
+// two surfaces format identically.
+func fmtX(v float64) string {
+	if v == float64(int(v)) {
+		return strconv.Itoa(int(v))
+	}
+	return strconv.FormatFloat(v, 'f', 1, 64)
 }
 
 func (p *dashboardPage) renderTrend() string {
@@ -224,18 +273,30 @@ func (p *dashboardPage) renderTrend() string {
 		return ""
 	}
 
-	heading := headerStyle.Render("24h trend")
+	heading := headerStyle.Render("24h trend — weighted pool")
 	if len(p.data.Trend) == 0 {
 		return heading + "\n" + dimStyle.Render("(no samples yet)")
 	}
 
+	// Weighted-pool percent: the same lines the desktop dashboard renders.
+	// Old daemons (pre rate_limit_tier rollout) leave *_pct as 0 across all
+	// buckets — fall back to the legacy max-utilization lines so users on
+	// older builds still see a meaningful chart.
 	five := make([]float64, len(p.data.Trend))
 	seven := make([]float64, len(p.data.Trend))
-	sonnet := make([]float64, len(p.data.Trend))
+	hasPct := false
 	for i, b := range p.data.Trend {
-		five[i] = b.FiveHour
-		seven[i] = b.SevenDay
-		sonnet[i] = b.SevenDaySonnet
+		five[i] = b.FiveHourPct
+		seven[i] = b.SevenDayPct
+		if b.FiveHourPct > 0 || b.SevenDayPct > 0 {
+			hasPct = true
+		}
+	}
+	if !hasPct {
+		for i, b := range p.data.Trend {
+			five[i] = b.FiveHour
+			seven[i] = b.SevenDay
+		}
 	}
 
 	chartW := p.width - 12
@@ -246,8 +307,6 @@ func (p *dashboardPage) renderTrend() string {
 		chartW = 12
 	}
 
-	// Use accent / info / warn colors so each window line is distinguishable
-	// from the others without relying on labels.
 	rows := sparklineStacked(chartW, 8,
 		struct {
 			Label  string
@@ -259,11 +318,6 @@ func (p *dashboardPage) renderTrend() string {
 			Values []float64
 			Color  lipgloss.TerminalColor
 		}{"7d", seven, tokenInfo},
-		struct {
-			Label  string
-			Values []float64
-			Color  lipgloss.TerminalColor
-		}{"7d-S", sonnet, tokenWarn},
 	)
 	return heading + "\n" + rows
 }
@@ -365,22 +419,6 @@ func (p *dashboardPage) inUseAccount() (Account, bool) {
 		}
 	}
 	return Account{}, false
-}
-
-func (p *dashboardPage) peakAccountName() string {
-	var top Account
-	var best float64
-	for _, a := range p.accounts {
-		u := maxUtilization(a)
-		if u > best {
-			best = u
-			top = a
-		}
-	}
-	if top.ID == 0 {
-		return ""
-	}
-	return top.Name
 }
 
 // resetAccountName finds the account whose soonest throttled-window reset

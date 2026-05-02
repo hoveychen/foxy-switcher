@@ -43,6 +43,13 @@ type Account struct {
 	FullName         string
 	OrganizationName string
 	Plan             string // "Claude Max" | "Claude Pro" | "Claude Team Premium" | "Claude Team" | "API / Free"
+	// RateLimitTier is the raw `organization.rate_limit_tier` from
+	// /api/oauth/profile — "default_claude_pro" | "default_claude_max_5x" |
+	// "default_claude_max_20x" (and "" for legacy rows that haven't been
+	// backfilled yet). The pool-aggregate dashboard weights off this so we
+	// can distinguish personal Max 5x from Max 20x; subscription_type maps
+	// both to "max".
+	RateLimitTier string
 
 	// Usage fields refreshed periodically from /api/oauth/usage.
 	// Utilization is 0–100 (percent). ResetsAt is RFC3339; empty when the
@@ -111,7 +118,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   five_hour_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
-  account_uuid               TEXT    NOT NULL DEFAULT ''
+  account_uuid               TEXT    NOT NULL DEFAULT '',
+  rate_limit_tier            TEXT    NOT NULL DEFAULT ''
 );
 `
 
@@ -184,6 +192,13 @@ var columnMigrations = []string{
 	// account_uuid is the stable per-user id from /api/oauth/profile. Older
 	// rows backfill this on the next UsagePoller tick (see refresh.UsagePoller).
 	`ALTER TABLE accounts ADD COLUMN account_uuid TEXT NOT NULL DEFAULT ''`,
+	// rate_limit_tier is the authoritative quota label from
+	// /api/oauth/profile.organization.rate_limit_tier — values like
+	// "default_claude_pro", "default_claude_max_5x", "default_claude_max_20x".
+	// We use it (not subscription_type) to weight pool-aggregate dashboards,
+	// because subscription_type can't tell personal Max 5x from Max 20x.
+	// Older rows backfill on the next UsagePoller tick.
+	`ALTER TABLE accounts ADD COLUMN rate_limit_tier TEXT NOT NULL DEFAULT ''`,
 }
 
 type Store struct {
@@ -295,7 +310,8 @@ CREATE TABLE accounts_new (
   five_hour_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
-  account_uuid               TEXT    NOT NULL DEFAULT ''
+  account_uuid               TEXT    NOT NULL DEFAULT '',
+  rate_limit_tier            TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
   id, name, access_token, refresh_token, expires_at, scopes,
@@ -307,7 +323,7 @@ INSERT INTO accounts_new SELECT
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid FROM accounts;
+  account_uuid, rate_limit_tier FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -366,7 +382,8 @@ CREATE TABLE accounts_new (
   five_hour_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
-  account_uuid               TEXT    NOT NULL DEFAULT ''
+  account_uuid               TEXT    NOT NULL DEFAULT '',
+  rate_limit_tier            TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
   id, name, access_token, refresh_token, expires_at, scopes,
@@ -378,7 +395,7 @@ INSERT INTO accounts_new SELECT
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid FROM accounts;
+  account_uuid, rate_limit_tier FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -451,7 +468,7 @@ UPDATE accounts SET
   access_token = ?, refresh_token = ?, expires_at = ?,
   scopes = ?, subscription_type = ?, organization_uuid = ?,
   email = ?, full_name = ?, organization_name = ?, plan = ?,
-  account_uuid = ?,
+  account_uuid = ?, rate_limit_tier = ?,
   status = 'active',
   updated_at = ?
 WHERE id = ?`,
@@ -459,7 +476,7 @@ WHERE id = ?`,
 			a.AccessToken, a.RefreshToken, a.ExpiresAt,
 			a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 			a.Email, a.FullName, a.OrganizationName, a.Plan,
-			a.AccountUUID,
+			a.AccountUUID, a.RateLimitTier,
 			a.UpdatedAt, existingID,
 		); err != nil {
 			return err
@@ -472,14 +489,14 @@ INSERT INTO accounts
   (name, access_token, refresh_token, expires_at, scopes, subscription_type,
    organization_uuid, status, last_used_at,
    created_at, updated_at,
-   email, full_name, organization_name, plan, account_uuid)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   email, full_name, organization_name, plan, account_uuid, rate_limit_tier)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
 		a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 		ifEmpty(a.Status, "active"), a.LastUsedAt,
 		a.CreatedAt, a.UpdatedAt,
 		a.Email, a.FullName, a.OrganizationName, a.Plan,
-		a.AccountUUID,
+		a.AccountUUID, a.RateLimitTier,
 	)
 	if err != nil {
 		return err
@@ -516,12 +533,12 @@ UPDATE accounts
 // index doesn't trip. The user resolves the duplicate by deleting one row
 // in the UI.
 func (s *Store) SetProfile(ctx context.Context, id int64,
-	accountUUID, email, fullName, organizationName, plan, subscriptionType string,
+	accountUUID, email, fullName, organizationName, plan, subscriptionType, rateLimitTier string,
 ) error {
 	const q = `
 UPDATE accounts
    SET email = ?, full_name = ?, organization_name = ?, plan = ?,
-       subscription_type = ?,
+       subscription_type = ?, rate_limit_tier = ?,
        account_uuid = CASE
          WHEN account_uuid = ''
               AND ? != ''
@@ -534,7 +551,7 @@ UPDATE accounts
        updated_at = ?
  WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, q,
-		email, fullName, organizationName, plan, subscriptionType,
+		email, fullName, organizationName, plan, subscriptionType, rateLimitTier,
 		accountUUID, accountUUID, id, accountUUID,
 		time.Now().UnixMilli(), id)
 	return err
@@ -692,7 +709,7 @@ seven_day_util, seven_day_resets_at,
 seven_day_sonnet_util, seven_day_sonnet_resets_at,
 usage_fetched_at,
 five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-account_uuid`
+account_uuid, rate_limit_tier`
 
 // List returns every row ordered by id (stable insertion order).
 func (s *Store) List(ctx context.Context) ([]Account, error) {
@@ -738,7 +755,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
-			&a.AccountUUID,
+			&a.AccountUUID, &a.RateLimitTier,
 		); err != nil {
 			return nil, err
 		}

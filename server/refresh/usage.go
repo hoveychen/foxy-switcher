@@ -116,17 +116,27 @@ func (p *UsagePoller) tick(ctx context.Context) {
 			continue
 		}
 		// Backfill profile for accounts that predate the profile-fetching
-		// feature. Plan is the canonical "is this row populated" tell — it
-		// always gets a non-empty value at login. We only run this when
-		// missing so the per-tick cost stays one HTTP call per account in
-		// steady state.
-		if a.Plan == "" || a.AccountUUID == "" {
+		// feature, or that predate rate_limit_tier. Plan / AccountUUID /
+		// RateLimitTier all get backfilled together since they come from
+		// the same /api/oauth/profile call. We only run this when one of
+		// them is missing so the per-tick cost stays one HTTP call per
+		// account in steady state.
+		//
+		// Also re-fetch when the stored Plan label is inconsistent with
+		// what DerivePlan would produce from the stored
+		// SubscriptionType + RateLimitTier — that's a sign the row was
+		// written by an older FetchProfile algorithm (e.g. before the
+		// 5x / 20x suffix was introduced) and needs a one-shot migration.
+		// Once the labels reconcile, the poll cost drops back to one call.
+		stalePlan := a.SubscriptionType != "" && a.RateLimitTier != "" &&
+			a.Plan != anthropic.DerivePlan(a.SubscriptionType, a.RateLimitTier)
+		if a.Plan == "" || a.AccountUUID == "" || a.RateLimitTier == "" || stalePlan {
 			if prof, err := anthropic.FetchProfile(ctx, a.AccessToken); err != nil {
 				p.logger.Printf("[usage] account %d profile backfill: %v", a.ID, err)
 			} else if err := p.st.SetProfile(ctx, a.ID,
 				prof.AccountUUID,
 				prof.Email, prof.FullName, prof.OrganizationName,
-				prof.Plan, prof.SubscriptionType,
+				prof.Plan, prof.SubscriptionType, prof.RateLimitTier,
 			); err != nil {
 				p.logger.Printf("[usage] account %d profile store: %v", a.ID, err)
 			}

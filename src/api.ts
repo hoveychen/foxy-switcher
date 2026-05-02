@@ -67,6 +67,12 @@ export interface Account {
   account_uuid: string;
   organization_uuid: string;
   subscription_type: string;
+  // Authoritative quota label from /api/oauth/profile.organization.rate_limit_tier:
+  // "default_claude_pro" | "default_claude_max_5x" | "default_claude_max_20x".
+  // Empty for legacy rows that haven't been backfilled by the next UsagePoller
+  // tick. This is the only field that distinguishes personal Max 5x from Max
+  // 20x; planWeight prefers it over subscription_type.
+  rate_limit_tier: string;
   expires_at: number;
   last_used_at: number;
   scopes: string;
@@ -135,6 +141,83 @@ export function accountResetAt(a: Account, now: Date = new Date()): number {
   return best;
 }
 
+// PlanWeight is the multiplier an account contributes to the pool's aggregated
+// quota relative to a Pro baseline. Anthropic doesn't publish raw quota
+// numbers, so we model the pool as "Pro-equivalents": a Pro seat is 1, a
+// Max 5x is 5, a Max 20x is 20 (5h) / 10 (7d). The 5h and 7d ratios diverge
+// upstream, hence the two fields.
+//
+// Primary key is rate_limit_tier (organization.rate_limit_tier from the
+// OAuth profile) — that's the only field that tells personal Max 5x apart
+// from Max 20x, and it reveals when a Team Premium org actually has 5x
+// limits (one observed Team Premium org reports default_claude_max_5x, not
+// 20x). subscription_type is only used as a legacy fallback for rows whose
+// tier hasn't been backfilled yet. Mirrors server/httpapi:planWeight.
+export interface PlanWeight {
+  five_hour: number;
+  seven_day: number;
+}
+
+export function planWeight(
+  rateLimitTier: string,
+  subscriptionType: string,
+): PlanWeight {
+  switch (rateLimitTier) {
+    case "default_claude_pro":
+      return { five_hour: 1, seven_day: 1 };
+    case "default_claude_max_5x":
+      return { five_hour: 5, seven_day: 5 };
+    case "default_claude_max_20x":
+      return { five_hour: 20, seven_day: 10 };
+  }
+  // Legacy fallback for rows whose tier hasn't been backfilled.
+  // Conservatively assume Max=5x and Team Premium=5x (the observed value
+  // at our example org), erring on the side of under-stating rather than
+  // over-stating the pool.
+  switch (subscriptionType) {
+    case "pro":
+      return { five_hour: 1, seven_day: 1 };
+    case "max":
+      return { five_hour: 5, seven_day: 5 };
+    case "team":
+      return { five_hour: 5, seven_day: 5 };
+    case "team_premium":
+      return { five_hour: 5, seven_day: 5 };
+    default:
+      return { five_hour: 0, seven_day: 0 };
+  }
+}
+
+// PoolWindowTotals are the weighted-sum aggregates for one usage window
+// across the live pool. Used is in Pro-equivalents, so used/capacity gives
+// the pool's effective utilization. Capacity is the sum of weights; for a
+// pool with one Pro and one Max5x, capacity for 5h is 6.
+export interface PoolWindowTotals {
+  used: number;
+  capacity: number;
+  percent: number; // used / capacity * 100, 0 when capacity is 0
+}
+
+export function poolWindowTotals(
+  accounts: Account[],
+  window: "five_hour" | "seven_day",
+): PoolWindowTotals {
+  let used = 0;
+  let capacity = 0;
+  for (const a of accounts) {
+    if (a.status !== "active") continue;
+    const w = planWeight(a.rate_limit_tier, a.subscription_type)[window];
+    if (w <= 0) continue;
+    capacity += w;
+    const u = a[window]?.utilization;
+    if (typeof u === "number") {
+      used += (Math.max(0, Math.min(100, u)) / 100) * w;
+    }
+  }
+  const percent = capacity > 0 ? (used / capacity) * 100 : 0;
+  return { used, capacity, percent };
+}
+
 export type AutoSwitchPolicy = "lru" | "lowest" | "rr";
 
 export interface AutoSwitchSettings {
@@ -195,6 +278,16 @@ export interface DashboardTrendBucket {
   five_hour: number;
   seven_day: number;
   seven_day_sonnet: number;
+  // Weighted pool aggregates per bucket. used and capacity are in
+  // Pro-equivalents (see planWeight); percent is used/capacity*100 with 0
+  // when capacity is 0. Older daemons omit these fields — treat 0 as "no
+  // data" and fall back to the legacy max-utilization lines.
+  five_hour_used?: number;
+  five_hour_capacity?: number;
+  five_hour_pct?: number;
+  seven_day_used?: number;
+  seven_day_capacity?: number;
+  seven_day_pct?: number;
 }
 
 export interface DashboardResponse {

@@ -5,6 +5,7 @@ import {
   accountIsCooling,
   accountResetAt,
   apiClient,
+  poolWindowTotals,
   type Account,
   type ActivityEvent,
   type DashboardTrendBucket,
@@ -15,6 +16,14 @@ import { t, tf } from "../i18n";
 
 type Tone = "ok" | "warn" | "danger" | "muted";
 type Policy = "lru" | "lowest" | "rr";
+
+// fmtX renders a Pro-equivalent quantity. Drops the decimal when the value
+// is an integer; otherwise keeps one digit so half-Pro contributions from
+// partial utilization aren't rounded out of view.
+function fmtX(v: number): string {
+  if (Math.abs(v - Math.round(v)) < 0.05) return `${Math.round(v)}`;
+  return v.toFixed(1);
+}
 
 function fmtRemaining(ms: number): string {
   if (ms <= 0) return t("dashboard.fmt.expired");
@@ -93,15 +102,8 @@ export function DashboardPage({
     { healthy: 0, cooling: 0, paused: 0, expired: 0 },
   );
 
-  let peakAcc: Account | null = null;
-  let peakPct = -1;
-  for (const a of accounts) {
-    const p = peakUtilization(a);
-    if (p !== null && p > peakPct) {
-      peakPct = p;
-      peakAcc = a;
-    }
-  }
+  const fiveHourPool = poolWindowTotals(accounts, "five_hour");
+  const sevenDayPool = poolWindowTotals(accounts, "seven_day");
 
   // Pair each cooling account with its soonest throttled-window reset, then
   // pick the row with the earliest reset for the "Next reset" KPI. Accounts
@@ -188,36 +190,70 @@ export function DashboardPage({
             <HeroEmpty onAdd={() => onNavigate("accounts")} />
           )}
 
-          <div className="kpi-grid kpi-grid-3">
+          <div className="kpi-grid">
             <KpiCard
-              label={t("dashboard.kpi.pool_size")}
+              label={t("dashboard.kpi.available")}
               value={
                 accounts.length === 0
                   ? t("dashboard.kpi.pool_empty")
-                  : `${totals.healthy + totals.cooling}/${accounts.length}`
+                  : `${totals.healthy}`
               }
               sub={
                 accounts.length === 0
                   ? t("dashboard.kpi.no_accounts_yet")
-                  : [
-                      tf("dashboard.kpi.paused", { count: totals.paused }),
-                      tf("dashboard.kpi.cooling", { count: totals.cooling }),
-                      ...(totals.expired > 0
-                        ? [tf("dashboard.kpi.expired", { count: totals.expired })]
-                        : []),
-                    ].join(" · ")
+                  : tf("dashboard.kpi.available_sub", {
+                      total: accounts.length,
+                      cooling: totals.cooling,
+                      paused: totals.paused,
+                    })
               }
-              tone={accounts.length === 0 ? "muted" : "ok"}
+              tone={
+                accounts.length === 0
+                  ? "muted"
+                  : totals.healthy === 0
+                    ? "warn"
+                    : "ok"
+              }
             />
             <KpiCard
-              label={t("dashboard.kpi.peak_util")}
-              value={peakPct >= 0 ? `${peakPct.toFixed(0)}%` : t("dashboard.kpi.no_data")}
+              label={t("dashboard.kpi.five_hour_pool")}
+              value={
+                fiveHourPool.capacity > 0
+                  ? `${fmtX(fiveHourPool.used)} / ${fmtX(fiveHourPool.capacity)}x`
+                  : t("dashboard.kpi.no_data")
+              }
               sub={
-                peakAcc
-                  ? tf("dashboard.kpi.from", { name: peakAcc.name })
+                fiveHourPool.capacity > 0
+                  ? tf("dashboard.kpi.window_pct", {
+                      pct: fiveHourPool.percent.toFixed(0),
+                    })
                   : t("dashboard.kpi.no_usage")
               }
-              tone={peakPct >= 0 ? utilizationTone(peakPct) : "muted"}
+              tone={
+                fiveHourPool.capacity > 0
+                  ? utilizationTone(fiveHourPool.percent)
+                  : "muted"
+              }
+            />
+            <KpiCard
+              label={t("dashboard.kpi.seven_day_pool")}
+              value={
+                sevenDayPool.capacity > 0
+                  ? `${fmtX(sevenDayPool.used)} / ${fmtX(sevenDayPool.capacity)}x`
+                  : t("dashboard.kpi.no_data")
+              }
+              sub={
+                sevenDayPool.capacity > 0
+                  ? tf("dashboard.kpi.window_pct", {
+                      pct: sevenDayPool.percent.toFixed(0),
+                    })
+                  : t("dashboard.kpi.no_usage")
+              }
+              tone={
+                sevenDayPool.capacity > 0
+                  ? utilizationTone(sevenDayPool.percent)
+                  : "muted"
+              }
             />
             <KpiCard
               label={t("dashboard.kpi.next_reset")}
@@ -423,9 +459,11 @@ function StaleDot() {
   );
 }
 
-// UsageTrendChart renders three polylines (5h / 7d / 7d-Sonnet) over a
-// 24-bucket horizontal axis. Inline SVG is used instead of a chart library so
-// the daemon stays dependency-light — the visual is deliberately compact.
+// UsageTrendChart plots the pool's weighted utilization over 24 hours: one
+// line for 5h and one for 7d, where each bucket's value is the
+// Pro-equivalent used divided by Pro-equivalent capacity. Mirrors the 5h/7d
+// KPI cards above so the eye can connect the current snapshot to its
+// history. Inline SVG keeps the daemon dependency-light.
 function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   const W = 720;
   const H = 160;
@@ -434,7 +472,7 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   const PAD_BOTTOM = 20;
 
   const hasData = trend.some(
-    (b) => b.five_hour > 0 || b.seven_day > 0 || b.seven_day_sonnet > 0,
+    (b) => (b.five_hour_pct ?? 0) > 0 || (b.seven_day_pct ?? 0) > 0,
   );
 
   if (trend.length === 0 || !hasData) {
@@ -449,11 +487,15 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   const innerW = W - PAD_X * 2;
   const innerH = H - PAD_TOP - PAD_BOTTOM;
   const x = (i: number) => PAD_X + (n === 1 ? innerW / 2 : (i * innerW) / (n - 1));
-  // Utilization is 0–100; scale linearly.
-  const y = (v: number) => PAD_TOP + innerH - (Math.max(0, Math.min(100, v)) / 100) * innerH;
+  // Pool pct is 0–100; clamp so spurious >100 (e.g. capacity briefly 0)
+  // doesn't blow past the chart area.
+  const y = (v: number) =>
+    PAD_TOP + innerH - (Math.max(0, Math.min(100, v)) / 100) * innerH;
 
   const path = (sel: (b: DashboardTrendBucket) => number) =>
-    trend.map((b, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(sel(b)).toFixed(1)}`).join(" ");
+    trend
+      .map((b, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(sel(b)).toFixed(1)}`)
+      .join(" ");
 
   // Hour labels at 0, 6, 12, 18, 24h-back markers.
   const labelIdx = [0, Math.floor(n / 4), Math.floor(n / 2), Math.floor((3 * n) / 4), n - 1];
@@ -485,11 +527,13 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
         className="trend-grid trend-grid-warn"
       />
 
-      <path className="trend-line trend-five" d={path((b) => b.five_hour)} />
-      <path className="trend-line trend-seven" d={path((b) => b.seven_day)} />
       <path
-        className="trend-line trend-sonnet"
-        d={path((b) => b.seven_day_sonnet)}
+        className="trend-line trend-five"
+        d={path((b) => b.five_hour_pct ?? 0)}
+      />
+      <path
+        className="trend-line trend-seven"
+        d={path((b) => b.seven_day_pct ?? 0)}
       />
 
       {labelIdx.map((i) => (
@@ -507,11 +551,9 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
       {/* Legend dots — relative to top-right corner. */}
       <g className="trend-legend">
         <circle cx={PAD_X + 6} cy={PAD_TOP + 4} r={3} className="trend-dot trend-five" />
-        <text x={PAD_X + 14} y={PAD_TOP + 8} className="trend-axis">{t("dashboard.trend.legend.5h")}</text>
-        <circle cx={PAD_X + 50} cy={PAD_TOP + 4} r={3} className="trend-dot trend-seven" />
-        <text x={PAD_X + 58} y={PAD_TOP + 8} className="trend-axis">{t("dashboard.trend.legend.7d")}</text>
-        <circle cx={PAD_X + 94} cy={PAD_TOP + 4} r={3} className="trend-dot trend-sonnet" />
-        <text x={PAD_X + 102} y={PAD_TOP + 8} className="trend-axis">{t("dashboard.trend.legend.7d_sonnet")}</text>
+        <text x={PAD_X + 14} y={PAD_TOP + 8} className="trend-axis">{t("dashboard.trend.legend.5h_pool")}</text>
+        <circle cx={PAD_X + 60} cy={PAD_TOP + 4} r={3} className="trend-dot trend-seven" />
+        <text x={PAD_X + 68} y={PAD_TOP + 8} className="trend-axis">{t("dashboard.trend.legend.7d_pool")}</text>
       </g>
     </svg>
   );

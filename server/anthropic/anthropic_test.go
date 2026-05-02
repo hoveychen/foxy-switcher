@@ -8,6 +8,9 @@ import (
 )
 
 func TestFetchProfile_MaxAccount(t *testing.T) {
+	// Plain Max profile — no rate_limit_tier surfaced. Falls back to the
+	// generic "Claude Max" label so legacy responses without the field
+	// keep their old presentation.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/oauth/profile" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
@@ -39,6 +42,59 @@ func TestFetchProfile_MaxAccount(t *testing.T) {
 	}
 	if p.Plan != "Claude Max" || p.SubscriptionType != "max" {
 		t.Errorf("plan/subType wrong: %+v", p)
+	}
+}
+
+func TestFetchProfile_MaxAccount_5x(t *testing.T) {
+	// Personal Max with rate_limit_tier=default_claude_max_5x. The plan
+	// label is split out so the UI can tell 5x apart from 20x without
+	// reading rate_limit_tier directly.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "account": {"has_claude_max":true,"has_claude_pro":false},
+		  "organization": {"rate_limit_tier":"default_claude_max_5x"}
+		}`))
+	}))
+	defer srv.Close()
+	old := BaseURL
+	BaseURL = srv.URL
+	defer func() { BaseURL = old }()
+
+	p, err := FetchProfile(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("FetchProfile: %v", err)
+	}
+	if p.Plan != "Claude Max 5x" || p.SubscriptionType != "max" {
+		t.Errorf("expected Max 5x, got plan=%q subType=%q", p.Plan, p.SubscriptionType)
+	}
+	if p.RateLimitTier != "default_claude_max_5x" {
+		t.Errorf("rate_limit_tier = %q", p.RateLimitTier)
+	}
+}
+
+func TestFetchProfile_MaxAccount_20x(t *testing.T) {
+	// Personal Max with rate_limit_tier=default_claude_max_20x — the
+	// case that motivated adding rate_limit_tier in the first place.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "account": {"has_claude_max":true,"has_claude_pro":false},
+		  "organization": {"rate_limit_tier":"default_claude_max_20x"}
+		}`))
+	}))
+	defer srv.Close()
+	old := BaseURL
+	BaseURL = srv.URL
+	defer func() { BaseURL = old }()
+
+	p, err := FetchProfile(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("FetchProfile: %v", err)
+	}
+	if p.Plan != "Claude Max 20x" || p.SubscriptionType != "max" {
+		t.Errorf("expected Max 20x, got plan=%q subType=%q", p.Plan, p.SubscriptionType)
+	}
+	if p.RateLimitTier != "default_claude_max_20x" {
+		t.Errorf("rate_limit_tier = %q", p.RateLimitTier)
 	}
 }
 

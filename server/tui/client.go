@@ -66,6 +66,13 @@ type Account struct {
 	ExpiresAt        int64        `json:"expires_at"`
 	Scopes           string       `json:"scopes"`
 	SubscriptionType string       `json:"subscription_type"`
+	// RateLimitTier mirrors httpapi.accountView.rate_limit_tier — the
+	// authoritative quota label ("default_claude_pro" /
+	// "default_claude_max_5x" / "default_claude_max_20x"). Empty on legacy
+	// rows that haven't been backfilled by UsagePoller yet. The dashboard's
+	// pool-aggregate weighting keys off this; subscription_type alone
+	// can't tell personal Max 5x apart from Max 20x.
+	RateLimitTier    string       `json:"rate_limit_tier"`
 	OrganizationUUID string       `json:"organization_uuid"`
 	Status           string       `json:"status"`
 	TokenExpired     bool         `json:"token_expired"`
@@ -165,12 +172,23 @@ type DashboardKPIs struct {
 }
 
 // DashboardTrendBucket mirrors httpapi.DashboardTrendBucket. One hour-aligned
-// bucket of pool-wide max utilization.
+// bucket carrying both the legacy max-utilization fields (FiveHour / SevenDay
+// / SevenDaySonnet — the pool-wide peak in the bucket, used by the TUI for
+// historical reasons) and the weighted-pool aggregates the dashboard now
+// renders (FiveHour{Used,Capacity,Pct} / SevenDay{Used,Capacity,Pct}). All
+// percentages are 0–100. *Pct is the canonical "how full is the pool"
+// number — used / capacity * 100, with 0 when capacity is 0.
 type DashboardTrendBucket struct {
-	TS             int64   `json:"ts"`
-	FiveHour       float64 `json:"five_hour"`
-	SevenDay       float64 `json:"seven_day"`
-	SevenDaySonnet float64 `json:"seven_day_sonnet"`
+	TS               int64   `json:"ts"`
+	FiveHour         float64 `json:"five_hour"`
+	SevenDay         float64 `json:"seven_day"`
+	SevenDaySonnet   float64 `json:"seven_day_sonnet"`
+	FiveHourUsed     float64 `json:"five_hour_used"`
+	FiveHourCapacity float64 `json:"five_hour_capacity"`
+	FiveHourPct      float64 `json:"five_hour_pct"`
+	SevenDayUsed     float64 `json:"seven_day_used"`
+	SevenDayCapacity float64 `json:"seven_day_capacity"`
+	SevenDayPct      float64 `json:"seven_day_pct"`
 }
 
 // Dashboard mirrors httpapi.DashboardResponse.

@@ -97,6 +97,79 @@ func accountResetAt(a Account, now time.Time) (time.Time, bool) {
 	return best, found
 }
 
+// planWeight returns this account's Pro-equivalent (5h, 7d) weights. Mirrors
+// src/api.ts:planWeight and server/httpapi:planWeight — keep in sync. The
+// primary key is rate_limit_tier (the only field that distinguishes personal
+// Max 5x from Max 20x); subscription_type is a fallback for legacy rows that
+// haven't been backfilled by the next UsagePoller tick.
+func planWeight(rateTier, sub string) (w5h, w7d float64) {
+	switch rateTier {
+	case "default_claude_pro":
+		return 1, 1
+	case "default_claude_max_5x":
+		return 5, 5
+	case "default_claude_max_20x":
+		return 20, 10
+	}
+	switch sub {
+	case "pro":
+		return 1, 1
+	case "max":
+		return 5, 5
+	case "team":
+		return 5, 5
+	case "team_premium":
+		return 5, 5
+	default:
+		return 0, 0
+	}
+}
+
+// poolWindowTotals computes the weighted-pool used / capacity / percent for
+// one window across all *active* accounts. Used and capacity are in
+// Pro-equivalents (Pro=1x, Max5x=5x, Max20x=20x for 5h / 10x for 7d).
+// Percent is used/capacity*100, 0 when capacity is 0. Window is "five_hour"
+// or "seven_day" — matches the frontend signature so the TUI can show the
+// same numbers without round-tripping through /api/dashboard.
+func poolWindowTotals(accounts []Account, window string) (used, capacity, percent float64) {
+	for _, a := range accounts {
+		if a.Status != "active" {
+			continue
+		}
+		w5h, w7d := planWeight(a.RateLimitTier, a.SubscriptionType)
+		var w float64
+		var u *UsageWindow
+		switch window {
+		case "five_hour":
+			w = w5h
+			u = a.FiveHour
+		case "seven_day":
+			w = w7d
+			u = a.SevenDay
+		default:
+			continue
+		}
+		if w <= 0 {
+			continue
+		}
+		capacity += w
+		if u != nil {
+			util := u.Utilization
+			if util < 0 {
+				util = 0
+			}
+			if util > 100 {
+				util = 100
+			}
+			used += (util / 100) * w
+		}
+	}
+	if capacity > 0 {
+		percent = used / capacity * 100
+	}
+	return
+}
+
 // planBadge renders the plan as a soft accent pill. Empty plan → "".
 func planBadge(plan string) string {
 	if plan == "" {
