@@ -199,6 +199,13 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 
 	server := httpapi.New(st, pkce, rf, opts.DataDir)
 	server.Bus = bus
+	if opts.Mode == modeVault {
+		// Vault mode means the frontend httpapi is reachable beyond
+		// loopback — gate it behind the same Bearer token agents use,
+		// so a misconfigured vault on the public internet can't be
+		// hit unauthenticated. Combined mode keeps loopback open.
+		server.Middleware = append(server.Middleware, httpserver.BearerAuth(st))
+	}
 
 	bindHost := opts.BindHost
 	if bindHost == "" {
@@ -302,6 +309,13 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	vaultHTTP := httpserver.New(vaultSvc, st)
 	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
 	vaultHTTP.RegisterWebRoutes(rootMux)
+	// /healthz must remain reachable without credentials so a load
+	// balancer / uptime probe can monitor a public vault. Register it
+	// on the root mux above the catch-all so the vault-mode Bearer
+	// wrap on httpapi.Server doesn't gate it.
+	rootMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintln(w, "ok")
+	})
 	rootMux.Handle("/", server.Handler())
 	httpSrv := &http.Server{
 		Handler:           rootMux,

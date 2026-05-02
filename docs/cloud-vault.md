@@ -197,7 +197,7 @@ Step 5 keeps the frontend untouched. Instead, `--mode=agent` is a transparent re
 
 This means the existing Tauri React build, the TUI, and any external scripts that hit `127.0.0.1:<port>/api/...` keep working without source changes. To pair a new agent, the user runs `foxy-switcher pair --vault-url=https://vault.example.com` once; the resulting `~/.foxy-switcher/agent-config.json` is what `--mode=agent` reads at startup.
 
-Vault `/api/*` is not currently behind the Bearer middleware — it's protected today only by the agent proxy on the local machine and (in cloud deployments) the reverse proxy's IP allowlist. Step 6 will close that gap; for now vault-on-public-internet should sit behind a caddy/traefik that both terminates TLS and rate-limits.
+Step 6 closes the auth gap on `/api/*`. When `--mode=vault` runs, main installs `httpserver.BearerAuth` as middleware on the frontend `httpapi.Server`, so every `/api/*` route requires a paired device's bearer token. Combined mode leaves the middleware slice empty — loopback is its own attacker model and existing local Tauri / TUI clients keep working without changes. `/healthz` is registered on the root mux above the wrap so liveness probes still succeed without credentials. The agent's reverse proxy already injects Bearer on every forwarded request, so an `--mode=agent` topology gets through transparently.
 
 Optionally a future step ships the React build embedded in the vault binary under `/web/` so a user without Tauri can manage accounts from any browser. Out of scope for Step 5.
 

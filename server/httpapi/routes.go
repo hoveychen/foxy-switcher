@@ -40,6 +40,13 @@ type Server struct {
 	// /api/about so the Settings page can show "uptime". Set in New so the
 	// value matches the process even if main() does work before binding.
 	StartedAt time.Time
+	// Middleware lets callers (today: main, when running --mode=vault)
+	// inject wrappers between cors and the route mux. Used for Bearer
+	// auth on the public internet — combined mode leaves it nil so
+	// loopback frontend traffic stays open. Wrappers are applied in
+	// reverse order, so Middleware[0] ends up outermost (just inside
+	// cors) and Middleware[len-1] ends up innermost (just before mux).
+	Middleware []func(http.Handler) http.Handler
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {
@@ -72,7 +79,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
-	return cors(mux)
+	var inner http.Handler = mux
+	for i := len(s.Middleware) - 1; i >= 0; i-- {
+		inner = s.Middleware[i](inner)
+	}
+	return cors(inner)
 }
 
 // cors wraps a handler with permissive CORS. The server only listens on
