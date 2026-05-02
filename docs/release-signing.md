@@ -145,7 +145,7 @@ base64 -w0 cert.pfx                # Linux (no line wrapping)
 
 After uploading the secrets:
 
-1. Cut a tag: `git tag v0.1.0 && git push origin v0.1.0`.
+1. Cut a tag: `git tag v1.0.1 && git push origin v1.0.1` (use the next version after the most recent release).
 2. Watch the Release workflow at the repo's **Actions** tab.
 3. The mac job logs should show the `Import Apple certificates`,
    `Wrap (and sign) .pkg`, and `Notarize and staple .pkg` steps **running**

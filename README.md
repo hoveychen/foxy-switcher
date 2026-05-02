@@ -3,7 +3,7 @@
   <h1>Foxy Switcher</h1>
   <p><strong>An account pool for Claude Code. Stop logging in and out.</strong></p>
   <p>
-    <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-blue" />
+    <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" />
     <img alt="Status" src="https://img.shields.io/badge/status-beta-orange" />
   </p>
 </div>
@@ -33,8 +33,9 @@ Foxy Switcher takes that loop off your hands. Enroll each subscription once. The
 
 Grab the latest build from the [Releases page](https://github.com/hoveychen/foxy-switcher/releases).
 
-- **macOS** — universal `.dmg` (Intel + Apple Silicon)
-- **Windows / Linux** — no prebuilt installer yet; build from source. The daemon, TUI, and credential injector all run cross-platform (Linux/Windows just swap Claude Code's `~/.claude/.credentials.json` directly instead of the macOS keychain).
+- **macOS** — universal `.pkg` (Intel + Apple Silicon)
+- **Windows** — `.msi` installer (x64)
+- **Linux** — no prebuilt installer yet; build from source. The daemon, TUI, and credential injector all run cross-platform (Linux/Windows just swap Claude Code's `~/.claude/.credentials.json` directly instead of the macOS keychain).
 
 ### From source
 
@@ -79,4 +80,4 @@ Yes. Run `foxy-switcher` headless and manage the pool from a terminal with `foxy
 
 ## Status
 
-`v0.1.0` — single-user, macOS-first. Linux and Windows build from source and the credential injector works there too (it edits `~/.claude/.credentials.json` directly), but the only prebuilt installer right now is the macOS `.dmg`. Follow [issues](https://github.com/hoveychen/foxy-switcher/issues) for progress on packaged Win/Linux releases.
+`v1.0.0` — single-user, macOS-first. Prebuilt installers ship for macOS (`.pkg`, universal) and Windows (`.msi`, x64). Linux runs from source today — the daemon, TUI, and credential injector all work there (the injector edits `~/.claude/.credentials.json` directly). Follow [issues](https://github.com/hoveychen/foxy-switcher/issues) for progress on a packaged Linux release.
