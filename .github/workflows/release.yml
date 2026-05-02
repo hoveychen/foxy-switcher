@@ -209,4 +209,5 @@ jobs:
         with:
           files: ${{ matrix.artifact_glob }}
           draft: true
+          generate_release_notes: true
           fail_on_unmatched_files: true
