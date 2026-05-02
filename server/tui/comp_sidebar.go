@@ -167,13 +167,9 @@ func renderSidebarRow(mode sidebarMode, it sidebarItem, isActive bool, width int
 	}
 	rail := lipgloss.NewStyle().Foreground(railFG).Render(railChar)
 
-	var body string
-	if mode == sidebarExpanded {
-		// `<icon> <label>` — left-padded by the rail, right-padded to width.
-		text := it.icon + " " + it.label
-		body = text
-	} else {
-		body = it.icon
+	innerWidth := width - 1 // -1 for rail
+	if innerWidth < 1 {
+		innerWidth = 1
 	}
 
 	bodyStyle := lipgloss.NewStyle().Foreground(textSecondary)
@@ -181,10 +177,32 @@ func renderSidebarRow(mode sidebarMode, it sidebarItem, isActive bool, width int
 		bodyStyle = lipgloss.NewStyle().Foreground(textPrimary).Background(accentSoft).Bold(true)
 	}
 
-	innerWidth := width - 1 // -1 for rail
-	if innerWidth < 1 {
-		innerWidth = 1
+	if mode == sidebarExpanded {
+		// `<icon> <label>` left, dim shortcut digit right-aligned. Without
+		// the digit hint, keyboard users had no way to discover that 1–4
+		// switch pages.
+		left := it.icon + " " + it.label
+		hint := dimStyle.Render(string(it.shortcut))
+		hintW := lipgloss.Width(hint)
+		leftW := lipgloss.Width(left)
+		gap := innerWidth - leftW - hintW
+		if gap < 1 {
+			// No room for the hint — fall back to label-only with truncation.
+			body := left
+			if leftW > innerWidth {
+				body = truncateANSI(body, innerWidth)
+			} else {
+				body = body + strings.Repeat(" ", innerWidth-leftW)
+			}
+			return rail + bodyStyle.Render(body)
+		}
+		body := left + strings.Repeat(" ", gap) + hint
+		return rail + bodyStyle.Render(body)
 	}
+
+	// Collapsed (3 cells inside the rail): show `<icon><digit>` so the
+	// digit is visible even without the label column.
+	body := it.icon + string(it.shortcut)
 	bodyW := lipgloss.Width(body)
 	if bodyW < innerWidth {
 		body = body + strings.Repeat(" ", innerWidth-bodyW)

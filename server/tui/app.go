@@ -322,10 +322,14 @@ func (a *App) statusbarState() statusbarState {
 	}
 
 	page := pageLabel(a.screen)
+	// Pure-keyboard users had no on-screen cue that 1-4 switched pages; the
+	// nav hint sits to the right of the bar so it's always visible.
+	hint := dimStyle.Render("1-4 pages · ? help")
 	return statusbarState{
 		DaemonDot:   dot,
 		DaemonLabel: mode,
 		Breadcrumb:  page,
+		NavHint:     hint,
 		Clock:       "",
 	}
 }

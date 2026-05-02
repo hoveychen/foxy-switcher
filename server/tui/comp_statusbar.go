@@ -18,6 +18,7 @@ type statusbarState struct {
 	Breadcrumb string // e.g. "Accounts · 12 active"
 
 	// Right segment.
+	NavHint         string // always-on keyboard hint, e.g. "1-4 pages · ? help"
 	AutoSwitchDot   string // pre-rendered status glyph
 	AutoSwitchLabel string // e.g. "auto-switch lru"
 	Clock           string // e.g. "17:42"
@@ -38,7 +39,7 @@ func renderStatusbar(s statusbarState, width int) string {
 	bg := lipgloss.NewStyle().Background(bgSubtle).Foreground(textSecondary)
 
 	left := joinSeg(s.DaemonDot, s.DaemonLabel)
-	right := joinSeg(s.AutoSwitchDot, s.AutoSwitchLabel, s.Clock)
+	right := joinSeg(s.NavHint, s.AutoSwitchDot, s.AutoSwitchLabel, s.Clock)
 	center := s.Breadcrumb
 
 	leftStyled := bg.Render(" " + left + " ")
