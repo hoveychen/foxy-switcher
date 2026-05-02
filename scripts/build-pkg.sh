@@ -8,7 +8,11 @@
 #
 # Env (all optional):
 #   APPLE_INSTALLER_SIGNING_IDENTITY  — e.g. "Developer ID Installer: Name (TEAMID)"
-#                                       When set, the .pkg is productsign-ed.
+#                                       Explicit override. If unset, the script
+#                                       auto-detects a "Developer ID Installer"
+#                                       identity from the user's keychain and
+#                                       signs with it when exactly one is found.
+#                                       Set to "none" to force an unsigned .pkg.
 #
 # Usage:
 #   scripts/build-pkg.sh                          # universal-apple-darwin
@@ -44,13 +48,29 @@ pkgbuild \
   --version "$VERSION" \
   "$TMP_PKG"
 
-if [ -n "${APPLE_INSTALLER_SIGNING_IDENTITY:-}" ]; then
-  echo "==> signing with: $APPLE_INSTALLER_SIGNING_IDENTITY"
-  productsign --sign "$APPLE_INSTALLER_SIGNING_IDENTITY" "$TMP_PKG" "$PKG_PATH"
+identity="${APPLE_INSTALLER_SIGNING_IDENTITY:-}"
+if [ -z "$identity" ]; then
+  # Auto-detect a Developer ID Installer identity from the user's keychain.
+  identities="$(security find-identity -p basic -v 2>/dev/null \
+    | awk -F'"' '/Developer ID Installer/ {print $2}')"
+  count="$(printf '%s' "$identities" | grep -c '^.' || true)"
+  if [ "$count" -eq 1 ]; then
+    identity="$identities"
+  elif [ "$count" -gt 1 ]; then
+    echo "ERROR: multiple Developer ID Installer identities found in keychain:" >&2
+    printf '%s\n' "$identities" | sed 's/^/  - /' >&2
+    echo "Set APPLE_INSTALLER_SIGNING_IDENTITY to pick one explicitly." >&2
+    exit 1
+  fi
+fi
+
+if [ -n "$identity" ] && [ "$identity" != "none" ]; then
+  echo "==> signing with: $identity"
+  productsign --sign "$identity" "$TMP_PKG" "$PKG_PATH"
   rm -f "$TMP_PKG"
 else
   mv "$TMP_PKG" "$PKG_PATH"
-  echo "==> unsigned (set APPLE_INSTALLER_SIGNING_IDENTITY to sign)"
+  echo "==> unsigned (no Developer ID Installer identity in keychain; set APPLE_INSTALLER_SIGNING_IDENTITY to override)"
 fi
 
 echo

@@ -58,7 +58,8 @@ pnpm tauri build                # builds the desktop app
 Platform bundles are produced via:
 
 ```sh
-scripts/build-app.sh mac        # universal .app + .dmg
+scripts/build-app.sh            # release build for the current host
+scripts/build-app.sh mac        # universal .app + .pkg
 scripts/build-app.sh win        # .exe + .msi (must run on Windows)
 scripts/build-app.sh linux      # AppImage / .deb (must run on Linux)
 scripts/build-app.sh dev        # debug build for the current host

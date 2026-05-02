@@ -1,10 +1,11 @@
 #!/bin/bash
 # End-to-end Tauri build orchestrator.
 #
-#   scripts/build-app.sh mac        # universal .app + .dmg
-#   scripts/build-app.sh win        # Windows .exe + .msi  (must run on Windows)
-#   scripts/build-app.sh linux      # AppImage / .deb     (must run on Linux)
-#   scripts/build-app.sh dev        # debug build of the current host only
+#   scripts/build-app.sh             # release build for the current host
+#   scripts/build-app.sh mac         # universal .app + .pkg
+#   scripts/build-app.sh win         # Windows .exe + .msi  (must run on Windows)
+#   scripts/build-app.sh linux       # AppImage / .deb      (must run on Linux)
+#   scripts/build-app.sh dev         # debug build of the current host only
 #
 # The Go server is rebuilt for the targets that match each platform; we don't
 # cross-compile the Tauri app itself because that requires the platform's SDK
@@ -14,7 +15,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-mode="${1:-dev}"
+if [ $# -gt 0 ]; then
+  mode="$1"
+else
+  case "$(uname -s)" in
+    Darwin)              mode=mac ;;
+    Linux)               mode=linux ;;
+    MINGW*|MSYS*|CYGWIN*) mode=win ;;
+    *)
+      echo "cannot auto-detect host platform from uname='$(uname -s)'" >&2
+      echo "pass an explicit mode: mac | win | linux | dev" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 # Make sure the JS bundle is fresh — Tauri 2 will run beforeBuildCommand, but
 # we surface failures earlier here.
