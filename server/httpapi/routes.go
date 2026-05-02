@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/anthropic"
 	"github.com/hoveychen/foxy-switcher/server/authz"
 	"github.com/hoveychen/foxy-switcher/server/credinject"
@@ -29,6 +30,11 @@ type Server struct {
 	DataDir   string                  // ~/.foxy-switcher; used to resolve credinject state files
 	Port      int                     // populated after net.Listen
 	Cred      *credinject.Coordinator // optional; routes that change account state call .Trigger() — safe on nil
+	// Bus is the activity hub. Mutating handlers emit account.* / cooldown.*
+	// events through it so the Activity page reflects user actions
+	// immediately. Nil-safe — tests and the legacy --no-activity path leave
+	// it unset and the per-call Emit becomes a no-op.
+	Bus *activity.Bus
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {
@@ -43,12 +49,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/login", s.handleLoginStart)
 	mux.HandleFunc("POST /api/accounts/callback", s.handleLoginCallback)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
-	mux.HandleFunc("POST /api/accounts/{id}/disable", s.handleDisable)
-	mux.HandleFunc("POST /api/accounts/{id}/enable", s.handleEnable)
+	mux.HandleFunc("POST /api/accounts/{id}/pause", s.handlePause)
+	mux.HandleFunc("POST /api/accounts/{id}/resume", s.handleResume)
 	mux.HandleFunc("POST /api/accounts/{id}/cooldown", s.handleCooldown)
 	mux.HandleFunc("POST /api/accounts/{id}/refresh", s.handleRefreshNow)
 	mux.HandleFunc("POST /api/accounts/{id}/select", s.handleSelect)
+	mux.HandleFunc("POST /api/accounts/{id}/thresholds", s.handleSetThresholds)
 	mux.HandleFunc("GET /api/cred/status", s.handleCredStatus)
+	mux.HandleFunc("GET /api/auto-switch", s.handleGetAutoSwitch)
+	mux.HandleFunc("POST /api/auto-switch", s.handleSetAutoSwitch)
+	mux.HandleFunc("GET /api/activity", s.handleListActivity)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
@@ -89,7 +99,12 @@ type accountView struct {
 	SubscriptionType string `json:"subscription_type"`
 	OrganizationUUID string `json:"organization_uuid"`
 	Status           string `json:"status"`
-	CooldownUntil    int64  `json:"cooldown_until"`
+	// TokenExpired is a derived flag (ExpiresAt <= now). Persisted state is
+	// just ExpiresAt; this exists so UIs don't all need the same clock-math
+	// to render the "can't be used" state. The selector treats this as a
+	// disqualifier alongside Status==paused / cooldown.
+	TokenExpired  bool  `json:"token_expired"`
+	CooldownUntil int64 `json:"cooldown_until"`
 	LastUsedAt       int64  `json:"last_used_at"`
 	Last429At        int64  `json:"last_429_at"`
 	CreatedAt        int64  `json:"created_at"`
@@ -104,6 +119,11 @@ type accountView struct {
 	SevenDay       *usageWindowView `json:"seven_day,omitempty"`
 	SevenDaySonnet *usageWindowView `json:"seven_day_sonnet,omitempty"`
 	UsageFetchedAt int64            `json:"usage_fetched_at"`
+	// Per-account utilization thresholds (0–100). Schema default is 95;
+	// 100 means "do not skip on this window".
+	FiveHourThreshold       float64 `json:"five_hour_threshold"`
+	SevenDayThreshold       float64 `json:"seven_day_threshold"`
+	SevenDaySonnetThreshold float64 `json:"seven_day_sonnet_threshold"`
 	// Tokens are deliberately omitted from the UI surface.
 }
 
@@ -112,11 +132,15 @@ func toView(a store.Account) accountView {
 		ID: a.ID, Name: a.Name, ExpiresAt: a.ExpiresAt, Scopes: a.Scopes,
 		SubscriptionType: a.SubscriptionType,
 		OrganizationUUID: a.OrganizationUUID, Status: a.Status,
+		TokenExpired:  a.TokenExpired(time.Now()),
 		CooldownUntil: a.CooldownUntil, LastUsedAt: a.LastUsedAt,
 		Last429At: a.Last429At, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		Email: a.Email, FullName: a.FullName,
 		OrganizationName: a.OrganizationName, Plan: a.Plan,
-		UsageFetchedAt: a.UsageFetchedAt,
+		UsageFetchedAt:          a.UsageFetchedAt,
+		FiveHourThreshold:       a.FiveHourThreshold,
+		SevenDayThreshold:       a.SevenDayThreshold,
+		SevenDaySonnetThreshold: a.SevenDaySonnetThreshold,
 	}
 	if a.FiveHourResetsAt != "" {
 		view.FiveHour = &usageWindowView{Utilization: a.FiveHourUtil, ResetsAt: a.FiveHourResetsAt}
@@ -221,6 +245,8 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "save account: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.Bus.EmitInfo(activity.TypeAccountAdded, a.ID,
+		fmt.Sprintf("Added %s (%s)", a.Name, a.Plan))
 	s.Cred.Trigger()
 
 	// Best-effort initial usage pull so the new card lights up immediately
@@ -278,19 +304,28 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Snapshot the name before deletion so the activity row carries
+	// something more useful than the raw ID — this is the user's only
+	// post-hoc record of which account this was.
+	name := fmt.Sprintf("#%d", id)
+	if a, err := s.Store.Get(r.Context(), id); err == nil {
+		name = a.Name
+	}
 	if err := s.Store.Delete(r.Context(), id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.Bus.EmitWarn(activity.TypeAccountDeleted, id,
+		fmt.Sprintf("Deleted %s", name))
 	s.Cred.Trigger()
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleDisable(w http.ResponseWriter, r *http.Request) {
-	s.setStatus(w, r, "disabled")
+func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
+	s.setStatus(w, r, "paused")
 }
 
-func (s *Server) handleEnable(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	s.setStatus(w, r, "active")
 }
 
@@ -303,6 +338,17 @@ func (s *Server) setStatus(w http.ResponseWriter, r *http.Request, status string
 	if err := s.Store.SetStatus(r.Context(), id, status); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	name := fmt.Sprintf("#%d", id)
+	if a, err := s.Store.Get(r.Context(), id); err == nil {
+		name = a.Name
+	}
+	if status == "paused" {
+		s.Bus.EmitInfo(activity.TypeAccountPaused, id,
+			fmt.Sprintf("Paused %s", name))
+	} else {
+		s.Bus.EmitInfo(activity.TypeAccountResumed, id,
+			fmt.Sprintf("Resumed %s", name))
 	}
 	s.Cred.Trigger()
 	w.WriteHeader(http.StatusNoContent)
@@ -334,6 +380,17 @@ func (s *Server) handleCooldown(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.SetCooldown(r.Context(), id, until); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	name := fmt.Sprintf("#%d", id)
+	if a, err := s.Store.Get(r.Context(), id); err == nil {
+		name = a.Name
+	}
+	if until.IsZero() {
+		s.Bus.EmitInfo(activity.TypeCooldownCleared, id,
+			fmt.Sprintf("Cleared cooldown on %s", name))
+	} else {
+		s.Bus.EmitWarn(activity.TypeCooldownEntered, id,
+			fmt.Sprintf("Cooled down %s until %s", name, until.Format(time.RFC3339)))
 	}
 	s.Cred.Trigger()
 	w.WriteHeader(http.StatusNoContent)
@@ -371,7 +428,7 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 // handleSelect promotes one account to the front of the LRU queue so the
 // next credinject reconcile picks it. One-shot: subsequent rotations follow
 // normal LRU. Rejects accounts that the selector would skip anyway —
-// disabled or in cooldown — with 409, so the UI can surface a clear reason.
+// paused or in cooldown — with 409, so the UI can surface a clear reason.
 func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -401,6 +458,124 @@ func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Cred.Trigger()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// thresholdsReq is the body shape for POST /api/accounts/{id}/thresholds.
+// Each field is a 0–100 percent. Out-of-range values are clamped by the
+// store layer rather than rejected, so the UI's "drag the marker" surface
+// can submit raw pixel-derived values without re-implementing the bounds.
+type thresholdsReq struct {
+	FiveHour       float64 `json:"five_hour"`
+	SevenDay       float64 `json:"seven_day"`
+	SevenDaySonnet float64 `json:"seven_day_sonnet"`
+}
+
+func (s *Server) handleSetThresholds(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var req thresholdsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.SetThresholds(r.Context(), id, req.FiveHour, req.SevenDay, req.SevenDaySonnet); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Cred.Trigger()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- auto-switch -----------------------------------------------------------
+
+// autoSwitchView is the wire shape for GET/POST /api/auto-switch. The toggle
+// gates whether the credinject coordinator may rotate accounts; policy is
+// reserved for future strategies (currently only "lru" is honoured) so the UI
+// can persist the user's preference even before alternative pickers ship.
+type autoSwitchView struct {
+	Enabled bool   `json:"enabled"`
+	Policy  string `json:"policy"`
+}
+
+var allowedPolicies = map[string]struct{}{
+	"lru":    {},
+	"lowest": {},
+	"rr":     {},
+}
+
+func (s *Server) handleGetAutoSwitch(w http.ResponseWriter, r *http.Request) {
+	v, err := s.Store.GetAutoSwitch(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, autoSwitchView{Enabled: v.Enabled, Policy: v.Policy})
+}
+
+func (s *Server) handleSetAutoSwitch(w http.ResponseWriter, r *http.Request) {
+	var req autoSwitchView
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Policy == "" {
+		req.Policy = store.DefaultAutoSwitch.Policy
+	}
+	if _, ok := allowedPolicies[req.Policy]; !ok {
+		http.Error(w, "invalid policy "+strconv.Quote(req.Policy), http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.SetAutoSwitch(r.Context(), store.AutoSwitch{Enabled: req.Enabled, Policy: req.Policy}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Cred.Trigger()
+	writeJSON(w, http.StatusOK, req)
+}
+
+// --- activity feed ---------------------------------------------------------
+
+// handleListActivity backs the GET /api/activity endpoint that powers the
+// Activity page and the Dashboard's Recent Activity card. Query params:
+//
+//	limit=N     — cap the number of events (default 200, hard max RingCapacity)
+//	since=ID    — return only events with id > ID (incremental polling)
+//	type=a,b    — comma-separated whitelist; supports "error.*" wildcard
+//	severity=S  — restrict to one severity (info|warn|error)
+//
+// Always returns 200 with `{"events": [...]}`, even when empty, so the
+// frontend can poll without special-casing the cold-start window.
+func (s *Server) handleListActivity(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := activity.Filter{}
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			f.Limit = n
+		}
+	}
+	if v := q.Get("since"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			f.SinceID = n
+		}
+	}
+	if v := q.Get("type"); v != "" {
+		for _, t := range strings.Split(v, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				f.Types = append(f.Types, t)
+			}
+		}
+	}
+	if v := q.Get("severity"); v != "" {
+		f.Severity = activity.Severity(v)
+	}
+	events := s.Bus.List(f)
+	if events == nil {
+		events = []activity.Event{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
 // --- credinject status ----------------------------------------------------

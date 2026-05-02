@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/authz"
 	"github.com/hoveychen/foxy-switcher/server/credinject"
 	"github.com/hoveychen/foxy-switcher/server/httpapi"
@@ -105,11 +106,23 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 		logger.Printf("warning: chmod %s: %v", dbPath, err)
 	}
 
+	// Activity bus shares state.db so events survive daemon restarts and the
+	// Activity page is hot the moment the UI connects. Failures here are
+	// fatal: a daemon without observability is exactly what PRD §5.3 was
+	// added to prevent.
+	bus, err := activity.NewBus(st.DB(), logger)
+	if err != nil {
+		return fmt.Errorf("activity bus: %w", err)
+	}
+
 	pkce := authz.NewPKCEStore()
 	rf := refresh.New(st, logger)
+	rf.Bus = bus
 	up := refresh.NewUsagePoller(st, logger)
+	up.Bus = bus
 
 	server := httpapi.New(st, pkce, rf, opts.DataDir)
+	server.Bus = bus
 
 	addr := fmt.Sprintf("127.0.0.1:%d", opts.Port)
 	ln, err := net.Listen("tcp", addr)
@@ -142,6 +155,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 			return fmt.Errorf("credinject backend: %w", err)
 		}
 		cc = credinject.New(st, backend, opts.DataDir, logger)
+		cc.SetBus(bus)
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
 				logger.Printf("warning: restore native credentials: %v", err)
@@ -188,6 +202,9 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	}()
 
 	logger.Printf("foxy-switcher listening on http://%s (data: %s)", tcp.String(), opts.DataDir)
+	bus.EmitInfo(activity.TypeDaemonStarted, 0,
+		fmt.Sprintf("Daemon started on port %d", tcp.Port))
+	defer bus.EmitInfo(activity.TypeDaemonStopped, 0, "Daemon stopped")
 	if ready != nil {
 		ready(tcp.Port)
 	}

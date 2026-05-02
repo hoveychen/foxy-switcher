@@ -156,17 +156,17 @@ func TestReconcile_SwitchesAccount(t *testing.T) {
 		t.Fatalf("first pick: got %d want %d", c.CurrentAccountID(), idA)
 	}
 
-	// Disable account A → next reconcile must switch to beta.
-	if err := st.SetStatus(context.Background(), idA, "disabled"); err != nil {
-		t.Fatalf("disable: %v", err)
+	// Pause account A → next reconcile must switch to beta.
+	if err := st.SetStatus(context.Background(), idA, "paused"); err != nil {
+		t.Fatalf("pause: %v", err)
 	}
 	c.reconcile(context.Background())
 	got := extractAccessToken(be.oauthBlob)
 	if got != "sk-ant-oat01-beta" {
-		t.Errorf("after disable A: injected token %q (expected beta)", got)
+		t.Errorf("after pause A: injected token %q (expected beta)", got)
 	}
 	if c.CurrentAccountID() == idA {
-		t.Errorf("CurrentAccountID still A after disable")
+		t.Errorf("CurrentAccountID still A after pause")
 	}
 }
 
@@ -183,15 +183,15 @@ func TestReconcile_NoAvailable_RestoresBackup(t *testing.T) {
 		t.Fatalf("writeBackup: %v", err)
 	}
 
-	// Inject one account, then disable it so the next reconcile sees no
+	// Inject one account, then pause it so the next reconcile sees no
 	// available accounts and triggers restore.
 	id := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
 	c.reconcile(context.Background())
 	if c.CurrentAccountID() != id {
 		t.Fatalf("inject: CurrentAccountID=%d", c.CurrentAccountID())
 	}
-	if err := st.SetStatus(context.Background(), id, "disabled"); err != nil {
-		t.Fatalf("disable: %v", err)
+	if err := st.SetStatus(context.Background(), id, "paused"); err != nil {
+		t.Fatalf("pause: %v", err)
 	}
 
 	c.reconcile(context.Background())
@@ -362,6 +362,111 @@ func TestReconcile_RespectsManualSelect(t *testing.T) {
 
 	if got := c.CurrentAccountID(); got != other {
 		t.Errorf("after MarkForNextPick(%d): CurrentAccountID=%d", other, got)
+	}
+}
+
+// TestReconcile_ManualMode_StaysOnCurrentAccount covers the auto-switch=off
+// invariant: once an account is injected, the coordinator must not rotate to
+// another pool member just because LRU prefers it. Without this, toggling
+// "Manual" in the UI would still produce the ping-pong behavior the user is
+// explicitly opting out of.
+func TestReconcile_ManualMode_StaysOnCurrentAccount(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	idA := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	idB := seedActive(t, st, "beta", "sk-ant-oat01-beta")
+
+	// First reconcile picks LRU winner (lower id wins ties).
+	c.reconcile(context.Background())
+	if c.CurrentAccountID() != idA {
+		t.Fatalf("setup: expected idA injected first, got %d", c.CurrentAccountID())
+	}
+
+	if err := st.SetAutoSwitch(context.Background(), store.AutoSwitch{Enabled: false, Policy: "lru"}); err != nil {
+		t.Fatalf("SetAutoSwitch: %v", err)
+	}
+
+	// Drive idA's last_used_at backwards (older than idB's) so LRU would prefer
+	// idB if auto-switch were on. Manual mode must ignore this and stay on idA.
+	if _, err := st.DB().ExecContext(context.Background(),
+		`UPDATE accounts SET last_used_at = 1 WHERE id = ?`, idA); err != nil {
+		t.Fatalf("hand-rewind last_used_at: %v", err)
+	}
+	if _, err := st.DB().ExecContext(context.Background(),
+		`UPDATE accounts SET last_used_at = 2 WHERE id = ?`, idB); err != nil {
+		t.Fatalf("hand-rewind beta: %v", err)
+	}
+
+	priorWrites := be.writes
+	for i := 0; i < 3; i++ {
+		c.reconcile(context.Background())
+		if got := c.CurrentAccountID(); got != idA {
+			t.Fatalf("manual mode rotated on reconcile #%d: got %d want %d", i+1, got, idA)
+		}
+	}
+	if be.writes != priorWrites {
+		t.Errorf("manual mode produced %d extra keychain writes", be.writes-priorWrites)
+	}
+}
+
+// TestReconcile_ManualMode_RespectsExplicitPin verifies that "Use now" still
+// works in manual mode — clicking it on another account must switch to it
+// even though Auto Switch is off.
+func TestReconcile_ManualMode_RespectsExplicitPin(t *testing.T) {
+	c, _, st, _ := newCoord(t)
+	idA := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	idB := seedActive(t, st, "beta", "sk-ant-oat01-beta")
+
+	c.reconcile(context.Background())
+	if c.CurrentAccountID() != idA {
+		t.Fatalf("setup: expected idA, got %d", c.CurrentAccountID())
+	}
+	if err := st.SetAutoSwitch(context.Background(), store.AutoSwitch{Enabled: false, Policy: "lru"}); err != nil {
+		t.Fatalf("SetAutoSwitch: %v", err)
+	}
+
+	if err := st.MarkForNextPick(context.Background(), idB); err != nil {
+		t.Fatalf("MarkForNextPick: %v", err)
+	}
+	c.reconcile(context.Background())
+	if got := c.CurrentAccountID(); got != idB {
+		t.Errorf("manual + MarkForNextPick(idB): CurrentAccountID=%d want %d", got, idB)
+	}
+}
+
+// TestReconcile_ManualMode_RestoresWhenIneligible covers the safety net: if
+// the account currently injected becomes ineligible (paused, cooldown,
+// over-threshold), manual mode must NOT silently rotate to a different one —
+// it must restore the user's native creds, same as auto mode with empty pool.
+func TestReconcile_ManualMode_RestoresWhenIneligible(t *testing.T) {
+	c, be, st, dir := newCoord(t)
+	if err := writeBackup(dir, backupFile{
+		OAuthBlob:  []byte(`{"native":"yes"}`),
+		SnapshotAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("writeBackup: %v", err)
+	}
+
+	idA := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	seedActive(t, st, "beta", "sk-ant-oat01-beta")
+	c.reconcile(context.Background())
+	if c.CurrentAccountID() != idA {
+		t.Fatalf("setup: expected idA, got %d", c.CurrentAccountID())
+	}
+
+	if err := st.SetAutoSwitch(context.Background(), store.AutoSwitch{Enabled: false, Policy: "lru"}); err != nil {
+		t.Fatalf("SetAutoSwitch: %v", err)
+	}
+	if err := st.SetStatus(context.Background(), idA, "paused"); err != nil {
+		t.Fatalf("pause idA: %v", err)
+	}
+
+	c.reconcile(context.Background())
+
+	if c.CurrentAccountID() != 0 {
+		t.Errorf("expected restore to clear current account, got %d", c.CurrentAccountID())
+	}
+	if got := extractAccessToken(be.oauthBlob); got == "sk-ant-oat01-beta" {
+		t.Errorf("manual mode auto-rotated to beta; expected native restore instead")
 	}
 }
 

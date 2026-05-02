@@ -13,7 +13,7 @@
 
 mod sidecar;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -33,6 +33,23 @@ fn get_server_port(state: tauri::State<'_, ServerState>) -> Result<u16, String> 
         .lock()
         .unwrap()
         .ok_or_else(|| "server not started yet".to_string())
+}
+
+// "owned" → this Tauri process spawned the sidecar. "attached" → another
+// daemon (TUI embed, `go run .`, an earlier Tauri instance) was already
+// alive on the port file when we started, so spawn() short-circuited.
+// Distinguished by whether ChildHandle holds a CommandChild.
+#[tauri::command]
+fn get_daemon_mode(app: AppHandle) -> &'static str {
+    let owned = app
+        .try_state::<Arc<sidecar::ChildHandle>>()
+        .map(|h| h.0.lock().unwrap().is_some())
+        .unwrap_or(false);
+    if owned {
+        "owned"
+    } else {
+        "attached"
+    }
 }
 
 // Hook SIGTERM/SIGINT (Ctrl-C on Windows) into the same exit path the tray
@@ -81,7 +98,7 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(ServerState::default())
-        .invoke_handler(tauri::generate_handler![get_server_port])
+        .invoke_handler(tauri::generate_handler![get_server_port, get_daemon_mode])
         .setup(|app| {
             let handle = app.handle().clone();
             sidecar::spawn(&handle)?;

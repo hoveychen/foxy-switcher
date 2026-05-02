@@ -67,6 +67,7 @@ type Account struct {
 	SubscriptionType string       `json:"subscription_type"`
 	OrganizationUUID string       `json:"organization_uuid"`
 	Status           string       `json:"status"`
+	TokenExpired     bool         `json:"token_expired"`
 	CooldownUntil    int64        `json:"cooldown_until"`
 	LastUsedAt       int64        `json:"last_used_at"`
 	Last429At        int64        `json:"last_429_at"`

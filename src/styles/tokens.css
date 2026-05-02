@@ -1,0 +1,207 @@
+/* ─── Reference palette ──────────────────────────────────────
+ * Raw colors. Do NOT use directly in component CSS — only the
+ * system tokens below should be referenced.
+ * ───────────────────────────────────────────────────────────── */
+
+:root {
+  /* Brand orange — LURA */
+  --c-orange-50:  #fff7ed;
+  --c-orange-100: #ffe8d1;
+  --c-orange-200: #ffd0a3;
+  --c-orange-300: #ffb066;
+  --c-orange-400: #ff9233;
+  --c-orange-500: #ff7a1a;
+  --c-orange-600: #e55f00;
+  --c-orange-700: #b94a00;
+  --c-orange-800: #883600;
+  --c-orange-900: #5a2400;
+
+  /* Neutrals (warm-tinted gray) */
+  --c-gray-0:    #ffffff;
+  --c-gray-50:   #fafafb;
+  --c-gray-100:  #f3f3f5;
+  --c-gray-200:  #e8e8ec;
+  --c-gray-300:  #d8d8de;
+  --c-gray-400:  #b8b8c0;
+  --c-gray-500:  #8e8e96;
+  --c-gray-600:  #6e6e76;
+  --c-gray-700:  #4a4a52;
+  --c-gray-800:  #2a2a2e;
+  --c-gray-900:  #1a1a1c;
+  --c-gray-1000: #0d0d0f;
+
+  /* Semantics */
+  --c-green-400: #4ade80;
+  --c-green-500: #22c55e;
+  --c-green-600: #16a34a;
+
+  --c-amber-400: #fbbf24;
+  --c-amber-500: #f59e0b;
+  --c-amber-600: #b45309;
+
+  --c-red-400:   #f87171;
+  --c-red-500:   #ef4444;
+  --c-red-600:   #b91c1c;
+
+  --c-blue-400:  #60a5fa;
+  --c-blue-500:  #3b82f6;
+  --c-blue-600:  #1d4ed8;
+}
+
+/* ─── System tokens — Light ──────────────────────────────── */
+
+:root {
+  /* Surfaces */
+  --bg-window:      var(--c-gray-100);
+  --bg-card:        var(--c-gray-0);
+  --bg-card-hover:  var(--c-gray-50);
+  --bg-card-active: var(--c-orange-50);
+  --bg-overlay:     rgba(0, 0, 0, 0.04);
+  --bg-pill:        rgba(0, 0, 0, 0.05);
+  --bg-input:       var(--c-gray-0);
+  --bg-sidebar:     var(--c-gray-100);
+  --bg-topbar:      rgba(255, 255, 255, 0.72);
+
+  /* Text */
+  --text-primary:   var(--c-gray-1000);
+  --text-secondary: var(--c-gray-600);
+  --text-tertiary:  var(--c-gray-500);
+  --text-on-accent: #ffffff;
+  --text-link:      var(--c-orange-600);
+
+  /* Borders */
+  --separator:      rgba(20, 20, 25, 0.10);
+  --border-subtle:  rgba(0, 0, 0, 0.08);
+  --border-strong:  rgba(0, 0, 0, 0.18);
+  --border-focus:   var(--c-orange-500);
+
+  /* Accent (LURA orange) */
+  --accent:           var(--c-orange-500);
+  --accent-hover:     var(--c-orange-600);
+  --accent-pressed:   var(--c-orange-700);
+  --accent-soft:      var(--c-orange-100);
+  --accent-soft-text: var(--c-orange-700);
+
+  /* Semantics */
+  --ok:          var(--c-green-500);
+  --ok-soft:     rgba(34, 197, 94, 0.14);
+  --warn:        var(--c-amber-500);
+  --warn-soft:   rgba(245, 158, 11, 0.16);
+  --warn-text:   var(--c-amber-600);
+  --danger:      var(--c-red-500);
+  --danger-soft: rgba(239, 68, 68, 0.12);
+  --danger-text: var(--c-red-600);
+  --info:        var(--c-blue-500);
+  --info-soft:   rgba(59, 130, 246, 0.12);
+
+  /* Radius */
+  --radius-pill:   9999px;
+  --radius-button: 6px;
+  --radius-input:  6px;
+  --radius-row:    6px;
+  --radius-card:   10px;
+  --radius-modal:  14px;
+  --radius-mascot: 20px;
+
+  /* Shadows / elevation */
+  --shadow-card:
+    0 0 0 0.5px rgba(0, 0, 0, 0.04),
+    0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-toolbar: inset 0 -0.5px 0 var(--separator);
+  --shadow-popover:
+    0 0 0 0.5px var(--border-subtle),
+    0 6px 20px rgba(0, 0, 0, 0.18);
+  --shadow-modal:
+    0 0 0 0.5px var(--border-subtle),
+    0 24px 64px rgba(0, 0, 0, 0.28);
+  --shadow-focus: 0 0 0 3px rgba(255, 122, 26, 0.30);
+
+  /* Spacing — 4 / 8 multiples */
+  --space-0:  0;
+  --space-1:  2px;
+  --space-2:  4px;
+  --space-3:  6px;
+  --space-4:  8px;
+  --space-5:  10px;
+  --space-6:  12px;
+  --space-7:  14px;
+  --space-8:  16px;
+  --space-10: 20px;
+  --space-12: 24px;
+  --space-16: 32px;
+  --space-20: 40px;
+  --space-24: 48px;
+
+  /* Motion */
+  --motion-quick:   120ms ease;
+  --motion-base:    180ms cubic-bezier(0.32, 0.72, 0, 1);
+  --motion-page:    280ms cubic-bezier(0.32, 0.72, 0, 1);
+  --motion-spring:  400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  --motion-shimmer: 1400ms linear infinite;
+
+  /* Breakpoints (informational — used in custom media if @custom-media adopted) */
+  --bp-sm: 768px;
+  --bp-md: 1024px;
+  --bp-lg: 1280px;
+
+  color-scheme: light dark;
+}
+
+/* ─── System tokens — Dark ───────────────────────────────── */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-window:      var(--c-gray-1000);
+    --bg-card:        var(--c-gray-900);
+    --bg-card-hover:  #232327;
+    --bg-card-active: rgba(255, 122, 26, 0.12);
+    --bg-overlay:     rgba(255, 255, 255, 0.04);
+    --bg-pill:        rgba(255, 255, 255, 0.08);
+    --bg-input:       var(--c-gray-900);
+    --bg-sidebar:     #131316;
+    --bg-topbar:      rgba(20, 20, 22, 0.70);
+
+    --text-primary:   #f5f5f7;
+    --text-secondary: #b0b0b6;
+    --text-tertiary:  #8a8a92;
+    --text-link:      var(--c-orange-300);
+
+    --separator:      rgba(255, 255, 255, 0.10);
+    --border-subtle:  rgba(255, 255, 255, 0.08);
+    --border-strong:  rgba(255, 255, 255, 0.18);
+    --border-focus:   var(--c-orange-400);
+
+    --accent:           var(--c-orange-500);
+    --accent-hover:     var(--c-orange-400);
+    --accent-pressed:   var(--c-orange-300);
+    --accent-soft:      rgba(255, 122, 26, 0.16);
+    --accent-soft-text: var(--c-orange-300);
+
+    --ok-soft:     rgba(74, 222, 128, 0.18);
+    --warn-soft:   rgba(251, 191, 36, 0.20);
+    --warn-text:   var(--c-amber-400);
+    --danger-soft: rgba(248, 113, 113, 0.18);
+    --danger-text: var(--c-red-400);
+    --info-soft:   rgba(96, 165, 250, 0.18);
+
+    --shadow-card: 0 0 0 0.5px rgba(255, 255, 255, 0.05);
+    --shadow-popover:
+      0 0 0 0.5px var(--border-subtle),
+      0 8px 24px rgba(0, 0, 0, 0.50);
+    --shadow-modal:
+      0 0 0 0.5px var(--border-subtle),
+      0 24px 64px rgba(0, 0, 0, 0.55);
+    --shadow-focus: 0 0 0 3px rgba(255, 146, 51, 0.36);
+  }
+}
+
+/* ─── Reduced motion ────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-quick:  1ms linear;
+    --motion-base:   1ms linear;
+    --motion-page:   1ms linear;
+    --motion-spring: 1ms linear;
+  }
+}

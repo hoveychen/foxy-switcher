@@ -2,9 +2,11 @@ package refresh
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/anthropic"
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
@@ -14,7 +16,7 @@ import (
 // boundaries — the bars never look stale to a human.
 const UsageInterval = 5 * time.Minute
 
-// UsagePoller fetches /api/oauth/usage for every active account on its tick
+// UsagePoller fetches /api/oauth/usage for every account on its tick
 // and writes the snapshot to the store. It runs alongside the token-refresh
 // Scheduler but is intentionally a separate goroutine: token rotation has a
 // strict serialisation guarantee per account (Anthropic invalidates the
@@ -31,6 +33,11 @@ type UsagePoller struct {
 	// immediately when, e.g., a 5h window resets and an account becomes
 	// usable again. Must be set before Start; safe to leave nil.
 	OnChange func()
+
+	// Bus is the optional activity hub. We emit one usage.polled summary
+	// per tick (not per account, to avoid log spam) and per-account
+	// error.usage events on failure.
+	Bus *activity.Bus
 }
 
 func NewUsagePoller(st *store.Store, logger *log.Logger) *UsagePoller {
@@ -83,9 +90,14 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		return
 	}
 	changed := false
+	polled := 0
 	for i := range accs {
 		a := accs[i]
-		if a.Status != "active" || a.AccessToken == "" {
+		// Paused accounts (Status="paused") are still polled: pause means
+		// "do not select for routing", not "stop maintaining the card". The
+		// usage bars and profile must stay current so the resume action shows
+		// fresh data.
+		if a.AccessToken == "" {
 			continue
 		}
 		// Skip accounts whose token expired and hasn't been rotated yet —
@@ -112,17 +124,31 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		u, err := anthropic.FetchUsage(ctx, a.AccessToken)
 		if err != nil {
 			p.logger.Printf("[usage] account %d (%s): %v", a.ID, a.Name, err)
+			p.Bus.EmitError(activity.TypeErrorUsage, a.ID,
+				fmt.Sprintf("Usage poll for %s failed: %v", a.Name, err))
 			continue
 		}
 		if err := writeUsage(ctx, p.st, a.ID, u); err != nil {
 			p.logger.Printf("[usage] account %d store: %v", a.ID, err)
 			continue
 		}
+		polled++
 		changed = true
+	}
+	if polled > 0 {
+		p.Bus.EmitInfo(activity.TypeUsagePolled, 0,
+			fmt.Sprintf("Refreshed usage for %d account%s", polled, pluralS(polled)))
 	}
 	if changed && p.OnChange != nil {
 		p.OnChange()
 	}
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // writeUsage flattens an anthropic.Usage value into store columns. Mirrors

@@ -9,10 +9,12 @@ package refresh
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/authz"
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
@@ -26,6 +28,23 @@ const Threshold = time.Hour
 // tokens. Short enough to catch any token that just dipped below the
 // threshold, long enough that an idle pool doesn't thrash.
 const Interval = 10 * time.Minute
+
+// InUseFallbackThreshold is the safety net for the currently-injected
+// account. While it's injected we'd normally defer to Claude Code (the
+// refresh_token is one-time-use, parallel rotations would race), but CC only
+// rotates the token while it's actively making requests. If the user is idle
+// or the machine slept through the normal refresh window, nobody else is
+// keeping the token alive — once `remaining` drops below this cutoff the
+// scheduler takes over despite the injection. Set well under Threshold so
+// CC has the full normal window to do its job first.
+const InUseFallbackThreshold = 15 * time.Minute
+
+// narrateBelow controls per-account decision logging in tick(). Above this
+// remaining lifetime an account is healthy and uninteresting; below it we
+// log the decision (refresh / skip-injected / skip-not-due) so a user
+// reporting "my token wasn't refreshed" can be diagnosed by reading the
+// timestamps — was the tick even running? was the account skipped, and why?
+const narrateBelow = 2 * time.Hour
 
 // Scheduler scans the store on Interval and refreshes any account whose
 // access_token expires within Threshold.
@@ -48,6 +67,10 @@ type Scheduler struct {
 	// the one-time-use refresh_token. The Coordinator wires this so the
 	// scheduler simply skips the injected account each tick.
 	SkipAccountID func() int64
+
+	// Bus is the optional activity hub the scheduler emits token.refreshed /
+	// error.refresh events to. Nil-safe; tests leave it unset.
+	Bus *activity.Bus
 }
 
 func New(st *store.Store, logger *log.Logger) *Scheduler {
@@ -103,20 +126,50 @@ func (s *Scheduler) tick(ctx context.Context) {
 	if s.SkipAccountID != nil {
 		skip = s.SkipAccountID()
 	}
+	// Heartbeat: tick fired, here's the in-use account so a missed-refresh
+	// report can be cross-referenced against the wall clock to detect tick
+	// gaps (e.g. macOS suspended the process longer than Interval).
+	s.logger.Printf("[refresh] tick: scanning %d accounts (in_use_id=%d)", len(accs), skip)
 	for i := range accs {
 		a := accs[i]
-		if a.Status != "active" || a.RefreshToken == "" {
-			continue
-		}
-		if skip != 0 && a.ID == skip {
+		// Paused accounts (Status="paused") are still maintained: pause is
+		// a "do not select for routing" signal, not "stop refreshing". Letting
+		// a paused token expire means the next resume lands on a dead token.
+		if a.RefreshToken == "" {
 			continue
 		}
 		remaining := time.Duration(a.ExpiresAt-now.UnixMilli()) * time.Millisecond
-		if remaining > Threshold {
+		narrate := remaining < narrateBelow
+		// Skip the currently-injected account while it has comfortable
+		// runway — Claude Code owns the refresh path under normal use.
+		// Once `remaining` drops below InUseFallbackThreshold the assumption
+		// "CC will get to it" no longer holds (idle user / slept machine /
+		// CC closed), so the daemon takes over despite the injection.
+		if skip != 0 && a.ID == skip && remaining > InUseFallbackThreshold {
+			if narrate {
+				s.logger.Printf("[refresh] account %d (%s): skip — in-use, CC owns refresh (remaining=%s)",
+					a.ID, a.Name, remaining.Round(time.Second))
+			}
 			continue
+		}
+		if remaining > Threshold {
+			if narrate {
+				s.logger.Printf("[refresh] account %d (%s): skip — not due (remaining=%s)",
+					a.ID, a.Name, remaining.Round(time.Second))
+			}
+			continue
+		}
+		if skip != 0 && a.ID == skip {
+			s.logger.Printf("[refresh] account %d (%s): in-use but remaining=%s ≤ fallback; refreshing despite injection",
+				a.ID, a.Name, remaining.Round(time.Second))
+		} else {
+			s.logger.Printf("[refresh] account %d (%s): refreshing (remaining=%s)",
+				a.ID, a.Name, remaining.Round(time.Second))
 		}
 		if err := s.RefreshOne(ctx, a.ID); err != nil {
 			s.logger.Printf("[refresh] account %d (%s): %v", a.ID, a.Name, err)
+			s.Bus.EmitError(activity.TypeErrorRefresh, a.ID,
+				fmt.Sprintf("Refresh %s failed: %v", a.Name, err))
 		}
 	}
 }
@@ -160,6 +213,9 @@ func (s *Scheduler) RefreshOne(ctx context.Context, id int64) error {
 	}
 	s.logger.Printf("[refresh] account %d (%s) rotated; next expiry in %s",
 		a.ID, a.Name, time.Until(time.UnixMilli(expiresAt)).Round(time.Second))
+	s.Bus.EmitInfo(activity.TypeTokenRefreshed, a.ID,
+		fmt.Sprintf("Rotated %s — next expiry in %s",
+			a.Name, time.Until(time.UnixMilli(expiresAt)).Round(time.Second)))
 	if s.OnChange != nil {
 		s.OnChange()
 	}

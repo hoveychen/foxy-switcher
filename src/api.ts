@@ -45,6 +45,10 @@ export interface Account {
   id: number;
   name: string;
   status: string;
+  // Derived flag: access_token has passed expires_at. Set server-side so the
+  // UI doesn't have to re-implement the clock check (and selector / TUI /
+  // desktop stay in lock-step on what counts as "expired").
+  token_expired: boolean;
   organization_uuid: string;
   subscription_type: string;
   expires_at: number;
@@ -62,7 +66,31 @@ export interface Account {
   seven_day?: UsageWindow;
   seven_day_sonnet?: UsageWindow;
   usage_fetched_at: number;
+  // Per-window utilization thresholds (0–100). Schema default 95; 100 = no skip.
+  five_hour_threshold: number;
+  seven_day_threshold: number;
+  seven_day_sonnet_threshold: number;
 }
+
+export interface ThresholdInput {
+  five_hour: number;
+  seven_day: number;
+  seven_day_sonnet: number;
+}
+
+export type AutoSwitchPolicy = "lru" | "lowest" | "rr";
+
+export interface AutoSwitchSettings {
+  enabled: boolean;
+  policy: AutoSwitchPolicy;
+}
+
+export type DaemonMode = "attached" | "owned";
+
+export const getDaemonMode = (): Promise<DaemonMode> =>
+  invoke<DaemonMode>("get_daemon_mode");
+
+export const getServerPort = (): Promise<number> => getPort();
 
 export const apiClient = {
   listAccounts: () =>
@@ -85,9 +113,15 @@ export const apiClient = {
   selectAccount: (id: number) =>
     api<void>(`/api/accounts/${id}/select`, { method: "POST" }),
 
-  setEnabled: (id: number, enabled: boolean) =>
-    api<void>(`/api/accounts/${id}/${enabled ? "enable" : "disable"}`, {
+  setPaused: (id: number, paused: boolean) =>
+    api<void>(`/api/accounts/${id}/${paused ? "pause" : "resume"}`, {
       method: "POST",
+    }),
+
+  setThresholds: (id: number, t: ThresholdInput) =>
+    api<void>(`/api/accounts/${id}/thresholds`, {
+      method: "POST",
+      json: t,
     }),
 
   deleteAccount: (id: number) =>
@@ -99,4 +133,9 @@ export const apiClient = {
       native_backup_present: boolean;
       injected_at: number;
     }>("/api/cred/status"),
+
+  getAutoSwitch: () => api<AutoSwitchSettings>("/api/auto-switch"),
+
+  setAutoSwitch: (v: AutoSwitchSettings) =>
+    api<AutoSwitchSettings>("/api/auto-switch", { method: "POST", json: v }),
 };

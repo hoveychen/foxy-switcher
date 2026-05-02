@@ -171,6 +171,136 @@ func TestUpsertEmptyEmailsCoexist(t *testing.T) {
 	}
 }
 
+// TestMigrateDisabledToPaused covers the rename of the off-state status
+// literal. Existing databases on disk store rows with status='disabled'; on
+// upgrade those must become status='paused' so SetStatus and the UI no longer
+// see the legacy value.
+func TestMigrateDisabledToPaused(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy_status.db")
+
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := rawDB.Exec(tableSchema); err != nil {
+		rawDB.Close()
+		t.Fatalf("apply schema: %v", err)
+	}
+	if _, err := rawDB.Exec(
+		`INSERT INTO accounts (name, access_token, refresh_token, expires_at, status, created_at, updated_at)
+		 VALUES ('legacy-paused', 'at', 'rt', 1, 'disabled', 1, 1)`); err != nil {
+		rawDB.Close()
+		t.Fatalf("insert legacy paused row: %v", err)
+	}
+	rawDB.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after legacy data: %v", err)
+	}
+	defer st.Close()
+
+	got, err := st.Get(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("get legacy row: %v", err)
+	}
+	if got.Status != "paused" {
+		t.Fatalf("legacy status not migrated: got %q want %q", got.Status, "paused")
+	}
+}
+
+// TestThresholdsDefaultAndSet covers the per-account utilization-threshold
+// surface: a freshly-inserted row gets 100 on every window (i.e. "do not
+// skip"), and SetThresholds writes the supplied values back, clamped to
+// [0, 100].
+func TestThresholdsDefaultAndSet(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	a := &Account{Name: "alice", Email: "alice@example.com", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.FiveHourThreshold != 95 || got.SevenDayThreshold != 95 || got.SevenDaySonnetThreshold != 95 {
+		t.Fatalf("expected default thresholds = 95, got %v / %v / %v",
+			got.FiveHourThreshold, got.SevenDayThreshold, got.SevenDaySonnetThreshold)
+	}
+
+	if err := st.SetThresholds(ctx, a.ID, 95, 80, 150); err != nil {
+		t.Fatalf("SetThresholds: %v", err)
+	}
+	got, err = st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get after set: %v", err)
+	}
+	if got.FiveHourThreshold != 95 {
+		t.Errorf("FiveHourThreshold: got %v want 95", got.FiveHourThreshold)
+	}
+	if got.SevenDayThreshold != 80 {
+		t.Errorf("SevenDayThreshold: got %v want 80", got.SevenDayThreshold)
+	}
+	if got.SevenDaySonnetThreshold != 100 { // clamped from 150
+		t.Errorf("SevenDaySonnetThreshold: got %v want 100 (clamped)", got.SevenDaySonnetThreshold)
+	}
+
+	if err := st.SetThresholds(ctx, a.ID, -10, 0, 50); err != nil {
+		t.Fatalf("SetThresholds (negative): %v", err)
+	}
+	got, err = st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get after negative: %v", err)
+	}
+	if got.FiveHourThreshold != 0 { // clamped from -10
+		t.Errorf("FiveHourThreshold: got %v want 0 (clamped)", got.FiveHourThreshold)
+	}
+}
+
+// TestAutoSwitchDefaultsAndRoundTrip covers the kv-backed auto-switch knob:
+// a fresh DB returns the daemon defaults (enabled, lru), and SetAutoSwitch
+// then GetAutoSwitch round-trips the toggle so the credinject coordinator
+// can read it back on the next reconcile tick.
+func TestAutoSwitchDefaultsAndRoundTrip(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	got, err := st.GetAutoSwitch(ctx)
+	if err != nil {
+		t.Fatalf("GetAutoSwitch (defaults): %v", err)
+	}
+	if !got.Enabled || got.Policy != "lru" {
+		t.Fatalf("expected defaults {true, lru}, got %+v", got)
+	}
+
+	if err := st.SetAutoSwitch(ctx, AutoSwitch{Enabled: false, Policy: "lowest"}); err != nil {
+		t.Fatalf("SetAutoSwitch: %v", err)
+	}
+	got, err = st.GetAutoSwitch(ctx)
+	if err != nil {
+		t.Fatalf("GetAutoSwitch (after set): %v", err)
+	}
+	if got.Enabled || got.Policy != "lowest" {
+		t.Fatalf("round-trip: got %+v, want {false, lowest}", got)
+	}
+
+	// Overwrite confirms the upsert path (INSERT ON CONFLICT) doesn't append a
+	// second row; subsequent reads should reflect only the latest write.
+	if err := st.SetAutoSwitch(ctx, AutoSwitch{Enabled: true, Policy: "rr"}); err != nil {
+		t.Fatalf("SetAutoSwitch (overwrite): %v", err)
+	}
+	got, err = st.GetAutoSwitch(ctx)
+	if err != nil {
+		t.Fatalf("GetAutoSwitch (after overwrite): %v", err)
+	}
+	if !got.Enabled || got.Policy != "rr" {
+		t.Fatalf("overwrite: got %+v, want {true, rr}", got)
+	}
+}
+
 // TestUpsertDefaultsLastUsedAtToNow guards the credinject sticky-selection
 // invariant: only MarkForNextPick should produce last_used_at = 0. New
 // accounts inserted with the zero default would otherwise be indistinguishable

@@ -5,13 +5,24 @@
 // and stash it in ServerState so the React frontend can fetch /api/* against
 // the right address.
 //
+// Before spawning we first try to attach to a daemon that some other entry
+// point already brought up — typically `foxy-switcher tui` running in embedded
+// mode or a dev `go run .`. If `~/.foxy-switcher/port` resolves and `/healthz`
+// answers 200, we just publish that port to ServerState and skip the spawn.
+// This mirrors the TUI's own attach-first logic in server/main.go and avoids
+// two daemons racing on the same SQLite file + macOS keychain.
+//
 // On exit we send SIGTERM (Unix) so the sidecar's signal handler runs its
 // graceful shutdown path: release the port file, checkpoint the DB WAL, and
 // crucially uninstall the apiKeyHelper hook from ~/.claude/settings.json. A
 // plain `child.kill()` (SIGKILL) skips that cleanup, leaving the hook orphaned.
-// The sidecar's parent-pid watchdog covers the SIGKILL-the-GUI case.
+// The sidecar's parent-pid watchdog covers the SIGKILL-the-GUI case. When we
+// attached instead of spawning, ChildHandle is empty and shutdown is a no-op
+// — the daemon outlives this GUI session, which is the whole point of attach.
 
 use std::{
+    io::{Read, Write},
+    net::{SocketAddr, TcpStream},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -30,9 +41,25 @@ pub fn spawn(app: &AppHandle) -> Result<()> {
     let data_dir = data_dir()?;
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("create data dir {}", data_dir.display()))?;
-    // Stale port file from a prior crash would otherwise be picked up before
-    // the new server has written its own.
     let port_file = data_dir.join("port");
+
+    // Attach-first: if another daemon (TUI embedded mode, manual `go run .`)
+    // already owns the port file and answers /healthz, reuse it. Always install
+    // an empty ChildHandle so shutdown's lookup never has to handle "state
+    // missing entirely". Empty handle → shutdown is a no-op, which is exactly
+    // what we want when the daemon belongs to someone else.
+    if let Some(port) = try_attach(&port_file) {
+        eprintln!("[sidecar] attaching to existing daemon on port {port}");
+        if let Some(state) = app.try_state::<ServerState>() {
+            *state.port.lock().unwrap() = Some(port);
+        }
+        app.manage(Arc::new(ChildHandle::default()));
+        return Ok(());
+    }
+
+    // No live daemon — clean any stale port file from a prior crash so our
+    // file watcher below doesn't read it before the freshly-spawned sidecar
+    // has had a chance to overwrite it.
     let _ = std::fs::remove_file(&port_file);
 
     // Pass our own PID so the sidecar can self-terminate if we die without
@@ -168,4 +195,45 @@ pub fn shutdown(app: &AppHandle) {
 pub fn data_dir() -> Result<std::path::PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("home dir unavailable"))?;
     Ok(home.join(".foxy-switcher"))
+}
+
+// try_attach mirrors server/main.go:pingDaemon — read the port file, then
+// confirm the daemon is alive via a one-shot HTTP GET /healthz. We do raw
+// TCP/HTTP rather than pulling in reqwest: this is on the GUI launch path,
+// must finish in well under a second, and only ever talks to 127.0.0.1.
+//
+// Returns Some(port) only when the file parses AND /healthz answers 200.
+// Anything else (missing file, invalid number, refused connect, timeout,
+// non-200 response) is treated as "no daemon" and the caller spawns one.
+fn try_attach(port_file: &std::path::Path) -> Option<u16> {
+    let raw = std::fs::read_to_string(port_file).ok()?;
+    let port: u16 = raw.trim().parse().ok()?;
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(500)))
+        .ok()?;
+    stream
+        .write_all(b"GET /healthz HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        .ok()?;
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).ok()?;
+    if n == 0 {
+        return None;
+    }
+    // Status line is "HTTP/1.x 200 OK" — match the leading bytes loosely so
+    // we don't depend on the exact Go net/http phrasing.
+    let prefix = &buf[..n];
+    let head = std::str::from_utf8(prefix).ok()?;
+    let mut parts = head.split_whitespace();
+    let _ = parts.next()?; // HTTP/1.0
+    let code = parts.next()?;
+    if code == "200" {
+        Some(port)
+    } else {
+        None
+    }
 }

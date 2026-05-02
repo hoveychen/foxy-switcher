@@ -7,6 +7,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,7 +28,7 @@ type Account struct {
 	Scopes           string
 	SubscriptionType string // "max" | "pro" | "team_premium" | "team" | "free"
 	OrganizationUUID string
-	Status           string // "active" | "disabled"
+	Status           string // "active" | "paused"
 	CooldownUntil    int64  // unix millis; 0 = no cooldown
 	LastUsedAt       int64  // unix millis
 	Last429At        int64  // unix millis
@@ -50,6 +51,25 @@ type Account struct {
 	SevenDaySonnetUtil     float64
 	SevenDaySonnetResetsAt string
 	UsageFetchedAt         int64 // unix millis; 0 = never
+
+	// Per-account utilization thresholds (0–100). The selector skips an
+	// account when any window's util has reached the matching threshold.
+	// Default 95 leaves a small buffer below the upstream 429 line; raise
+	// to 100 to opt out of pre-emptive skipping for that window.
+	FiveHourThreshold       float64
+	SevenDayThreshold       float64
+	SevenDaySonnetThreshold float64
+}
+
+// TokenExpired reports whether the access_token is past its lifetime at
+// `now`. ExpiresAt==0 is treated as "unknown / not expired" so freshly-added
+// rows that haven't received a server-assigned expiry don't get gated out
+// before their first refresh tick.
+func (a Account) TokenExpired(now time.Time) bool {
+	if a.ExpiresAt <= 0 {
+		return false
+	}
+	return a.ExpiresAt <= now.UnixMilli()
 }
 
 // tableSchema is the create-from-scratch table DDL. For existing databases,
@@ -86,7 +106,10 @@ CREATE TABLE IF NOT EXISTS accounts (
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
   seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
   seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
-  usage_fetched_at           INTEGER NOT NULL DEFAULT 0
+  usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
+  five_hour_threshold        REAL    NOT NULL DEFAULT 95,
+  seven_day_threshold        REAL    NOT NULL DEFAULT 95,
+  seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95
 );
 `
 
@@ -95,6 +118,17 @@ CREATE INDEX IF NOT EXISTS accounts_status_cooldown
   ON accounts (status, cooldown_until, last_used_at);
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_uniq
   ON accounts (email) WHERE email != '';
+`
+
+// kvSchema holds simple daemon-wide key/value settings (auto-switch toggle,
+// future preferences). Idempotent CREATE so existing databases pick it up on
+// next start.
+const kvSchema = `
+CREATE TABLE IF NOT EXISTS kv (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `
 
 // columnMigrations adds columns to existing databases. Each entry is run in
@@ -112,6 +146,9 @@ var columnMigrations = []string{
 	`ALTER TABLE accounts ADD COLUMN seven_day_sonnet_util REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_sonnet_resets_at TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN usage_fetched_at INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE accounts ADD COLUMN five_hour_threshold REAL NOT NULL DEFAULT 95`,
+	`ALTER TABLE accounts ADD COLUMN seven_day_threshold REAL NOT NULL DEFAULT 95`,
+	`ALTER TABLE accounts ADD COLUMN seven_day_sonnet_threshold REAL NOT NULL DEFAULT 95`,
 }
 
 type Store struct {
@@ -138,9 +175,20 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate legacy org-unique: %w", err)
 	}
+	// Rename legacy 'disabled' status to 'paused'. Idempotent: matches no rows
+	// once migration has run. The off-state was renamed when pause/resume
+	// replaced enable/disable in the desktop UI.
+	if _, err := db.Exec(`UPDATE accounts SET status='paused' WHERE status='disabled'`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate disabled->paused: %w", err)
+	}
 	if _, err := db.Exec(indexSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply indexes: %w", err)
+	}
+	if _, err := db.Exec(kvSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply kv schema: %w", err)
 	}
 	return &Store{db: db}, nil
 }
@@ -193,7 +241,10 @@ CREATE TABLE accounts_new (
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
   seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
   seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
-  usage_fetched_at           INTEGER NOT NULL DEFAULT 0
+  usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
+  five_hour_threshold        REAL    NOT NULL DEFAULT 95,
+  seven_day_threshold        REAL    NOT NULL DEFAULT 95,
+  seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95
 );
 INSERT INTO accounts_new SELECT
   id, name, access_token, refresh_token, expires_at, scopes,
@@ -203,7 +254,8 @@ INSERT INTO accounts_new SELECT
   five_hour_util, five_hour_resets_at,
   seven_day_util, seven_day_resets_at,
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
-  usage_fetched_at FROM accounts;
+  usage_fetched_at,
+  five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -357,9 +409,37 @@ func (s *Store) SetCooldown(ctx context.Context, id int64, cooldownUntil time.Ti
 	return err
 }
 
-// SetStatus toggles between "active" and "disabled".
+// SetThresholds rewrites the per-window utilization thresholds for one
+// account. Inputs are clamped to [0, 100]. The selector skips accounts whose
+// util on any window has reached the matching threshold; the schema default
+// is 95 (small pre-emptive buffer); 100 disables skipping for that window.
+func (s *Store) SetThresholds(ctx context.Context, id int64, fiveHour, sevenDay, sevenDaySonnet float64) error {
+	const q = `
+UPDATE accounts
+   SET five_hour_threshold = ?, seven_day_threshold = ?, seven_day_sonnet_threshold = ?,
+       updated_at = ?
+ WHERE id = ?`
+	_, err := s.db.ExecContext(ctx, q,
+		clampPercent(fiveHour), clampPercent(sevenDay), clampPercent(sevenDaySonnet),
+		time.Now().UnixMilli(), id)
+	return err
+}
+
+func clampPercent(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
+// SetStatus toggles between "active" and "paused". "paused" only suppresses
+// routing (selector skips it, credinject won't inject it) — refresh and usage
+// pollers continue to maintain the row.
 func (s *Store) SetStatus(ctx context.Context, id int64, status string) error {
-	if status != "active" && status != "disabled" {
+	if status != "active" && status != "paused" {
 		return fmt.Errorf("invalid status %q", status)
 	}
 	_, err := s.db.ExecContext(ctx,
@@ -384,7 +464,8 @@ email, full_name, organization_name, plan,
 five_hour_util, five_hour_resets_at,
 seven_day_util, seven_day_resets_at,
 seven_day_sonnet_util, seven_day_sonnet_resets_at,
-usage_fetched_at`
+usage_fetched_at,
+five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold`
 
 // List returns every row ordered by id (stable insertion order).
 func (s *Store) List(ctx context.Context) ([]Account, error) {
@@ -429,12 +510,64 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.SevenDayUtil, &a.SevenDayResetsAt,
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
 			&a.UsageFetchedAt,
+			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
 		); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// AutoSwitch holds the daemon-wide policy that the credinject coordinator
+// consults on every reconcile tick. Persisted to the kv table under key
+// "auto_switch" as JSON; defaults are returned for missing rows so a fresh
+// install behaves like the old "always rotate" behaviour.
+type AutoSwitch struct {
+	Enabled bool   `json:"enabled"`
+	Policy  string `json:"policy"`
+}
+
+const autoSwitchKey = "auto_switch"
+
+// DefaultAutoSwitch is the fallback returned by GetAutoSwitch when no row
+// has ever been written. Matches the pre-feature behaviour: rotate on LRU.
+var DefaultAutoSwitch = AutoSwitch{Enabled: true, Policy: "lru"}
+
+// GetAutoSwitch reads the auto-switch setting. Missing row → defaults; a
+// corrupt JSON value is treated as missing (defaults returned, no error)
+// so a malformed manual edit can't brick the daemon.
+func (s *Store) GetAutoSwitch(ctx context.Context) (AutoSwitch, error) {
+	var raw string
+	row := s.db.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, autoSwitchKey)
+	if err := row.Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DefaultAutoSwitch, nil
+		}
+		return AutoSwitch{}, err
+	}
+	var v AutoSwitch
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return DefaultAutoSwitch, nil
+	}
+	if v.Policy == "" {
+		v.Policy = DefaultAutoSwitch.Policy
+	}
+	return v, nil
+}
+
+// SetAutoSwitch persists the auto-switch setting. Caller is expected to have
+// already validated `policy` against the allowed set.
+func (s *Store) SetAutoSwitch(ctx context.Context, v AutoSwitch) error {
+	buf, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("marshal auto-switch: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		autoSwitchKey, string(buf), time.Now().UnixMilli())
+	return err
 }
 
 func ifEmpty(s, dflt string) string {

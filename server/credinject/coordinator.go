@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/selector"
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
@@ -44,6 +46,11 @@ type Coordinator struct {
 	pickFn   func(ctx context.Context, st *store.Store, now time.Time) (*store.Account, error)
 	updateFn func(ctx context.Context, st *store.Store, id int64, accessToken, refreshToken string, expiresAt int64) error
 
+	// Bus is the optional activity hub the coordinator emits cred.injected /
+	// cred.restored / cred.failed events to. Nil-safe — set via SetBus once
+	// the bus is constructed in main; tests leave it nil.
+	bus *activity.Bus
+
 	reconcileInterval   time.Duration
 	reverseSyncInterval time.Duration
 
@@ -52,6 +59,16 @@ type Coordinator struct {
 	mu               sync.Mutex
 	currentAccountID int64
 	lastAccessHash   string
+}
+
+// SetBus wires the activity bus after construction. Optional — when nil,
+// emit calls below silently no-op (Bus methods are nil-safe). Tests that
+// don't care about activity simply don't call SetBus.
+func (c *Coordinator) SetBus(b *activity.Bus) {
+	if c == nil {
+		return
+	}
+	c.bus = b
 }
 
 // New constructs a Coordinator. The dataDir is where injected.json /
@@ -161,10 +178,26 @@ func (c *Coordinator) loadState() {
 // just-injected account to "now", which makes the *other* eligible account
 // look least-recently-used, so the next tick flips to it — and so on
 // forever. The "In use" badge in the UI ping-pongs every refresh.
+//
+// Manual mode (auto_switch.enabled=false): never spontaneously rotate. Only
+// switch when the user explicitly pinned (MarkForNextPick → LastUsedAt==0) or
+// when the current account becomes ineligible. Without an eligible target,
+// return ErrNoAvailable so the caller restores the user's native creds.
 func (c *Coordinator) choose(ctx context.Context) (*store.Account, error) {
+	auto, err := c.store.GetAutoSwitch(ctx)
+	if err != nil {
+		c.logger.Printf("[credinject] read auto-switch: %v", err)
+		auto = store.DefaultAutoSwitch
+	}
+
 	c.mu.Lock()
 	currentID := c.currentAccountID
 	c.mu.Unlock()
+
+	if !auto.Enabled {
+		return c.chooseManual(ctx, currentID)
+	}
+
 	if currentID == 0 {
 		return c.pickFn(ctx, c.store, c.clock())
 	}
@@ -172,12 +205,16 @@ func (c *Coordinator) choose(ctx context.Context) (*store.Account, error) {
 	if err != nil {
 		return c.pickFn(ctx, c.store, c.clock())
 	}
-	nowMs := c.clock().UnixMilli()
+	now := c.clock()
 	var cur *store.Account
 	var pinnedOther bool
 	for i := range accs {
 		a := accs[i]
-		if a.Status != "active" || a.CooldownUntil > nowMs {
+		// Reuse the selector's eligibility predicate so the sticky path
+		// honours every disqualifier (paused, cooldown, expired token,
+		// usage threshold) — otherwise we'd happily re-inject a dead
+		// account just because it was the previous "in use" one.
+		if !selector.IsEligible(a, now) {
 			continue
 		}
 		if a.ID == currentID {
@@ -193,6 +230,42 @@ func (c *Coordinator) choose(ctx context.Context) (*store.Account, error) {
 		return cur, nil
 	}
 	return c.pickFn(ctx, c.store, c.clock())
+}
+
+// chooseManual implements the auto-switch=off path. Order:
+//  1. Honour an explicit pin (LastUsedAt==0) — that's how the UI's "Use now"
+//     button reaches us, and a manual user expects clicks to take effect.
+//  2. Stick to the current account if it's still eligible.
+//  3. Otherwise no rotation — return ErrNoAvailable so credinject restores
+//     native creds rather than silently picking some other pool member.
+func (c *Coordinator) chooseManual(ctx context.Context, currentID int64) (*store.Account, error) {
+	accs, err := c.listFn(ctx, c.store)
+	if err != nil {
+		return nil, err
+	}
+	now := c.clock()
+	var pinned, cur *store.Account
+	for i := range accs {
+		a := accs[i]
+		if !selector.IsEligible(a, now) {
+			continue
+		}
+		if a.LastUsedAt == 0 && (pinned == nil || a.ID < pinned.ID) {
+			pp := a
+			pinned = &pp
+		}
+		if a.ID == currentID {
+			cc := a
+			cur = &cc
+		}
+	}
+	if pinned != nil {
+		return pinned, nil
+	}
+	if cur != nil {
+		return cur, nil
+	}
+	return nil, selector.ErrNoAvailable
 }
 
 func (c *Coordinator) reconcile(ctx context.Context) {
@@ -220,10 +293,14 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 	blob, err := buildOAuthBlob(a)
 	if err != nil {
 		c.logger.Printf("[credinject] build blob for account %d: %v", a.ID, err)
+		c.bus.EmitError(activity.TypeCredFailed, a.ID,
+			fmt.Sprintf("Build OAuth blob failed: %v", err))
 		return
 	}
 	if err := c.backend.WriteOAuthBlob(blob); err != nil {
 		c.logger.Printf("[credinject] write OAuth blob (account %d): %v", a.ID, err)
+		c.bus.EmitError(activity.TypeCredFailed, a.ID,
+			fmt.Sprintf("Write OAuth blob failed: %v", err))
 		return
 	}
 	// Best-effort: flush the managed-API-key item so Claude Code can't pick
@@ -253,10 +330,16 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 
 	if prev == a.ID {
 		c.logger.Printf("[credinject] re-injected account %d (%s) — token rotated", a.ID, a.Name)
+		// Token-rotation re-injects are noise on the activity timeline —
+		// the user already sees them as token.refreshed events. Skip.
 	} else if prev == 0 {
 		c.logger.Printf("[credinject] injected account %d (%s)", a.ID, a.Name)
+		c.bus.EmitInfo(activity.TypeCredInjected, a.ID,
+			fmt.Sprintf("Injected %s", a.Name))
 	} else {
 		c.logger.Printf("[credinject] switched: account %d → %d (%s)", prev, a.ID, a.Name)
+		c.bus.EmitInfo(activity.TypeCredInjected, a.ID,
+			fmt.Sprintf("Switched to %s", a.Name))
 	}
 }
 
@@ -283,6 +366,8 @@ func (c *Coordinator) handleNoAvailable() {
 		c.logger.Printf("[credinject] clear state: %v", err)
 	}
 	c.logger.Print("[credinject] no available account — restored native credentials")
+	c.bus.EmitWarn(activity.TypeCredRestored, 0,
+		"All accounts unavailable — restored native credentials")
 }
 
 // reverseSync pulls externally-rotated tokens back into the store. When

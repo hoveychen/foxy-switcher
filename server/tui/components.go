@@ -11,10 +11,16 @@ import (
 // statusDot returns the colored Unicode glyph indicating account state.
 // Pair with statusLabel so the status is conveyed by character + text, not
 // color alone (matters on NO_COLOR / 8-color terminals).
+//
+// Priority: paused > expired > cooldown > active. Paused wins because it's
+// an explicit user action; expired beats cooldown because a dead token
+// blocks injection regardless of the 429 timer.
 func statusDot(a Account, nowMs int64) string {
 	switch {
 	case a.Status == "paused":
 		return lipgloss.NewStyle().Foreground(textTertiary).Render("○")
+	case a.TokenExpired:
+		return lipgloss.NewStyle().Foreground(tokenDanger).Render("⊘")
 	case a.CooldownUntil > nowMs:
 		return lipgloss.NewStyle().Foreground(tokenWarn).Render("◐")
 	default:
@@ -26,6 +32,9 @@ func statusDot(a Account, nowMs int64) string {
 func statusLabel(a Account, nowMs int64) string {
 	if a.Status == "paused" {
 		return dimStyle.Render("paused")
+	}
+	if a.TokenExpired {
+		return errStyle.Render("token expired")
 	}
 	if a.CooldownUntil > nowMs {
 		left := time.Until(time.UnixMilli(a.CooldownUntil)).Round(time.Second)
