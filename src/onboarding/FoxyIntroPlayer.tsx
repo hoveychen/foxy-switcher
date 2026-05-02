@@ -1,5 +1,5 @@
 import { Player, type PlayerRef } from '@remotion/player';
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { FoxyIntro, FOXY_INTRO_TOTAL_FRAMES } from './FoxyIntro';
 
 export interface FoxyIntroPlayerProps {
@@ -15,6 +15,8 @@ export interface FoxyIntroPlayerProps {
   clickToPlay?: boolean;
   /** Allow space-key toggle when focused. */
   spaceKeyToPlayOrPause?: boolean;
+  /** Fires when playback reaches the final frame (only meaningful when loop=false). */
+  onEnded?: () => void;
 }
 
 export const FoxyIntroPlayer: React.FC<FoxyIntroPlayerProps> = ({
@@ -24,8 +26,18 @@ export const FoxyIntroPlayer: React.FC<FoxyIntroPlayerProps> = ({
   controls = true,
   clickToPlay = true,
   spaceKeyToPlayOrPause = true,
+  onEnded,
 }) => {
   const ref = useRef<PlayerRef>(null);
+
+  useEffect(() => {
+    const player = ref.current;
+    if (!player || !onEnded) return;
+    const handler = () => onEnded();
+    player.addEventListener('ended', handler);
+    return () => player.removeEventListener('ended', handler);
+  }, [onEnded]);
+
   return (
     <Player
       ref={ref}

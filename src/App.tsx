@@ -20,7 +20,10 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { ActivityPage } from "./pages/ActivityPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
 import { t, tf } from "./i18n";
+
+const ONBOARDING_SEEN_KEY = "foxy.onboarding.seen.v1";
 
 const ROUTE_KEYS: Route[] = ["dashboard", "accounts", "activity", "settings"];
 
@@ -42,6 +45,24 @@ export default function App() {
     policy: "lru",
   });
   const [addAccountTick, setAddAccountTick] = useState(0);
+  // First-launch intro: read once on mount; localStorage access can throw in
+  // sandboxed contexts so swallow and default to "already seen" to avoid
+  // surprising users with a video that can't be dismissed.
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(ONBOARDING_SEEN_KEY) !== "1";
+    } catch {
+      return false;
+    }
+  });
+  const dismissOnboarding = useCallback(() => {
+    try {
+      localStorage.setItem(ONBOARDING_SEEN_KEY, "1");
+    } catch {
+      // ignore — user just won't be persisted, overlay still closes
+    }
+    setShowOnboarding(false);
+  }, []);
   // Dashboard's "Recent activity" lives in App so its 5s refresh shares the
   // same listAccounts cadence — one daemon round-trip per tick instead of
   // every page mounting its own poller.
@@ -400,6 +421,7 @@ export default function App() {
           onSettingsChange={persistSettings}
         />
       )}
+      {showOnboarding && <OnboardingOverlay onDismiss={dismissOnboarding} />}
     </AppShell>
   );
 }

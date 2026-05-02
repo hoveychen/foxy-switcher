@@ -323,6 +323,11 @@
   "modal.close": "关闭",
   "drawer.close": "关闭详情",
 
+  "onboarding.title": "欢迎使用 Foxy Switcher",
+  "onboarding.subtitle": "45 秒了解 Foxy 如何自动轮换你的 Claude 账号。",
+  "onboarding.skip": "跳过介绍",
+  "onboarding.done": "知道了",
+
   "app.delete_account.prompt": "从池中删除此账号？",
   "app.delete_account.title": "确认删除",
   "app.error.restart_failed": "重启失败：{error}"

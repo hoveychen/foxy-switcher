@@ -323,6 +323,11 @@
   "modal.close": "Close",
   "drawer.close": "Close detail",
 
+  "onboarding.title": "Welcome to Foxy Switcher",
+  "onboarding.subtitle": "A 45-second tour of how Foxy keeps your Claude accounts rotating.",
+  "onboarding.skip": "Skip intro",
+  "onboarding.done": "Got it",
+
   "app.delete_account.prompt": "Delete this account from the pool?",
   "app.delete_account.title": "Confirm delete",
   "app.error.restart_failed": "Restart failed: {error}"
