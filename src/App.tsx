@@ -373,6 +373,7 @@ export default function App() {
           selectedAccountId={selectedAccountId}
           busyAccountId={busyAccountId}
           addAccountTick={addAccountTick}
+          onAddAccountConsumed={() => setAddAccountTick(0)}
           autoSwitch={autoSwitch}
           onAutoSwitchToggle={onAutoSwitchToggle}
           onSelectRow={setSelectedAccountId}

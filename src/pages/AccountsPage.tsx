@@ -269,6 +269,7 @@ export function AccountsPage({
   selectedAccountId,
   busyAccountId,
   addAccountTick,
+  onAddAccountConsumed,
   autoSwitch,
   onAutoSwitchToggle,
   onSelectRow,
@@ -286,6 +287,7 @@ export function AccountsPage({
   selectedAccountId: number | null;
   busyAccountId: number | null;
   addAccountTick: number;
+  onAddAccountConsumed: () => void;
   autoSwitch: { enabled: boolean; policy: "lru" | "lowest" | "rr" };
   onAutoSwitchToggle: () => void;
   onSelectRow: (id: number | null) => void;
@@ -334,6 +336,7 @@ export function AccountsPage({
   useEffect(() => {
     if (addAccountTick === 0) return;
     if (loginState.phase === "idle") startLogin();
+    onAddAccountConsumed();
     // intentionally only depend on tick — fires once per increment
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addAccountTick]);
