@@ -65,6 +65,11 @@ func helpAccounts() helpSection {
 			{"c", "set cooldown"},
 			{"r", "refresh now"},
 			{"d", "delete"},
+			{"/", "search by name"},
+			{"f / ⇥", "cycle filter"},
+			{"t", "edit thresholds"},
+			{"A", "toggle auto-switch"},
+			{"P", "cycle policy"},
 		},
 	}
 }

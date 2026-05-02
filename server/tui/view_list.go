@@ -153,7 +153,16 @@ func (m *model) renderHeader() string {
 		parts = append(parts, dimStyle.Render("refreshed "+humanAge(m.lastRefresh)))
 	}
 	top := strings.Join(parts, "  ")
-	return top + "\n" + m.renderFilterChips()
+	// While typing, the search input takes the second row; otherwise show
+	// the filter-chip strip plus a committed-query indicator if any.
+	if m.mode == modeSearch {
+		return top + "\n" + m.search.View()
+	}
+	second := m.renderFilterChips()
+	if m.searchQuery != "" {
+		second += "  " + dimStyle.Render("search: "+m.searchQuery)
+	}
+	return top + "\n" + second
 }
 
 // renderFilterChips builds the All/Active/Paused/Cooldown row. Counts are

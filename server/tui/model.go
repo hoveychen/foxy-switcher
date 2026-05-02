@@ -24,6 +24,8 @@ const (
 	modeCooldown
 	modeConfirmDelete
 	modeError
+	modeSearch
+	modeThresholds
 )
 
 // Run is the package entry point invoked by `foxy-switcher tui`. mode is a
@@ -67,6 +69,20 @@ type model struct {
 	addPaste     textinput.Model
 	pendingState string
 	pendingURL   string
+
+	// Search input state. searchQuery is the *committed* substring filter;
+	// while modeSearch is active, every keystroke recomputes m.accounts so
+	// the list shrinks live as the user types. Esc reverts and clears.
+	search      textinput.Model
+	searchQuery string
+
+	// Threshold editor state. thresholdAccountID is the row that was
+	// selected when the modal opened (the cursor may move under it via
+	// background refresh). thresholdValues holds 5h / 7d / 7d-Sonnet in
+	// that order.
+	thresholdField     int
+	thresholdValues    [3]float64
+	thresholdAccountID int64
 
 	// Cooldown picker state. Indexes into cooldownPresets.
 	cooldownChoice int
@@ -120,6 +136,25 @@ func accountsChips() []struct {
 	}
 }
 
+// applyAccountsView is the full Accounts-page predicate: chip filter ∩ name
+// substring search. Search is case-insensitive on Account.Name and is
+// applied after the chip filter so the filter chip's count semantics still
+// match the chips even when search is active.
+func applyAccountsView(all []Account, key accountsFilterKey, query string) []Account {
+	filtered := applyAccountsFilter(all, key)
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return filtered
+	}
+	out := make([]Account, 0, len(filtered))
+	for _, a := range filtered {
+		if strings.Contains(strings.ToLower(a.Name), q) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // applyAccountsFilter returns the subset matching the given chip. Cooldown
 // uses a real-time check so the chip's count reflects the current second,
 // matching the dashboard's "next cooldown" KPI semantics.
@@ -165,6 +200,11 @@ func newModel(c *Client) *model {
 	paste.CharLimit = 512
 	paste.Prompt = "› "
 
+	search := textinput.New()
+	search.Placeholder = "filter accounts by name"
+	search.CharLimit = 128
+	search.Prompt = "/ "
+
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.Dot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(accentBrand)),
@@ -174,6 +214,7 @@ func newModel(c *Client) *model {
 		client:   c,
 		mode:     modeList,
 		addPaste: paste,
+		search:   search,
 		spinner:  sp,
 	}
 }
@@ -204,7 +245,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.fatalErr = ""
 			m.allAccounts = msg.accounts
-			m.accounts = applyAccountsFilter(msg.accounts, m.filter)
+			m.accounts = applyAccountsView(msg.accounts, m.filter, m.searchQuery)
 			m.cred = msg.cred
 			m.autoSwitch = msg.autoSwitch
 			if m.cursor >= len(m.accounts) {
@@ -268,6 +309,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addPaste, cmd = m.addPaste.Update(msg)
 		return m, cmd
 	}
+	if m.mode == modeSearch {
+		var cmd tea.Cmd
+		m.search, cmd = m.search.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
@@ -281,6 +327,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCooldownKey(msg)
 	case modeConfirmDelete:
 		return m.handleConfirmDeleteKey(msg)
+	case modeSearch:
+		return m.handleSearchKey(msg)
+	case modeThresholds:
+		return m.handleThresholdsKey(msg)
 	case modeError:
 		// Any key returns to list.
 		m.mode = modeList
@@ -344,6 +394,19 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Kick off OAuth directly — the account name is derived from the
 		// profile fetched after the token exchange, so there's no alias prompt.
 		return m, m.loginStartCmd()
+	case "/":
+		m.search.SetValue(m.searchQuery)
+		m.search.Focus()
+		m.search.CursorEnd()
+		m.mode = modeSearch
+		return m, textinput.Blink
+	case "t":
+		if a, ok := m.selected(); ok {
+			m.thresholdAccountID = a.ID
+			m.thresholdValues = [3]float64{a.FiveHourThreshold, a.SevenDayThreshold, a.SevenDaySonnetThreshold}
+			m.thresholdField = 0
+			m.mode = modeThresholds
+		}
 	case "f", "tab":
 		m.cycleFilter(+1)
 	case "shift+tab":
@@ -367,13 +430,13 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // cycleFilter advances the chip and resets cursor + visible slice. Server
-// data isn't re-fetched — applyAccountsFilter operates on the cached
+// data isn't re-fetched — applyAccountsView operates on the cached
 // allAccounts so toggling chips is instant.
 func (m *model) cycleFilter(dir int) {
 	chips := accountsChips()
 	n := accountsFilterKey(len(chips))
 	m.filter = (m.filter + accountsFilterKey(dir) + n) % n
-	m.accounts = applyAccountsFilter(m.allAccounts, m.filter)
+	m.accounts = applyAccountsView(m.allAccounts, m.filter, m.searchQuery)
 	m.cursor = 0
 }
 
@@ -440,6 +503,87 @@ func (m *model) handleCooldownKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 	}
 	return m, nil
+}
+
+// handleSearchKey runs while the substring filter is being typed. Every
+// keystroke updates m.searchQuery so the list shrinks live; Enter blurs
+// (the query persists), Esc reverts to whatever was committed before this
+// search session opened.
+func (m *model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		m.searchQuery = strings.TrimSpace(m.search.Value())
+		m.search.Blur()
+		m.mode = modeList
+		m.accounts = applyAccountsView(m.allAccounts, m.filter, m.searchQuery)
+		m.cursor = 0
+		return m, nil
+	case "esc":
+		// Esc clears the in-flight edit AND any previously committed query.
+		// "Cancel" matches user expectation more than "revert to last commit".
+		m.search.SetValue("")
+		m.searchQuery = ""
+		m.search.Blur()
+		m.mode = modeList
+		m.accounts = applyAccountsView(m.allAccounts, m.filter, m.searchQuery)
+		m.cursor = 0
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.search, cmd = m.search.Update(msg)
+	m.searchQuery = m.search.Value()
+	m.accounts = applyAccountsView(m.allAccounts, m.filter, m.searchQuery)
+	if m.cursor >= len(m.accounts) {
+		m.cursor = max(0, len(m.accounts)-1)
+	}
+	return m, cmd
+}
+
+// handleThresholdsKey drives the per-account threshold editor. Layout:
+// `[`/`]` (or h/l) move between 5h / 7d / 7d-Sonnet; `-`/`+` step ±5%
+// clamped to 0..100 (100 = "do not skip on this window"). Enter commits
+// via SetThresholds; Esc cancels without writing.
+func (m *model) handleThresholdsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.mode = modeList
+		return m, nil
+	case "left", "h", "[":
+		if m.thresholdField > 0 {
+			m.thresholdField--
+		}
+	case "right", "l", "]", "tab":
+		if m.thresholdField < 2 {
+			m.thresholdField++
+		}
+	case "-", "_":
+		m.stepThreshold(-5)
+	case "+", "=":
+		m.stepThreshold(+5)
+	case "0":
+		// Quick "disable this window" — set threshold to 100 (selector
+		// won't skip on it).
+		m.thresholdValues[m.thresholdField] = 100
+	case "enter":
+		id := m.thresholdAccountID
+		v := m.thresholdValues
+		m.mode = modeList
+		return m, m.startOp("Updating thresholds…", "Thresholds saved", func(ctx context.Context) error {
+			return m.client.SetThresholds(ctx, id, v[0], v[1], v[2])
+		})
+	}
+	return m, nil
+}
+
+func (m *model) stepThreshold(delta float64) {
+	v := m.thresholdValues[m.thresholdField] + delta
+	if v < 0 {
+		v = 0
+	}
+	if v > 100 {
+		v = 100
+	}
+	m.thresholdValues[m.thresholdField] = v
 }
 
 func (m *model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -571,7 +715,11 @@ func (m *model) View() string {
 		return m.viewCooldown()
 	case modeConfirmDelete:
 		return m.viewConfirmDelete()
+	case modeThresholds:
+		return m.viewThresholds()
 	}
+	// modeSearch falls through to viewList — the list still renders, with a
+	// focused search strip swapped into the header.
 	return m.viewList()
 }
 

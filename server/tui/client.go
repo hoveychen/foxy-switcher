@@ -82,6 +82,11 @@ type Account struct {
 	SevenDay         *UsageWindow `json:"seven_day,omitempty"`
 	SevenDaySonnet   *UsageWindow `json:"seven_day_sonnet,omitempty"`
 	UsageFetchedAt   int64        `json:"usage_fetched_at"`
+	// Per-account utilization thresholds (0–100). 100 disables the
+	// corresponding window — the selector won't skip the account on it.
+	FiveHourThreshold       float64 `json:"five_hour_threshold"`
+	SevenDayThreshold       float64 `json:"seven_day_threshold"`
+	SevenDaySonnetThreshold float64 `json:"seven_day_sonnet_threshold"`
 }
 
 // CredStatus mirrors handleCredStatus.
