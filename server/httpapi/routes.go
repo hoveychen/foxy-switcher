@@ -47,6 +47,12 @@ type Server struct {
 	// reverse order, so Middleware[0] ends up outermost (just inside
 	// cors) and Middleware[len-1] ends up innermost (just before mux).
 	Middleware []func(http.Handler) http.Handler
+	// Mode + VaultURL are reflected back through /api/about so the
+	// frontend's Settings → Vault card can show what topology this
+	// daemon is running. Set by main; safe to leave empty (frontend
+	// treats "" the same as "combined").
+	Mode     string
+	VaultURL string
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {

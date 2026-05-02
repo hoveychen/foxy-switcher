@@ -30,6 +30,16 @@ type AboutResponse struct {
 	SQLiteSizeB   int64  `json:"sqlite_size_b"`   // bytes; -1 if stat failed
 	StartedAtMS   int64  `json:"started_at_ms"`   // unix millis
 	UptimeSeconds int64  `json:"uptime_seconds"`  // now - StartedAt
+	// Mode tells the frontend which deployment topology this daemon is
+	// running under: "combined" (vault + agent in process), "vault" (no
+	// credinject, frontend httpapi behind Bearer middleware), or "agent"
+	// (transparent reverse proxy to a remote vault). Settings uses this to
+	// render the Vault card differently per mode.
+	Mode string `json:"mode"`
+	// VaultURL is the upstream the agent forwards to. Empty in
+	// combined / vault mode. The Settings page shows this so the user
+	// knows which remote vault their agent is talking to.
+	VaultURL string `json:"vault_url"`
 }
 
 func (s *Server) handleGetAbout(w http.ResponseWriter, _ *http.Request) {
@@ -48,6 +58,8 @@ func (s *Server) handleGetAbout(w http.ResponseWriter, _ *http.Request) {
 	if !s.StartedAt.IsZero() {
 		resp.UptimeSeconds = int64(time.Since(s.StartedAt).Seconds())
 	}
+	resp.Mode = s.Mode
+	resp.VaultURL = s.VaultURL
 	if info, ok := debug.ReadBuildInfo(); ok {
 		if info.Main.Version != "" {
 			resp.Version = info.Main.Version

@@ -2,6 +2,12 @@
 // a fresh OAuth access_token from a pool of subscription accounts. Designed
 // to run as a Tauri sidecar (the GUI manages its lifecycle), but also runs
 // fine as a standalone binary for headless setups.
+//
+// CLI surface:
+//   foxy-switcher                    # default: TUI (embeds a daemon if none is running)
+//   foxy-switcher --server [flags]   # daemon for the desktop app / headless API consumers
+//   foxy-switcher tui   [flags]      # explicit TUI subcommand (same as default)
+//   foxy-switcher pair  [flags]      # device-flow pairing for --mode=agent
 package main
 
 import (
@@ -32,10 +38,8 @@ import (
 )
 
 func main() {
-	// Subcommand dispatch. Default (no args, or flag-prefixed args) keeps
-	// the daemon's existing CLI surface intact so the Tauri sidecar
-	// invocation `foxy-switcher --port=N --parent-pid=P …` still works
-	// unchanged.
+	// Subcommand dispatch first. `tui` and `pair` keep working as named
+	// subcommands for backwards compat with prior docs / muscle memory.
 	if len(os.Args) > 1 && os.Args[1] == "tui" {
 		runTUI(os.Args[2:])
 		return
@@ -45,15 +49,51 @@ func main() {
 		return
 	}
 
-	var (
-		dataDir      = flag.String("data-dir", "", "directory for state.db / port file (default ~/.foxy-switcher)")
-		port         = flag.Int("port", 0, "TCP port to bind on 127.0.0.1; 0 = random")
-		parentPID    = flag.Int("parent-pid", 0, "if non-zero, exit when this pid disappears (sidecar-mode safety net)")
-		noCredInject = flag.Bool("no-cred-inject", false, "don't manage Claude Code's credential storage (no inject, no reverse-sync, no restore) — useful when running side-by-side with a real native login for debugging")
-		mode         = flag.String("mode", "combined", "deployment mode: combined (vault+agent in-process, default), vault (token store + refresh + frontend HTTP, no credinject), agent (Step 5 — not implemented yet)")
-		bindHost     = flag.String("bind-host", "127.0.0.1", "address to bind on; vault mode usually wants 0.0.0.0 behind a reverse proxy")
-	)
-	flag.Parse()
+	// New default: TUI. The daemon is opt-in via `--server` so a user who
+	// just types `foxy-switcher` lands in the interactive UI instead of a
+	// silent background process. The Tauri sidecar passes `--server` so
+	// the GUI keeps owning a daemon as before.
+	serverMode, rest := extractServerFlag(os.Args[1:])
+	if !serverMode {
+		runTUI(rest)
+		return
+	}
+
+	runServer(rest)
+}
+
+// extractServerFlag pulls `--server` / `-server` out of args. Returns true if
+// it was present and the remaining args (in order) for the next FlagSet to
+// parse. We do this before flag.Parse because the daemon and the TUI use
+// different FlagSets; `--server` is the one bit that picks between them.
+func extractServerFlag(args []string) (bool, []string) {
+	found := false
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--server" || a == "-server" {
+			found = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return found, out
+}
+
+// runServer parses the daemon's flags and dispatches to runDaemon or runAgent.
+// Split out of main so the `--server` gate can call it directly with the
+// already-stripped argument list.
+func runServer(args []string) {
+	fs := flag.NewFlagSet("foxy-switcher --server", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "", "directory for state.db / port file (default ~/.foxy-switcher)")
+	port := fs.Int("port", 0, "TCP port to bind on 127.0.0.1; 0 = random")
+	parentPID := fs.Int("parent-pid", 0, "if non-zero, exit when this pid disappears (sidecar-mode safety net)")
+	noCredInject := fs.Bool("no-cred-inject", false, "don't manage Claude Code's credential storage (no inject, no reverse-sync, no restore) — useful when running side-by-side with a real native login for debugging")
+	mode := fs.String("mode", "combined", "deployment mode: combined (vault+agent in-process, default), vault (token store + refresh + frontend HTTP, no credinject), agent (Step 5 — not implemented yet)")
+	bindHost := fs.String("bind-host", "127.0.0.1", "address to bind on; vault mode usually wants 0.0.0.0 behind a reverse proxy")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	dir, err := resolveDataDir(*dataDir)
 	if err != nil {
@@ -116,6 +156,22 @@ func parseMode(s string) (daemonMode, error) {
 		return modeAgent, nil
 	default:
 		return 0, fmt.Errorf("--mode=%q: expected combined|vault|agent", s)
+	}
+}
+
+// modeName is the inverse of parseMode — used to surface the active mode
+// over /api/about so the frontend can render the Settings → Vault card
+// without re-deriving it.
+func modeName(m daemonMode) string {
+	switch m {
+	case modeCombined:
+		return "combined"
+	case modeVault:
+		return "vault"
+	case modeAgent:
+		return "agent"
+	default:
+		return ""
 	}
 }
 
@@ -199,6 +255,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 
 	server := httpapi.New(st, pkce, rf, opts.DataDir)
 	server.Bus = bus
+	server.Mode = modeName(opts.Mode)
 	if opts.Mode == modeVault {
 		// Vault mode means the frontend httpapi is reachable beyond
 		// loopback — gate it behind the same Bearer token agents use,

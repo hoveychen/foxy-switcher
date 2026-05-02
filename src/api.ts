@@ -310,6 +310,14 @@ export interface AboutResponse {
   sqlite_size_b: number;
   started_at_ms: number;
   uptime_seconds: number;
+  // Cloud-vault deployment topology. Empty / "combined" = local-only;
+  // "vault" = headless cloud server; "agent" = local credinject talking
+  // to a remote vault. Settings page renders the Vault card off this.
+  mode?: string;
+  // Upstream URL when mode === "agent"; empty otherwise.
+  vault_url?: string;
+  // Device id paired against the upstream vault. Set in agent mode.
+  device_id?: string;
 }
 
 export type DaemonMode = "attached" | "owned";

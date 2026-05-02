@@ -105,6 +105,21 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	mux.HandleFunc("GET /api/cred/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResponse(w, http.StatusOK, cc.Status())
 	})
+	// /api/about gets answered locally so the Settings → Vault card sees
+	// mode=agent + this device's upstream URL. Forwarding to the vault
+	// would surface mode=vault instead, which is true on the upstream
+	// but useless to the frontend trying to decide what UI to render.
+	startedAt := time.Now()
+	mux.HandleFunc("GET /api/about", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResponse(w, http.StatusOK, agentAbout{
+			Mode:        "agent",
+			VaultURL:    cfg.VaultURL,
+			DeviceID:    cfg.DeviceID,
+			Port:        tcp.Port,
+			DataDir:     opts.DataDir,
+			StartedAtMS: startedAt.UnixMilli(),
+		})
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
@@ -196,6 +211,21 @@ func newVaultProxy(target *url.URL, token string) *httputil.ReverseProxy {
 		})
 	}
 	return proxy
+}
+
+// agentAbout is the trimmed shape /api/about returns in agent mode.
+// Field names match httpapi.AboutResponse so the React Settings page
+// can decode either one with the same type. Fields the agent doesn't
+// know (sqlite size, build info, etc.) come back as zero values; the
+// frontend tolerates that — there's no useful answer for "the agent's
+// SQLite path" because the agent doesn't have one.
+type agentAbout struct {
+	Mode        string `json:"mode"`
+	VaultURL    string `json:"vault_url"`
+	DeviceID    string `json:"device_id"`
+	Port        int    `json:"port"`
+	DataDir     string `json:"data_dir"`
+	StartedAtMS int64  `json:"started_at_ms"`
 }
 
 // writeJSONResponse mirrors httpapi.writeJSON so the agent can emit

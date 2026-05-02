@@ -92,7 +92,33 @@ export function SettingsPage({
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [pairCmdCopied, setPairCmdCopied] = useState(false);
   const localeOverride = getLocaleOverride();
+
+  const vaultMode = (about?.mode || "combined").toLowerCase();
+  const vaultModeLabelKey =
+    vaultMode === "agent"
+      ? "settings.vault.mode.agent"
+      : vaultMode === "vault"
+        ? "settings.vault.mode.vault"
+        : vaultMode === "combined"
+          ? "settings.vault.mode.combined"
+          : "settings.vault.mode.unknown";
+
+  const onCopyPairCmd = async () => {
+    try {
+      const cmd = t("settings.vault.pair.command").replace(
+        "<URL>",
+        about?.vault_url || "https://vault.example.com",
+      );
+      await navigator.clipboard.writeText(cmd);
+      setPairCmdCopied(true);
+      setTimeout(() => setPairCmdCopied(false), 2000);
+    } catch {
+      // Clipboard may be unavailable in some webviews; the command is
+      // visible inline anyway, so silent failure is the kindest UX.
+    }
+  };
 
   useEffect(() => {
     getDaemonMode().then(setDaemonMode).catch(() => {});
@@ -402,6 +428,95 @@ export function SettingsPage({
                   onSettingsChange({ default_threshold_percent: v })
                 }
               />
+            </div>
+          </div>
+        </section>
+
+        <section className="settings-group">
+          <h3 className="settings-group-title">{t("settings.group.vault")}</h3>
+          <div className="settings-card">
+            <div className="settings-row">
+              <div className="settings-row-text">
+                <div className="settings-row-label">
+                  {t("settings.vault.mode.label")}
+                </div>
+                <div className="settings-row-sub text-meta">
+                  {t(vaultModeLabelKey)}
+                </div>
+              </div>
+              <span className="pill">{vaultMode}</span>
+            </div>
+            {vaultMode === "agent" && (
+              <>
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">
+                      {t("settings.vault.upstream.label")}
+                    </div>
+                    <div className="settings-row-sub text-meta">
+                      {about?.vault_url || ""}
+                    </div>
+                  </div>
+                </div>
+                {about?.device_id && (
+                  <div className="settings-row">
+                    <div className="settings-row-text">
+                      <div className="settings-row-label">
+                        {t("settings.vault.device.label")}
+                      </div>
+                      <div className="settings-row-sub text-meta">
+                        {about.device_id}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+            {vaultMode === "combined" && (
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <div className="settings-row-label">
+                    {t("settings.vault.local.label")}
+                  </div>
+                  <div className="settings-row-sub text-meta">
+                    {t("settings.vault.local.sub")}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="settings-row">
+              <div className="settings-row-text">
+                <div className="settings-row-label">
+                  {t("settings.vault.pair.label")}
+                </div>
+                <div className="settings-row-sub text-meta">
+                  {t("settings.vault.pair.sub")}
+                </div>
+                <code
+                  style={{
+                    display: "block",
+                    marginTop: 6,
+                    padding: "6px 8px",
+                    background: "rgba(128,128,128,.15)",
+                    borderRadius: 4,
+                    fontFamily:
+                      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                    fontSize: "0.85em",
+                    overflowX: "auto",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {t("settings.vault.pair.command").replace(
+                    "<URL>",
+                    about?.vault_url || "https://vault.example.com",
+                  )}
+                </code>
+              </div>
+              <button type="button" className="btn" onClick={onCopyPairCmd}>
+                {pairCmdCopied
+                  ? t("settings.vault.pair.copied")
+                  : t("settings.vault.pair.copy")}
+              </button>
             </div>
           </div>
         </section>
