@@ -88,8 +88,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.accounts.Update(msg)
 		a.accounts = updated.(*model)
 		if msg.err == nil {
-			a.dashboard.setAccounts(a.accounts.accounts, a.accounts.cred)
-			a.activity.setAccounts(a.accounts.accounts)
+			// Pass the unfiltered server slice so Dashboard's "Top 5" and
+			// Activity's account-name lookup don't lose accounts when the
+			// Accounts page is filtered to a subset.
+			a.dashboard.setAccounts(msg.accounts, msg.cred)
+			a.activity.setAccounts(msg.accounts)
 		}
 		return a, cmd
 

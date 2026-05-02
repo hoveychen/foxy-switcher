@@ -50,9 +50,15 @@ type model struct {
 
 	mode mode
 
-	accounts []Account
-	cred     CredStatus
-	cursor   int
+	// accounts is the *visible* slice (after filter+search). allAccounts is
+	// the unfiltered server response — kept around so ops can resolve names
+	// and the App can mirror the full pool to Dashboard/Activity.
+	accounts    []Account
+	allAccounts []Account
+	cred        CredStatus
+	autoSwitch  AutoSwitch
+	filter      accountsFilterKey
+	cursor      int
 
 	width  int
 	height int
@@ -85,6 +91,61 @@ type model struct {
 	// "attached" (pre-existing) or "embedded" (started by this TUI). Empty
 	// hides the header chip.
 	daemonMode string
+}
+
+// accountsFilterKey identifies which Accounts chip is active. Filter is
+// applied client-side because the daemon already returns the full slice and
+// "give me a subset" is the user's UI affordance, not a backend optimization.
+type accountsFilterKey int
+
+const (
+	accFilterAll accountsFilterKey = iota
+	accFilterActive
+	accFilterPaused
+	accFilterCooldown
+)
+
+func accountsChips() []struct {
+	key   accountsFilterKey
+	label string
+} {
+	return []struct {
+		key   accountsFilterKey
+		label string
+	}{
+		{accFilterAll, "All"},
+		{accFilterActive, "Active"},
+		{accFilterPaused, "Paused"},
+		{accFilterCooldown, "Cooldown"},
+	}
+}
+
+// applyAccountsFilter returns the subset matching the given chip. Cooldown
+// uses a real-time check so the chip's count reflects the current second,
+// matching the dashboard's "next cooldown" KPI semantics.
+func applyAccountsFilter(all []Account, key accountsFilterKey) []Account {
+	if key == accFilterAll {
+		return all
+	}
+	now := time.Now().UnixMilli()
+	out := make([]Account, 0, len(all))
+	for _, a := range all {
+		switch key {
+		case accFilterActive:
+			if a.Status != "paused" && a.CooldownUntil <= now {
+				out = append(out, a)
+			}
+		case accFilterPaused:
+			if a.Status == "paused" {
+				out = append(out, a)
+			}
+		case accFilterCooldown:
+			if a.CooldownUntil > now {
+				out = append(out, a)
+			}
+		}
+	}
+	return out
 }
 
 var cooldownPresets = []struct {
@@ -142,8 +203,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fatalErr = msg.err.Error()
 		} else {
 			m.fatalErr = ""
-			m.accounts = msg.accounts
+			m.allAccounts = msg.accounts
+			m.accounts = applyAccountsFilter(msg.accounts, m.filter)
 			m.cred = msg.cred
+			m.autoSwitch = msg.autoSwitch
 			if m.cursor >= len(m.accounts) {
 				m.cursor = max(0, len(m.accounts)-1)
 			}
@@ -281,8 +344,44 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Kick off OAuth directly — the account name is derived from the
 		// profile fetched after the token exchange, so there's no alias prompt.
 		return m, m.loginStartCmd()
+	case "f", "tab":
+		m.cycleFilter(+1)
+	case "shift+tab":
+		m.cycleFilter(-1)
+	case "A":
+		v := m.autoSwitch
+		v.Enabled = !v.Enabled
+		return m, m.opCmd(autoSwitchToggleLabel(v.Enabled), func(ctx context.Context) error {
+			_, err := m.client.SetAutoSwitch(ctx, v)
+			return err
+		})
+	case "P":
+		v := m.autoSwitch
+		v.Policy = cyclePolicy(v.Policy, +1)
+		return m, m.opCmd("Auto-switch policy: "+strings.ToUpper(v.Policy), func(ctx context.Context) error {
+			_, err := m.client.SetAutoSwitch(ctx, v)
+			return err
+		})
 	}
 	return m, nil
+}
+
+// cycleFilter advances the chip and resets cursor + visible slice. Server
+// data isn't re-fetched — applyAccountsFilter operates on the cached
+// allAccounts so toggling chips is instant.
+func (m *model) cycleFilter(dir int) {
+	chips := accountsChips()
+	n := accountsFilterKey(len(chips))
+	m.filter = (m.filter + accountsFilterKey(dir) + n) % n
+	m.accounts = applyAccountsFilter(m.allAccounts, m.filter)
+	m.cursor = 0
+}
+
+func autoSwitchToggleLabel(enabled bool) string {
+	if enabled {
+		return "Auto-switch enabled"
+	}
+	return "Auto-switch disabled"
 }
 
 func (m *model) handleAddPasteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -390,9 +489,10 @@ func statusExpireCmd() tea.Cmd {
 }
 
 type accountsMsg struct {
-	accounts []Account
-	cred     CredStatus
-	err      error
+	accounts   []Account
+	cred       CredStatus
+	autoSwitch AutoSwitch
+	err        error
 }
 
 func (m *model) refreshCmd() tea.Cmd {
@@ -408,7 +508,10 @@ func (m *model) refreshCmd() tea.Cmd {
 		if err != nil {
 			return accountsMsg{err: err}
 		}
-		return accountsMsg{accounts: accs, cred: cred}
+		// Auto-switch is a non-critical side panel — degrade gracefully so a
+		// transient daemon hiccup on this endpoint doesn't blank the whole list.
+		as, _ := c.GetAutoSwitch(ctx)
+		return accountsMsg{accounts: accs, cred: cred, autoSwitch: as}
 	}
 }
 

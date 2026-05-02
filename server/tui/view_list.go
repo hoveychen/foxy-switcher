@@ -147,11 +147,47 @@ func (m *model) renderHeader() string {
 		parts = append(parts, dimStyle.Render("("+m.daemonMode+")"))
 	}
 	parts = append(parts, m.renderCredText())
-	parts = append(parts, dimStyle.Render(fmt.Sprintf("%d account(s)", len(m.accounts))))
+	parts = append(parts, m.renderAutoSwitchChip())
+	parts = append(parts, dimStyle.Render(fmt.Sprintf("%d/%d", len(m.accounts), len(m.allAccounts))))
 	if !m.lastRefresh.IsZero() {
 		parts = append(parts, dimStyle.Render("refreshed "+humanAge(m.lastRefresh)))
 	}
-	return strings.Join(parts, "  ")
+	top := strings.Join(parts, "  ")
+	return top + "\n" + m.renderFilterChips()
+}
+
+// renderFilterChips builds the All/Active/Paused/Cooldown row. Counts are
+// computed against allAccounts so the "Cooldown 3" chip stays meaningful even
+// when the user is currently filtered to "Paused".
+func (m *model) renderFilterChips() string {
+	chips := accountsChips()
+	parts := make([]string, 0, len(chips))
+	for _, ch := range chips {
+		count := len(applyAccountsFilter(m.allAccounts, ch.key))
+		label := fmt.Sprintf("%s %d", ch.label, count)
+		variant := pillSoft
+		tone := pillNeutral
+		if ch.key == m.filter {
+			variant = pillFilled
+			tone = pillAccent
+		}
+		parts = append(parts, pill(label, tone, variant))
+	}
+	return strings.Join(parts, " ")
+}
+
+// renderAutoSwitchChip shows the daemon's auto-switch state next to the
+// in-use indicator. Filled chip = on; soft = off. Policy is the trailing
+// caption so a glance answers "is rotation happening, and by what rule".
+func (m *model) renderAutoSwitchChip() string {
+	policy := strings.ToUpper(m.autoSwitch.Policy)
+	if policy == "" {
+		policy = "—"
+	}
+	if m.autoSwitch.Enabled {
+		return pill("auto: "+policy, pillAccent, pillFilled)
+	}
+	return pill("auto: off", pillNeutral, pillSoft)
 }
 
 func (m *model) renderCredText() string {
@@ -594,13 +630,13 @@ func (m *model) footerChipAt(x, y int) (string, bool) {
 }
 
 // computeBodyHeight returns the number of body rows a panel can occupy so the
-// list view fills the screen exactly: header + blank + panel + blank +
+// list view fills the screen exactly: header(2) + blank + panel + blank +
 // statusLine + blank + footer == m.height. panel rows = bodyRows + 2 borders.
 func (m *model) computeBodyHeight() int {
 	footerH := m.footerHeight()
-	// 5 = header(1) + 3 single-row blank separators + statusLine(1).
+	// 6 = header(2 — title row + filter chips) + 3 blank separators + statusLine(1).
 	// Subtract 2 for the panel's top + bottom border.
-	bodyH := m.height - 5 - footerH - 2
+	bodyH := m.height - 6 - footerH - 2
 	if bodyH < 4 {
 		bodyH = 4
 	}
