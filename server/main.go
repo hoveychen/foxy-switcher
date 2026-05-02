@@ -173,13 +173,14 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	}
 
 	pkce := authz.NewPKCEStore()
-	// vault.InProc owns the in-memory LeaseStore; the refresh scheduler
-	// queries it to skip accounts an agent (local credinject or future
-	// remote agent) is currently injecting.
+	// vault.InProc shares the same SQLite database so leases survive a
+	// daemon restart (Step 4). The refresh scheduler queries the lease
+	// table directly for skip-decisions — going through the Service would
+	// make the per-tick check needlessly indirect.
 	vaultSvc := vault.NewInProc(st)
 	rf := refresh.New(st, logger)
 	rf.Bus = bus
-	rf.IsAccountInUse = vaultSvc.Leases().IsLeased
+	rf.IsAccountInUse = st.IsAccountLeased
 	up := refresh.NewUsagePoller(st, logger)
 	up.Bus = bus
 	up.Interval = time.Duration(settings.UsagePollIntervalSec) * time.Second
@@ -261,6 +262,24 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	defer rf.Stop()
 	up.Start(ctx)
 	defer up.Stop()
+
+	// Lease sweeper: GC expired rows so leases_account_id_uniq stays
+	// unblocked for the next AcquireLease attempt. 30s matches the
+	// agent's lease TTL / 2 budget — well under the agent's renew cycle.
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := vaultSvc.SweepLeases(ctx); err != nil {
+					logger.Printf("[vault] sweep leases: %v", err)
+				}
+			}
+		}
+	}()
 
 	// Compose three handlers on one listener:
 	//   - /agent/v1/*  — agent surface (Bearer-auth'd vault.Service)

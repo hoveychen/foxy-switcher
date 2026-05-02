@@ -113,8 +113,21 @@ func (c *Client) AcquireLease(ctx context.Context, accountID int64, deviceID str
 		"device_id":  deviceID,
 		"ttl_ms":     ttl.Milliseconds(),
 	}
+	resp, err := c.do(ctx, http.MethodPost, "/agent/v1/leases", body)
+	if err != nil {
+		return vault.Lease{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		// Cross-device contention — caller's coordinator picks a different
+		// account on its next reconcile.
+		return vault.Lease{}, vault.ErrLeaseLocked
+	}
+	if resp.StatusCode != http.StatusOK {
+		return vault.Lease{}, decodeError(resp)
+	}
 	var lease vault.Lease
-	if err := c.postJSON(ctx, "/agent/v1/leases", body, &lease); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&lease); err != nil {
 		return vault.Lease{}, err
 	}
 	return lease, nil

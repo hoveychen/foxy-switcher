@@ -20,7 +20,6 @@ import (
 // the inproc semantics agree.
 type roundtripFixture struct {
 	st     *store.Store
-	leases *vault.LeaseStore
 	server *httptest.Server
 	client *Client
 }
@@ -52,9 +51,9 @@ func newRoundtripFixture(t *testing.T) *roundtripFixture {
 	}
 	c := New(srv.URL)
 	c.SetToken(token)
+	_ = svc // silences "declared and not used" if future steps inline more svc calls
 	return &roundtripFixture{
 		st:     st,
-		leases: svc.Leases(),
 		server: srv,
 		client: c,
 	}
@@ -170,7 +169,7 @@ func TestRoundtrip_LeaseLifecycle(t *testing.T) {
 	}
 	// LeaseStore is the source of truth refresh.Scheduler queries — verify
 	// the client's HTTP call actually populated it.
-	if !f.leases.IsLeased(a.ID) {
+	if !f.st.IsAccountLeased(a.ID) {
 		t.Fatal("server-side LeaseStore did not record the lease")
 	}
 
@@ -188,7 +187,7 @@ func TestRoundtrip_LeaseLifecycle(t *testing.T) {
 	if err := f.client.ReleaseLease(context.Background(), lease.ID); err != nil {
 		t.Fatalf("ReleaseLease: %v", err)
 	}
-	if f.leases.IsLeased(a.ID) {
+	if f.st.IsAccountLeased(a.ID) {
 		t.Error("LeaseStore still reports leased after release")
 	}
 }

@@ -26,6 +26,15 @@ var ErrNoAvailable = errors.New("no available account")
 // the store; the caller should call store.MarkUsed after the inject succeeds
 // so the LRU clock advances.
 func Pick(ctx context.Context, st *store.Store, now time.Time) (*store.Account, error) {
+	return PickWithFilter(ctx, st, now, nil)
+}
+
+// PickWithFilter is Pick with an extra disqualifier the caller can apply
+// on top of IsEligible. Step 4's vault.InProc.Pick uses this to skip
+// accounts another device currently holds a live lease on. `extraSkip`
+// returns true to drop the account from the candidate set; nil means
+// "no extra filter" and PickWithFilter behaves identically to Pick.
+func PickWithFilter(ctx context.Context, st *store.Store, now time.Time, extraSkip func(store.Account) bool) (*store.Account, error) {
 	accs, err := st.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
@@ -34,6 +43,9 @@ func Pick(ctx context.Context, st *store.Store, now time.Time) (*store.Account, 
 	for i := range accs {
 		a := accs[i]
 		if !IsEligible(a, now) {
+			continue
+		}
+		if extraSkip != nil && extraSkip(a) {
 			continue
 		}
 		candidates = append(candidates, a)

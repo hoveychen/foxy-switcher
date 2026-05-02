@@ -8,12 +8,16 @@ import (
 	"time"
 )
 
-// authSchema holds the three tables that back vault Step 3 device-flow
-// auth: an opaque-token device registry, an in-flight pairing scratch
-// table, and HTTP cookie sessions for the Web UI. The admin password is a
-// single bcrypt blob stored in the existing kv table under
+// authSchema holds the four tables vault Steps 3+4 introduce. The admin
+// password is a single bcrypt blob stored in the existing kv table under
 // `auth.password_hash`, since "set the password" is a one-row operation
 // and doesn't justify its own table.
+//
+//   - devices       — paired agents' opaque tokens.
+//   - pairings      — in-flight device-flow handshake rows.
+//   - web_sessions  — HTTP cookie sessions for the admin Web UI.
+//   - leases        — credinject's claim on accounts (one per account at
+//                     a time, enforced by leases_account_id_uniq below).
 const authSchema = `
 CREATE TABLE IF NOT EXISTS devices (
   id            TEXT    PRIMARY KEY,
@@ -43,6 +47,17 @@ CREATE TABLE IF NOT EXISTS web_sessions (
   created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS web_sessions_expires_at ON web_sessions (expires_at);
+
+CREATE TABLE IF NOT EXISTS leases (
+  id            TEXT    PRIMARY KEY,
+  account_id    INTEGER NOT NULL,
+  device_id     TEXT    NOT NULL,
+  acquired_at   INTEGER NOT NULL,
+  expires_at    INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS leases_account_id_uniq ON leases (account_id);
+CREATE INDEX IF NOT EXISTS leases_device_id ON leases (device_id);
+CREATE INDEX IF NOT EXISTS leases_expires_at ON leases (expires_at);
 `
 
 const passwordHashKey = "auth.password_hash"

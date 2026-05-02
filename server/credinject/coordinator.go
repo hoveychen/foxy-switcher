@@ -336,7 +336,13 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 	// Lease bookkeeping. Run before the no-op early return so a non-switch
 	// tick still renews the lease — otherwise the vault's refresh scheduler
 	// would think this account is free and start rotating it parallel to CC.
-	c.refreshLease(ctx, a.ID)
+	// If the vault rejects the lease (another device is already injecting
+	// this account), bail out without writing the keychain. The next
+	// reconcile will pick a different account because vault.Pick excludes
+	// foreign-leased accounts.
+	if err := c.refreshLease(ctx, a.ID); err != nil {
+		return
+	}
 
 	hash := hashToken(a.AccessToken)
 	c.mu.Lock()
@@ -408,11 +414,11 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 // has been reaped (vault GC, vault restart) falls through to acquire so
 // the steady state always has a live lease.
 //
-// Lease bookkeeping is best-effort from the agent's side: a Service that
-// errors here doesn't block the inject. The vault's worst case is one
-// extra refresh tick that overlaps with CC, which the InUseFallbackThreshold
-// already considers tolerable.
-func (c *Coordinator) refreshLease(ctx context.Context, accountID int64) {
+// Returns vault.ErrLeaseLocked when another device is already injecting
+// this account. The reconcile loop bails on that — injecting in parallel
+// with another agent races the one-time-use refresh_token and is exactly
+// what the lease was added to prevent.
+func (c *Coordinator) refreshLease(ctx context.Context, accountID int64) error {
 	c.mu.Lock()
 	prevAccountID := c.currentAccountID
 	leaseID := c.currentLeaseID
@@ -420,7 +426,7 @@ func (c *Coordinator) refreshLease(ctx context.Context, accountID int64) {
 
 	if leaseID != "" && prevAccountID == accountID {
 		if _, err := c.svc.RenewLease(ctx, leaseID, c.leaseTTL); err == nil {
-			return
+			return nil
 		}
 		// Lease vanished server-side; re-acquire below.
 	}
@@ -428,11 +434,12 @@ func (c *Coordinator) refreshLease(ctx context.Context, accountID int64) {
 	lease, err := c.svc.AcquireLease(ctx, accountID, c.deviceID, c.leaseTTL)
 	if err != nil {
 		c.logger.Printf("[credinject] acquire lease for account %d: %v", accountID, err)
-		return
+		return err
 	}
 	c.mu.Lock()
 	c.currentLeaseID = lease.ID
 	c.mu.Unlock()
+	return nil
 }
 
 // releaseLease drops the agent's claim. Idempotent on the wire; clears local

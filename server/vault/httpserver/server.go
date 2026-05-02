@@ -303,6 +303,10 @@ func (s *Server) handleAcquireLease(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, err := s.svc.AcquireLease(r.Context(), req.AccountID, req.DeviceID, time.Duration(req.TTLMillis)*time.Millisecond)
 	if err != nil {
+		if errors.Is(err, vault.ErrLeaseLocked) {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

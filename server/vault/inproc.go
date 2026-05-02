@@ -2,30 +2,37 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/selector"
 	"github.com/hoveychen/foxy-switcher/server/store"
+	vaultauth "github.com/hoveychen/foxy-switcher/server/vault/auth"
 )
 
-// InProc is the in-process implementation of Service. It delegates straight
-// to store + selector with no caching or wrapping — combined-mode callers
-// pay the same cost they did before the boundary existed.
+// ErrLeaseNotFound mirrors store.ErrNotFound for lease lookups so callers
+// in non-store code don't have to import store just to errors.Is.
+var ErrLeaseNotFound = errors.New("lease not found")
+
+// ErrLeaseLocked is what AcquireLease returns when another device already
+// holds a live lease on the account. The httpserver maps this to 409 so
+// the agent can distinguish "try a different account" from generic 5xx.
+var ErrLeaseLocked = store.ErrLeaseLocked
+
+// InProc is the in-process implementation of Service. It delegates to
+// store + selector with a small amount of glue (lease-aware Pick, lease
+// id generation). Combined-mode callers pay only the cost of a SQLite
+// query; agent-mode callers go through httpserver/httpclient.
 type InProc struct {
-	st     *store.Store
-	leases *LeaseStore
+	st *store.Store
 }
 
-// NewInProc returns a Service backed directly by the given store. A fresh
-// in-memory LeaseStore is created; pass it to refresh.Scheduler so the
-// scheduler can skip leased accounts.
+// NewInProc returns a Service backed directly by the given store. Step 4
+// migrated leases from a separate in-memory store to the same SQLite
+// database — the constructor argument shape stays the same.
 func NewInProc(st *store.Store) *InProc {
-	return &InProc{st: st, leases: NewLeaseStore()}
+	return &InProc{st: st}
 }
-
-// Leases exposes the in-memory lease store. The vault wires it to
-// refresh.Scheduler so the scheduler can skip in-use accounts.
-func (s *InProc) Leases() *LeaseStore { return s.leases }
 
 // Compile-time assertion that InProc satisfies Service.
 var _ Service = (*InProc)(nil)
@@ -38,8 +45,21 @@ func (s *InProc) GetAutoSwitch(ctx context.Context) (AutoSwitch, error) {
 	return s.st.GetAutoSwitch(ctx)
 }
 
+// Pick returns the LRU eligible account that no other device currently has
+// a live lease on. Same-device-leased accounts are NOT excluded — the
+// caller's sticky path (in credinject.choose) wants to keep using its own
+// account, and treating its own lease as a disqualifier would force a
+// pointless rotation.
+//
+// Step 4 added the lease filter; the rest matches selector.Pick from
+// earlier steps.
 func (s *InProc) Pick(ctx context.Context, now time.Time) (*Account, error) {
-	return selector.Pick(ctx, s.st, now)
+	return selector.PickWithFilter(ctx, s.st, now, func(a Account) bool {
+		// Lease check is per-account. The selector returns LRU within the
+		// surviving set — so an account leased by another device gets
+		// dropped here and the next-best LRU candidate wins.
+		return s.st.IsAccountLeased(a.ID)
+	})
 }
 
 func (s *InProc) MarkUsed(ctx context.Context, accountID int64) error {
@@ -50,15 +70,33 @@ func (s *InProc) UpdateTokens(ctx context.Context, accountID int64, accessToken,
 	return s.st.UpdateTokens(ctx, accountID, accessToken, refreshToken, expiresAt)
 }
 
-func (s *InProc) AcquireLease(_ context.Context, accountID int64, deviceID string, ttl time.Duration) (Lease, error) {
-	return s.leases.Acquire(accountID, deviceID, ttl), nil
+func (s *InProc) AcquireLease(ctx context.Context, accountID int64, deviceID string, ttl time.Duration) (Lease, error) {
+	id := vaultauth.NewID()
+	got, err := s.st.AcquireLease(ctx, id, accountID, deviceID, ttl)
+	if err != nil {
+		return Lease{}, err
+	}
+	return Lease{ID: got.ID, AccountID: got.AccountID, ExpiresAt: got.ExpiresAt}, nil
 }
 
-func (s *InProc) RenewLease(_ context.Context, leaseID string, ttl time.Duration) (Lease, error) {
-	return s.leases.Renew(leaseID, ttl)
+func (s *InProc) RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (Lease, error) {
+	got, err := s.st.RenewLease(ctx, leaseID, ttl)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return Lease{}, ErrLeaseNotFound
+		}
+		return Lease{}, err
+	}
+	return Lease{ID: got.ID, AccountID: got.AccountID, ExpiresAt: got.ExpiresAt}, nil
 }
 
-func (s *InProc) ReleaseLease(_ context.Context, leaseID string) error {
-	s.leases.Release(leaseID)
-	return nil
+func (s *InProc) ReleaseLease(ctx context.Context, leaseID string) error {
+	return s.st.ReleaseLease(ctx, leaseID)
+}
+
+// SweepLeases is a vault-internal job — main wires it into a goroutine
+// timer so expired rows don't accumulate. Exposed here (not on Service)
+// because remote agents have no business sweeping the vault's tables.
+func (s *InProc) SweepLeases(ctx context.Context) error {
+	return s.st.SweepLeases(ctx)
 }

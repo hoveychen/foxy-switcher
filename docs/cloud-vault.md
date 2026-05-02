@@ -158,31 +158,33 @@ The current daemon binds 127.0.0.1 with no auth. Vault on a public address needs
    sweeper  +---------+  Release
 ```
 
-Schema (vault side):
+Schema (landed in [server/store/auth.go](../server/store/auth.go)):
 
 ```sql
 CREATE TABLE leases (
-  lease_id     TEXT PRIMARY KEY,        -- random 128-bit
-  account_id   INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-  device_id    TEXT    NOT NULL REFERENCES devices(id),
-  acquired_at  INTEGER NOT NULL,
-  expires_at   INTEGER NOT NULL,
-  last_access_hash TEXT NOT NULL DEFAULT ''  -- sha256 of access_token last seen by device
+  id            TEXT    PRIMARY KEY,          -- 128-bit hex (vault/auth.NewID)
+  account_id    INTEGER NOT NULL,
+  device_id     TEXT    NOT NULL,
+  acquired_at   INTEGER NOT NULL,
+  expires_at    INTEGER NOT NULL
 );
-CREATE INDEX leases_expires ON leases (expires_at);
-CREATE UNIQUE INDEX leases_one_per_account
-  ON leases (account_id) WHERE expires_at > 0;  -- enforced via WHERE clause + sweeper
+CREATE UNIQUE INDEX leases_account_id_uniq ON leases (account_id);
+CREATE INDEX leases_device_id  ON leases (device_id);
+CREATE INDEX leases_expires_at ON leases (expires_at);
 ```
+
+The `account_id` UNIQUE constraint is enforced absolutely — only one live row per account at a time. AcquireLease's transaction sweeps expired rows before its INSERT so a long-dead lease can't block the next acquire.
 
 Rules:
 
-- **One live lease per account.** `AcquireLease` for an already-leased account returns 409 unless the request comes from the same device (in which case it refreshes the TTL).
-- **`selector.Pick` excludes leased-elsewhere accounts.** A device picking next-account never sees an account leased to another device.
-- **`refresh.Scheduler` skips leased accounts** *except* when remaining lifetime drops below `InUseFallbackThreshold` (15 min). This generalizes today's `SkipAccountID` — instead of one in-use account, any number of devices may hold leases. The fallback covers the "agent crashed holding a lease, nobody is rotating CC's keychain" case.
-- **TTL**: default 60s, agent renews every 20s. Two missed renewals (40s past `expires_at`) → sweeper deletes the lease, vault emits `lease.expired`. Other devices can now pick the account.
-- **Token rotation single-source-of-truth**: only Vault's refresh.Scheduler (and explicit `RefreshNow`) call `authz.RefreshToken`. Agent only reports CC-side rotations via `ReportRotation`, which writes the new tokens into the store without re-issuing them. This eliminates the refresh_token race entirely — Vault serializes via the existing `refresh.Scheduler` per-account mutex, agents never hit the OAuth endpoint.
+- **One live lease per account.** `AcquireLease` for an already-leased account returns `vault.ErrLeaseLocked` (HTTP 409 from `/agent/v1/leases`) unless the caller is the same device — same-device acquire just refreshes the TTL on the existing row.
+- **`selector.Pick` excludes leased-elsewhere accounts.** `vault.InProc.Pick` calls `selector.PickWithFilter` with `store.IsAccountLeased` as the extra disqualifier, so a device that runs Pick never sees an account another device holds.
+- **`refresh.Scheduler` skips leased accounts** *except* when remaining lifetime drops below `InUseFallbackThreshold` (15 min). This generalises today's per-account predicate — any device with a live lease suppresses scheduler-driven rotation. The fallback covers the "agent crashed holding a stale lease, nobody is rotating CC's keychain" case.
+- **TTL**: default 60s ([credinject.DefaultLeaseTTL](../server/credinject/coordinator.go)). The reconcile loop renews on every tick (5s) so even a missed tick leaves comfortable headroom. The vault sweeper runs on a 30s timer in `main` and reclaims expired rows.
+- **Coordinator bails on contention.** If the agent's `AcquireLease` returns `ErrLeaseLocked`, the reconcile aborts without writing the keychain. The next reconcile re-runs `choose`, which calls `Pick` (which now excludes the contested account) and lands on a different free candidate.
+- **Token rotation single-source-of-truth**: only Vault's refresh.Scheduler (and explicit `RefreshNow`) call `authz.RefreshToken`. Agents only report CC-side rotations via `UpdateTokens`, which writes the new tokens into the store without re-issuing them. This eliminates the refresh_token race entirely — Vault serialises via the existing `refresh.Scheduler` per-account mutex, agents never hit the OAuth endpoint.
 
-Shutdown: when an agent exits gracefully, it `ReleaseLease`s its current lease so the account can be picked up by another device immediately rather than waiting for TTL.
+Shutdown: when an agent exits gracefully, `RestoreOnShutdown` calls `ReleaseLease` so the account can be picked up by another device immediately rather than waiting for TTL.
 
 ## Frontend (Step 5)
 
