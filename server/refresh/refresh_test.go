@@ -112,7 +112,7 @@ func TestSchedulerRotatesInjectedAccountWhenTokenExpired(t *testing.T) {
 	}
 
 	s := New(st, nil)
-	s.SkipAccountID = func() int64 { return a.ID } // pretend it's currently injected
+	s.IsAccountInUse = func(id int64) bool { return id == a.ID } // pretend it's currently injected
 	s.tick(ctx)
 
 	got, err := st.Get(ctx, a.ID)
@@ -172,7 +172,7 @@ func TestSchedulerRotatesInjectedAccountInsideFallbackWindow(t *testing.T) {
 	}
 
 	s := New(st, nil)
-	s.SkipAccountID = func() int64 { return a.ID }
+	s.IsAccountInUse = func(id int64) bool { return id == a.ID }
 	s.tick(ctx)
 
 	got, err := st.Get(ctx, a.ID)

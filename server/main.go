@@ -28,6 +28,7 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/store"
 	"github.com/hoveychen/foxy-switcher/server/tui"
 	"github.com/hoveychen/foxy-switcher/server/vault"
+	"github.com/hoveychen/foxy-switcher/server/vault/httpserver"
 )
 
 func main() {
@@ -45,6 +46,8 @@ func main() {
 		port         = flag.Int("port", 0, "TCP port to bind on 127.0.0.1; 0 = random")
 		parentPID    = flag.Int("parent-pid", 0, "if non-zero, exit when this pid disappears (sidecar-mode safety net)")
 		noCredInject = flag.Bool("no-cred-inject", false, "don't manage Claude Code's credential storage (no inject, no reverse-sync, no restore) — useful when running side-by-side with a real native login for debugging")
+		mode         = flag.String("mode", "combined", "deployment mode: combined (vault+agent in-process, default), vault (token store + refresh + frontend HTTP, no credinject), agent (Step 5 — not implemented yet)")
+		bindHost     = flag.String("bind-host", "127.0.0.1", "address to bind on; vault mode usually wants 0.0.0.0 behind a reverse proxy")
 	)
 	flag.Parse()
 
@@ -52,6 +55,12 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "resolve data dir:", err)
 		os.Exit(1)
+	}
+
+	dmode, err := parseMode(*mode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -62,9 +71,35 @@ func main() {
 		Port:         *port,
 		ParentPID:    *parentPID,
 		NoCredInject: *noCredInject,
+		Mode:         dmode,
+		BindHost:     *bindHost,
 	}, nil); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+// daemonMode is the deployment topology selected by --mode.
+type daemonMode int
+
+const (
+	// modeCombined runs vault and agent in the same process — today's default.
+	modeCombined daemonMode = iota
+	// modeVault runs the vault side only: store, refresh, usage poll, frontend
+	// httpapi, plus the agent-facing httpserver. credinject does not run.
+	modeVault
+)
+
+func parseMode(s string) (daemonMode, error) {
+	switch s {
+	case "combined", "":
+		return modeCombined, nil
+	case "vault":
+		return modeVault, nil
+	case "agent":
+		return 0, fmt.Errorf("--mode=agent is not implemented yet (lands in Step 5 with the frontend wiring)")
+	default:
+		return 0, fmt.Errorf("--mode=%q: expected combined|vault|agent", s)
 	}
 }
 
@@ -76,6 +111,12 @@ type daemonOpts struct {
 	Port         int
 	ParentPID    int
 	NoCredInject bool
+	// Mode selects the deployment topology. Zero value = combined, which
+	// matches today's behaviour and what runTUI's embedded daemon expects.
+	Mode daemonMode
+	// BindHost is the listen address. Defaults to 127.0.0.1 for combined;
+	// vault mode behind a reverse proxy typically wants 0.0.0.0.
+	BindHost string
 	// LogOutput is where the daemon writes its log lines. nil means os.Stderr.
 	// runTUI redirects this to a file so daemon logs don't smear over the
 	// bubbletea altscreen.
@@ -128,8 +169,13 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	}
 
 	pkce := authz.NewPKCEStore()
+	// vault.InProc owns the in-memory LeaseStore; the refresh scheduler
+	// queries it to skip accounts an agent (local credinject or future
+	// remote agent) is currently injecting.
+	vaultSvc := vault.NewInProc(st)
 	rf := refresh.New(st, logger)
 	rf.Bus = bus
+	rf.IsAccountInUse = vaultSvc.Leases().IsLeased
 	up := refresh.NewUsagePoller(st, logger)
 	up.Bus = bus
 	up.Interval = time.Duration(settings.UsagePollIntervalSec) * time.Second
@@ -137,7 +183,11 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	server := httpapi.New(st, pkce, rf, opts.DataDir)
 	server.Bus = bus
 
-	addr := fmt.Sprintf("127.0.0.1:%d", opts.Port)
+	bindHost := opts.BindHost
+	if bindHost == "" {
+		bindHost = "127.0.0.1"
+	}
+	addr := fmt.Sprintf("%s:%d", bindHost, opts.Port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
@@ -160,14 +210,19 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// --no-cred-inject skips the entire lifecycle: no inject, no reverse-sync,
 	// no restore. Used to run the daemon alongside a real native login for
 	// debugging without clobbering it.
+	// Vault mode is the credentialed cloud-side process — credinject only
+	// makes sense on a machine that has its own Claude Code keychain to
+	// inject into, so suppress it. The local agent (Step 5) drives credinject
+	// and talks to vault via HTTP.
+	suppressCredInject := opts.NoCredInject || opts.Mode == modeVault
 	var cc *credinject.Coordinator
-	if !opts.NoCredInject {
+	if !suppressCredInject {
 		backend, err := credinject.NewBackend()
 		if err != nil {
 			ln.Close()
 			return fmt.Errorf("credinject backend: %w", err)
 		}
-		cc = credinject.New(vault.NewInProc(st), backend, opts.DataDir, logger)
+		cc = credinject.New(vaultSvc, backend, opts.DataDir, logger)
 		cc.SetBus(bus)
 		cc.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
 		defer func() {
@@ -191,9 +246,8 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 		// safe to fire even before cc.Run starts consuming.
 		rf.OnChange = cc.Trigger
 		up.OnChange = cc.Trigger
-		// Skip the currently-injected account in the refresh scheduler:
-		// Claude Code owns its rotation while it holds the keychain.
-		rf.SkipAccountID = cc.CurrentAccountID
+		// rf.IsAccountInUse already points at the lease store; the
+		// coordinator now feeds the same store via vault.AcquireLease.
 		go cc.Run(ctx)
 	} else {
 		logger.Print("--no-cred-inject: keychain lifecycle disabled")
@@ -204,8 +258,16 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	up.Start(ctx)
 	defer up.Stop()
 
+	// Compose the frontend httpapi (under /api/* etc) with the agent-facing
+	// vault httpserver (under /agent/v1/*) on a single listener. ServeMux
+	// uses longest-prefix matching, so the agent routes win when applicable.
+	// Combined mode exposes both — that lets a second device run --mode=agent
+	// against this binary if the user opens the port on their LAN.
+	rootMux := http.NewServeMux()
+	rootMux.Handle("/agent/v1/", httpserver.New(vaultSvc).Handler())
+	rootMux.Handle("/", server.Handler())
 	httpSrv := &http.Server{
-		Handler:           server.Handler(),
+		Handler:           rootMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

@@ -89,27 +89,29 @@ type LeasedAccount struct {
 }
 ```
 
-## Wire protocol (Step 2)
+## Wire protocol
 
-REST plus one SSE channel. All routes prefixed `/api/v1/`.
+Two surfaces share one listener:
+
+- **Frontend surface** (`/api/*`) — the existing httpapi routes, unchanged. The Tauri / web UI hits these. Tokens redacted.
+- **Agent surface** (`/agent/v1/*`) — what credinject calls remotely. Tokens included; the agent needs them to inject. Step 2 lands the subset the in-process Service exposes; Step 3 will gate every route behind the device-flow `Authorization: Bearer …`.
+
+Step 2 agent routes:
 
 | Method + path | Purpose |
 |---|---|
-| `GET /api/v1/accounts` | List accounts |
-| `GET /api/v1/accounts/{id}` | Single account |
-| `DELETE /api/v1/accounts/{id}` | Delete |
-| `POST /api/v1/accounts/{id}/pause` `…/resume` `…/refresh` `…/select` `…/thresholds` | Mutations (mirror current routes) |
-| `POST /api/v1/oauth/start` | StartLogin |
-| `POST /api/v1/oauth/complete` | CompleteLogin (body: `{ state, pasted }`) |
-| `POST /api/v1/lease/pick` | Body: `{ device_id, ttl_ms }` → returns `LeasedAccount` |
-| `POST /api/v1/lease/{lease_id}/renew` | Body: `{ ttl_ms }` |
-| `DELETE /api/v1/lease/{lease_id}` | Release |
-| `POST /api/v1/lease/{lease_id}/rotation` | Agent reports CC-rotated tokens |
-| `GET /api/v1/settings` `PUT /api/v1/settings` | Settings |
-| `GET /api/v1/auto-switch` `POST /api/v1/auto-switch` | Auto-switch |
-| `GET /api/v1/dashboard` | Dashboard |
-| `GET /api/v1/activity` | List activity |
-| `GET /api/v1/events` (SSE) | Push: `account.changed`, `lease.revoked`, `switch.requested`, `activity.*` |
+| `GET /agent/v1/accounts` | List accounts (raw, tokens included) |
+| `GET /agent/v1/auto-switch` | Auto-switch policy |
+| `POST /agent/v1/pick` | Returns the next eligible account (selector.Pick), or 204 |
+| `POST /agent/v1/accounts/{id}/used` | MarkUsed |
+| `POST /agent/v1/accounts/{id}/tokens` | UpdateTokens (agent reports CC-rotated tokens) |
+| `POST /agent/v1/leases` | AcquireLease — body: `{ account_id, device_id, ttl_ms }` |
+| `POST /agent/v1/leases/{id}/renew` | RenewLease — body: `{ ttl_ms }` |
+| `DELETE /agent/v1/leases/{id}` | ReleaseLease |
+
+Frontend routes that previously appeared on this list (login, refresh-now, settings, dashboard, activity SSE) stay where they are under `/api/*`. The frontend talks to vault directly over HTTP regardless of deployment topology, so abstracting them through `vault.Service` would just create a parallel call path with no callers. They're documented in [architecture.md](architecture.md) and route definitions live in [server/httpapi/routes.go](../server/httpapi/routes.go).
+
+The agent surface is also exposed in `--mode=combined`: a second device on the same LAN can `--mode=agent` against the local daemon. That's mostly a debugging convenience — the canonical multi-device topology is one cloud `--mode=vault` plus N local agents.
 
 Agent's reconcile loop (replaces today's `Coordinator.choose`):
 

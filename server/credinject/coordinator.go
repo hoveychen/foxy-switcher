@@ -2,6 +2,7 @@ package credinject
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -24,6 +25,12 @@ import (
 const (
 	DefaultReconcileInterval   = 5 * time.Second
 	DefaultReverseSyncInterval = 30 * time.Second
+
+	// DefaultLeaseTTL is comfortable headroom over reconcileInterval — the
+	// reconcile loop renews on every tick, so even if the daemon misses one
+	// (suspended laptop, blocked goroutine), the next tick still lands well
+	// before the lease lapses.
+	DefaultLeaseTTL = time.Minute
 )
 
 // Coordinator owns the credinjection state machine. One instance per daemon.
@@ -53,8 +60,17 @@ type Coordinator struct {
 
 	trigger chan struct{}
 
+	// deviceID identifies this agent to the vault. Random per process; Step 4
+	// will persist it so the same machine reuses an ID across restarts (so
+	// the vault can recognise the same physical agent reattaching).
+	deviceID string
+	// leaseTTL is the lifetime requested on AcquireLease/RenewLease. The
+	// reconcile loop renews on every tick.
+	leaseTTL time.Duration
+
 	mu               sync.Mutex
 	currentAccountID int64
+	currentLeaseID   string
 	lastAccessHash   string
 	// restoreOnQuit gates the shutdown restore path. True (default) puts the
 	// user's native blob back when the daemon exits cleanly; false leaves the
@@ -88,8 +104,23 @@ func New(svc vault.Service, backend Backend, dataDir string, logger *log.Logger)
 		reconcileInterval:   DefaultReconcileInterval,
 		reverseSyncInterval: DefaultReverseSyncInterval,
 		trigger:             make(chan struct{}, 1),
+		deviceID:            newDeviceID(),
+		leaseTTL:            DefaultLeaseTTL,
 		restoreOnQuit:       true,
 	}
+}
+
+// newDeviceID returns a random opaque identifier. Stable for the lifetime
+// of the process — Step 4 will persist it so reattaching to the vault after
+// a restart picks up the same ID.
+func newDeviceID() string {
+	var buf [12]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// Crypto/rand failure is fatal-grade — falling back to a degenerate
+		// fixed ID would silently collapse multiple agents into one slot.
+		panic("credinject: rand.Read failed: " + err.Error())
+	}
+	return hex.EncodeToString(buf[:])
 }
 
 // SetRestoreOnQuit toggles whether RestoreOnShutdown actually restores the
@@ -118,9 +149,10 @@ func (c *Coordinator) Trigger() {
 	}
 }
 
-// CurrentAccountID returns the ID of the account currently injected, or 0 if
-// nothing is. Used by refresh.Scheduler to skip the injected account (Claude
-// Code owns its refresh while it's the active credential).
+// CurrentAccountID returns the ID of the account currently injected, or 0
+// if nothing is. The vault uses LeaseStore.IsLeased to skip refresh on
+// in-use accounts; this method exists for tests and for the /api/cred/
+// status surface.
 func (c *Coordinator) CurrentAccountID() int64 {
 	if c == nil {
 		return 0
@@ -301,6 +333,11 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 		return
 	}
 
+	// Lease bookkeeping. Run before the no-op early return so a non-switch
+	// tick still renews the lease — otherwise the vault's refresh scheduler
+	// would think this account is free and start rotating it parallel to CC.
+	c.refreshLease(ctx, a.ID)
+
 	hash := hashToken(a.AccessToken)
 	c.mu.Lock()
 	if c.currentAccountID == a.ID && c.lastAccessHash == hash {
@@ -365,6 +402,55 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 	}
 }
 
+// refreshLease keeps the agent's claim on accountID alive at the vault. On
+// account changes (or first-time pick) it acquires a fresh lease; on the
+// stickiness path it just renews. A renew that fails because the lease
+// has been reaped (vault GC, vault restart) falls through to acquire so
+// the steady state always has a live lease.
+//
+// Lease bookkeeping is best-effort from the agent's side: a Service that
+// errors here doesn't block the inject. The vault's worst case is one
+// extra refresh tick that overlaps with CC, which the InUseFallbackThreshold
+// already considers tolerable.
+func (c *Coordinator) refreshLease(ctx context.Context, accountID int64) {
+	c.mu.Lock()
+	prevAccountID := c.currentAccountID
+	leaseID := c.currentLeaseID
+	c.mu.Unlock()
+
+	if leaseID != "" && prevAccountID == accountID {
+		if _, err := c.svc.RenewLease(ctx, leaseID, c.leaseTTL); err == nil {
+			return
+		}
+		// Lease vanished server-side; re-acquire below.
+	}
+
+	lease, err := c.svc.AcquireLease(ctx, accountID, c.deviceID, c.leaseTTL)
+	if err != nil {
+		c.logger.Printf("[credinject] acquire lease for account %d: %v", accountID, err)
+		return
+	}
+	c.mu.Lock()
+	c.currentLeaseID = lease.ID
+	c.mu.Unlock()
+}
+
+// releaseLease drops the agent's claim. Idempotent on the wire; clears local
+// bookkeeping unconditionally so retries after a transient release error
+// don't leave dangling state.
+func (c *Coordinator) releaseLease(ctx context.Context) {
+	c.mu.Lock()
+	leaseID := c.currentLeaseID
+	c.currentLeaseID = ""
+	c.mu.Unlock()
+	if leaseID == "" {
+		return
+	}
+	if err := c.svc.ReleaseLease(ctx, leaseID); err != nil {
+		c.logger.Printf("[credinject] release lease %s: %v", leaseID, err)
+	}
+}
+
 // handleNoAvailable runs when selector.Pick returns ErrNoAvailable. Restores
 // the user's native credentials so Claude Code keeps working with their own
 // login while the foxy pool is empty / rate-limited.
@@ -380,6 +466,7 @@ func (c *Coordinator) handleNoAvailable() {
 		c.logger.Printf("[credinject] restore native creds: %v", err)
 		return
 	}
+	c.releaseLease(context.Background())
 	c.mu.Lock()
 	c.currentAccountID = 0
 	c.lastAccessHash = ""
@@ -515,6 +602,7 @@ func (c *Coordinator) RestoreOnShutdown() error {
 	if err != nil {
 		return err
 	}
+	c.releaseLease(context.Background())
 	if err := clearState(c.dataDir); err != nil {
 		c.logger.Printf("[credinject] clear state on shutdown: %v", err)
 	}

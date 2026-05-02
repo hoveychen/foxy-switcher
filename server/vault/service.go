@@ -32,10 +32,24 @@ type Account = store.Account
 // same reason as Account.
 type AutoSwitch = store.AutoSwitch
 
+// Lease is the agent's claim on an account: while a lease is live, the
+// vault's refresh scheduler skips that account because the agent is
+// actively injecting it (Claude Code rotates those tokens itself; parallel
+// refreshes would race the one-time-use refresh_token).
+//
+// Step 2 leases live in memory and are NOT enforced for uniqueness across
+// devices. Step 4 adds persistence + uniqueness so two devices can't claim
+// the same account.
+type Lease struct {
+	ID        string // opaque, returned by AcquireLease
+	AccountID int64
+	ExpiresAt int64 // unix millis
+}
+
 // Service is what credinject.Coordinator depends on. It's intentionally
 // small: only the operations the coordinator's choose / reconcile / reverse-
 // sync paths perform. Future steps will widen this surface as more agent-
-// side concerns get pushed across the boundary (lease, event subscription).
+// side concerns get pushed across the boundary (event subscription, etc).
 type Service interface {
 	// ListAccounts returns every account in the pool. Used by the
 	// coordinator's stickiness check (find the current account + spot any
@@ -64,4 +78,18 @@ type Service interface {
 	// store.UpdateTokens — keeping the names parallel avoids gratuitous
 	// translation between the two surfaces.
 	UpdateTokens(ctx context.Context, accountID int64, accessToken, refreshToken string, expiresAt int64) error
+
+	// AcquireLease records that a device intends to inject accountID. The
+	// returned Lease ID is what callers later pass to Renew / Release. A
+	// device that already holds a lease silently replaces it — matching the
+	// "pick a new account → switch" path where the old lease is now stale.
+	AcquireLease(ctx context.Context, accountID int64, deviceID string, ttl time.Duration) (Lease, error)
+
+	// RenewLease bumps the TTL on an existing lease. Returns ErrLeaseNotFound
+	// when the lease has already expired or been released — caller should
+	// re-AcquireLease in that case.
+	RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (Lease, error)
+
+	// ReleaseLease removes the lease early. Idempotent.
+	ReleaseLease(ctx context.Context, leaseID string) error
 }

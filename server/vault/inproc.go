@@ -12,13 +12,20 @@ import (
 // to store + selector with no caching or wrapping — combined-mode callers
 // pay the same cost they did before the boundary existed.
 type InProc struct {
-	st *store.Store
+	st     *store.Store
+	leases *LeaseStore
 }
 
-// NewInProc returns a Service backed directly by the given store.
+// NewInProc returns a Service backed directly by the given store. A fresh
+// in-memory LeaseStore is created; pass it to refresh.Scheduler so the
+// scheduler can skip leased accounts.
 func NewInProc(st *store.Store) *InProc {
-	return &InProc{st: st}
+	return &InProc{st: st, leases: NewLeaseStore()}
 }
+
+// Leases exposes the in-memory lease store. The vault wires it to
+// refresh.Scheduler so the scheduler can skip in-use accounts.
+func (s *InProc) Leases() *LeaseStore { return s.leases }
 
 // Compile-time assertion that InProc satisfies Service.
 var _ Service = (*InProc)(nil)
@@ -41,4 +48,17 @@ func (s *InProc) MarkUsed(ctx context.Context, accountID int64) error {
 
 func (s *InProc) UpdateTokens(ctx context.Context, accountID int64, accessToken, refreshToken string, expiresAt int64) error {
 	return s.st.UpdateTokens(ctx, accountID, accessToken, refreshToken, expiresAt)
+}
+
+func (s *InProc) AcquireLease(_ context.Context, accountID int64, deviceID string, ttl time.Duration) (Lease, error) {
+	return s.leases.Acquire(accountID, deviceID, ttl), nil
+}
+
+func (s *InProc) RenewLease(_ context.Context, leaseID string, ttl time.Duration) (Lease, error) {
+	return s.leases.Renew(leaseID, ttl)
+}
+
+func (s *InProc) ReleaseLease(_ context.Context, leaseID string) error {
+	s.leases.Release(leaseID)
+	return nil
 }

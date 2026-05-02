@@ -61,12 +61,14 @@ type Scheduler struct {
 	// to leave nil (no-op).
 	OnChange func()
 
-	// SkipAccountID, if non-nil, returns the account ID currently injected
-	// into Claude Code's keychain. While an account is injected, Claude Code
-	// owns its refresh path — running our own refresh in parallel would race
-	// the one-time-use refresh_token. The Coordinator wires this so the
-	// scheduler simply skips the injected account each tick.
-	SkipAccountID func() int64
+	// IsAccountInUse, if non-nil, reports whether the given account is
+	// currently being injected by some agent. While an account is injected,
+	// Claude Code owns its refresh path — running our own refresh in
+	// parallel would race the one-time-use refresh_token. The vault wires
+	// this to its LeaseStore.IsLeased so any device with a live lease
+	// suppresses scheduler-driven rotation (modulo the InUseFallbackThreshold
+	// safety net for stale leases / idle agents).
+	IsAccountInUse func(accountID int64) bool
 
 	// Bus is the optional activity hub the scheduler emits token.refreshed /
 	// error.refresh events to. Nil-safe; tests leave it unset.
@@ -122,14 +124,14 @@ func (s *Scheduler) tick(ctx context.Context) {
 		return
 	}
 	now := time.Now()
-	var skip int64
-	if s.SkipAccountID != nil {
-		skip = s.SkipAccountID()
+	inUse := s.IsAccountInUse
+	if inUse == nil {
+		inUse = func(int64) bool { return false }
 	}
-	// Heartbeat: tick fired, here's the in-use account so a missed-refresh
-	// report can be cross-referenced against the wall clock to detect tick
-	// gaps (e.g. macOS suspended the process longer than Interval).
-	s.logger.Printf("[refresh] tick: scanning %d accounts (in_use_id=%d)", len(accs), skip)
+	// Heartbeat: tick fired, so a missed-refresh report can be cross-
+	// referenced against the wall clock to detect tick gaps (e.g. macOS
+	// suspended the process longer than Interval).
+	s.logger.Printf("[refresh] tick: scanning %d accounts", len(accs))
 	for i := range accs {
 		a := accs[i]
 		// Paused accounts (Status="paused") are still maintained: pause is
@@ -140,14 +142,16 @@ func (s *Scheduler) tick(ctx context.Context) {
 		}
 		remaining := time.Duration(a.ExpiresAt-now.UnixMilli()) * time.Millisecond
 		narrate := remaining < narrateBelow
-		// Skip the currently-injected account while it has comfortable
-		// runway — Claude Code owns the refresh path under normal use.
-		// Once `remaining` drops below InUseFallbackThreshold the assumption
-		// "CC will get to it" no longer holds (idle user / slept machine /
-		// CC closed), so the daemon takes over despite the injection.
-		if skip != 0 && a.ID == skip && remaining > InUseFallbackThreshold {
+		leased := inUse(a.ID)
+		// Skip leased accounts while they have comfortable runway — the agent
+		// (Claude Code) owns the refresh path under normal use. Once
+		// `remaining` drops below InUseFallbackThreshold the assumption "CC
+		// will get to it" no longer holds (idle user / slept machine / CC
+		// closed / agent crashed holding a stale lease), so the vault takes
+		// over despite the lease.
+		if leased && remaining > InUseFallbackThreshold {
 			if narrate {
-				s.logger.Printf("[refresh] account %d (%s): skip — in-use, CC owns refresh (remaining=%s)",
+				s.logger.Printf("[refresh] account %d (%s): skip — leased, CC owns refresh (remaining=%s)",
 					a.ID, a.Name, remaining.Round(time.Second))
 			}
 			continue
@@ -159,8 +163,8 @@ func (s *Scheduler) tick(ctx context.Context) {
 			}
 			continue
 		}
-		if skip != 0 && a.ID == skip {
-			s.logger.Printf("[refresh] account %d (%s): in-use but remaining=%s ≤ fallback; refreshing despite injection",
+		if leased {
+			s.logger.Printf("[refresh] account %d (%s): leased but remaining=%s ≤ fallback; refreshing despite lease",
 				a.ID, a.Name, remaining.Round(time.Second))
 		} else {
 			s.logger.Printf("[refresh] account %d (%s): refreshing (remaining=%s)",
