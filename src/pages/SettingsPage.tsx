@@ -12,6 +12,7 @@ import {
   dataDirPath,
   getDaemonMode,
   getServerPort,
+  isTauriHost,
   revealDataDir,
 } from "../api";
 import { Locale, getLocaleOverride, setLocaleOverride, t, tf } from "../i18n";
@@ -96,6 +97,12 @@ export function SettingsPage({
   const [pairCmdCopied, setPairCmdCopied] = useState(false);
   const [pairOpen, setPairOpen] = useState(false);
   const localeOverride = getLocaleOverride();
+  // tauriHost is computed once at mount — the host never changes
+  // mid-session. Settings rows that depend on Tauri-side bridges
+  // (autostart, reveal data dir, save_agent_config) hide themselves
+  // when this is false so the browser-served React build doesn't
+  // surface buttons that just throw NotInTauriError on click.
+  const tauriHost = isTauriHost();
 
   const vaultMode = (about?.mode || "combined").toLowerCase();
   const vaultModeLabelKey =
@@ -196,26 +203,29 @@ export function SettingsPage({
         <section className="settings-group">
           <h3 className="settings-group-title">{t("settings.group.general")}</h3>
           <div className="settings-card">
-            <div className="settings-row">
-              <div className="settings-row-text">
-                <div className="settings-row-label">{t("settings.launch_at_login.label")}</div>
-                <div className="settings-row-sub text-meta">
-                  {t("settings.launch_at_login.sub")}
+            {tauriHost && (
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <div className="settings-row-label">{t("settings.launch_at_login.label")}</div>
+                  <div className="settings-row-sub text-meta">
+                    {t("settings.launch_at_login.sub")}
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={!!autostartEnabled}
+                  aria-label={t("settings.launch_at_login.aria")}
+                  disabled={autostartEnabled === null || autostartBusy}
+                  className={`toggle ${autostartEnabled ? "on" : "off"}`}
+                  onClick={toggleAutostart}
+                >
+                  <span className="toggle-thumb" aria-hidden />
+                </button>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={!!autostartEnabled}
-                aria-label={t("settings.launch_at_login.aria")}
-                disabled={autostartEnabled === null || autostartBusy}
-                className={`toggle ${autostartEnabled ? "on" : "off"}`}
-                onClick={toggleAutostart}
-              >
-                <span className="toggle-thumb" aria-hidden />
-              </button>
-            </div>
+            )}
 
+            {tauriHost && (
             <div className="settings-row">
               <div className="settings-row-text">
                 <div className="settings-row-label">{t("settings.data_dir.label")}</div>
@@ -232,6 +242,7 @@ export function SettingsPage({
                 {t("settings.data_dir.reveal")}
               </button>
             </div>
+            )}
 
             <div className="settings-row">
               <div className="settings-row-text">
@@ -520,13 +531,15 @@ export function SettingsPage({
                     ? t("settings.vault.pair.copied")
                     : t("settings.vault.pair.copy")}
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => setPairOpen(true)}
-                >
-                  {t("settings.vault.pair.start")}
-                </button>
+                {tauriHost && (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => setPairOpen(true)}
+                  >
+                    {t("settings.vault.pair.start")}
+                  </button>
+                )}
               </div>
             </div>
           </div>
