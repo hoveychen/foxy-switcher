@@ -10,8 +10,9 @@ import {
   ICON_PLUS,
   ICON_COPY,
   ICON_CHECK,
-  ICON_CHEVRON_RIGHT,
   ICON_SEARCH,
+  ICON_GRID,
+  ICON_LIST,
 } from "../components/icons";
 import { t, tf } from "../i18n";
 
@@ -24,6 +25,19 @@ type LoginState =
 type Tone = "ok" | "warn" | "danger" | "muted";
 
 type StatusFilter = "all" | "active" | "paused" | "cooling";
+
+type ViewMode = "grid" | "list";
+
+const VIEW_MODE_KEY = "foxy.accounts.viewMode";
+
+function loadViewMode(): ViewMode {
+  try {
+    const v = localStorage.getItem(VIEW_MODE_KEY);
+    return v === "list" ? "list" : "grid";
+  } catch {
+    return "grid";
+  }
+}
 
 const STATUS_FILTERS: Array<{ key: StatusFilter; labelKey: string }> = [
   { key: "all", labelKey: "accounts.filters.all" },
@@ -63,12 +77,10 @@ function isSelectable(a: Account): boolean {
   return a.status === "active" && !accountIsCooling(a);
 }
 
-function peakUtilization(a: Account): number | null {
-  const vals = [a.five_hour, a.seven_day, a.seven_day_sonnet]
-    .filter((w): w is UsageWindow => !!w)
-    .map((w) => w.utilization);
-  if (vals.length === 0) return null;
-  return Math.max(...vals);
+function utilizationTone(pct: number): Tone {
+  if (pct >= 90) return "danger";
+  if (pct >= 75) return "warn";
+  return "ok";
 }
 
 function matchesQuery(a: Account, q: string): boolean {
@@ -160,12 +172,40 @@ function KebabMenu({ items, busy }: { items: KebabItem[]; busy: boolean }) {
   );
 }
 
-function AccountRow({
+function UsageMiniBar({
+  label,
+  win,
+}: {
+  label: string;
+  win: UsageWindow | undefined;
+}) {
+  if (!win) {
+    return (
+      <div className="usage-row usage-row-compact">
+        <span className="usage-label">{label}</span>
+        <span className="usage-empty">{t("drawer.usage.no_data")}</span>
+      </div>
+    );
+  }
+  const pct = Math.max(0, Math.min(100, win.utilization));
+  const tone = utilizationTone(pct);
+  return (
+    <div className="usage-row usage-row-compact">
+      <span className="usage-label">{label}</span>
+      <div className={`usage-track ${tone}`}>
+        <div className="usage-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="usage-pct">{pct.toFixed(0)}%</span>
+    </div>
+  );
+}
+
+function AccountCard({
   a,
   nowMs,
   isInUse,
   isSelected,
-  onClickRow,
+  onClickCard,
   onUseNow,
   onRefresh,
   onDelete,
@@ -176,7 +216,7 @@ function AccountRow({
   nowMs: number;
   isInUse: boolean;
   isSelected: boolean;
-  onClickRow: () => void;
+  onClickCard: () => void;
   onUseNow: () => void;
   onRefresh: () => void;
   onDelete: () => void;
@@ -185,79 +225,108 @@ function AccountRow({
 }) {
   const paused = a.status !== "active";
   const status = rowStatus(a, nowMs);
-  const peak = peakUtilization(a);
   const ownerLine =
     a.full_name && a.email
       ? `${a.full_name} · ${a.email}`
-      : a.email || a.full_name || "—";
+      : a.email || a.full_name || "";
 
   return (
     <div
-      className={`row ${isSelected ? "selected" : ""} ${
+      className={`account-card ${isSelected ? "selected" : ""} ${
         isInUse ? "active" : ""
       }`}
-      onClick={onClickRow}
+      onClick={onClickCard}
       role="button"
       tabIndex={0}
+      aria-label={a.name}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onClickRow();
+          onClickCard();
         }
       }}
     >
-      <span className={`row-status ${status.tone}`} aria-label={status.text} />
-      <FoxAvatar name={a.name} size={32} />
-      <div className="row-main">
-        <div className="row-title">
-          <span className="name">{a.name}</span>
-          {a.plan && <span className="pill">{a.plan}</span>}
-          {isInUse && <span className="pill active-pill">{t("accounts.row.in_use")}</span>}
+      <div className="account-card-head">
+        <span className={`row-status ${status.tone}`} aria-label={status.text} />
+        <FoxAvatar name={a.name} size={32} />
+        <div className="account-card-title">
+          <div className="account-card-title-line">
+            <span className="name">{a.name}</span>
+            {isInUse && (
+              <span className="pill active-pill">
+                {t("accounts.row.in_use")}
+              </span>
+            )}
+          </div>
+          {ownerLine && (
+            <div className="account-card-owner">{ownerLine}</div>
+          )}
         </div>
-        <div className="row-subtitle">
-          {ownerLine}
-          {a.organization_name ? ` · ${a.organization_name}` : ""}
-        </div>
+        {a.plan && <span className="pill account-card-plan">{a.plan}</span>}
+        <KebabMenu
+          busy={busy}
+          items={[
+            {
+              label: isInUse
+                ? t("accounts.kebab.in_use")
+                : t("accounts.kebab.use_now"),
+              onClick: onUseNow,
+              disabled: isInUse || !isSelectable(a),
+            },
+            { label: t("accounts.kebab.refresh"), onClick: onRefresh },
+            {
+              label: paused
+                ? t("accounts.kebab.resume")
+                : t("accounts.kebab.pause"),
+              onClick: onTogglePause,
+            },
+            {
+              label: t("accounts.kebab.delete"),
+              onClick: onDelete,
+              danger: true,
+            },
+          ]}
+        />
       </div>
-      <div className="row-trailing">
-        {peak !== null ? `${peak.toFixed(0)}%` : "—"}
+      <div className="account-card-usage">
+        <UsageMiniBar label={t("drawer.usage.5h")} win={a.five_hour} />
+        <UsageMiniBar label={t("drawer.usage.7d_opus")} win={a.seven_day} />
+        <UsageMiniBar
+          label={t("drawer.usage.7d_sonnet")}
+          win={a.seven_day_sonnet}
+        />
       </div>
-      <KebabMenu
-        busy={busy}
-        items={[
-          {
-            label: isInUse ? t("accounts.kebab.in_use") : t("accounts.kebab.use_now"),
-            onClick: onUseNow,
-            disabled: isInUse || !isSelectable(a),
-          },
-          { label: t("accounts.kebab.refresh"), onClick: onRefresh },
-          { label: paused ? t("accounts.kebab.resume") : t("accounts.kebab.pause"), onClick: onTogglePause },
-          { label: t("accounts.kebab.delete"), onClick: onDelete, danger: true },
-        ]}
-      />
-      <Icon d={ICON_CHEVRON_RIGHT} className="row-chevron" />
     </div>
   );
 }
 
-function SkeletonRow() {
+function SkeletonCard() {
+  const skRow = (
+    <div className="usage-row usage-row-compact">
+      <span className="sk-bar" style={{ width: 28 }} />
+      <span className="sk-bar sk-bar-track" style={{ width: "100%" }} />
+      <span className="sk-bar" style={{ width: 28 }} />
+    </div>
+  );
   return (
-    <div className="row skeleton" aria-busy="true" aria-label={t("accounts.skeleton.aria")}>
-      <span className="row-status sk-dot" />
-      <span className="sk-avatar" aria-hidden />
-      <div className="row-main">
-        <div className="row-title">
+    <div
+      className="account-card skeleton"
+      aria-busy="true"
+      aria-label={t("accounts.skeleton.aria")}
+    >
+      <div className="account-card-head">
+        <span className="row-status sk-dot" />
+        <span className="sk-avatar" aria-hidden />
+        <div className="account-card-title">
           <span className="sk-bar sk-bar-name" />
         </div>
-        <div className="row-subtitle">
-          <span className="sk-bar sk-bar-sub" />
-        </div>
+        <span className="sk-bar sk-bar-pct" aria-hidden />
       </div>
-      <div className="row-trailing">
-        <span className="sk-bar sk-bar-pct" />
+      <div className="account-card-usage">
+        {skRow}
+        {skRow}
+        {skRow}
       </div>
-      <span className="kebab" aria-hidden />
-      <span className="row-chevron" />
     </div>
   );
 }
@@ -304,6 +373,16 @@ export function AccountsPage({
   const [copied, setCopied] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
+
+  const setViewModePersisted = useCallback((mode: ViewMode) => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem(VIEW_MODE_KEY, mode);
+    } catch {
+      // private browsing / quota — fall back to in-memory only
+    }
+  }, []);
 
   const submitting = loginState.phase === "submitting";
   const modalOpen =
@@ -426,6 +505,34 @@ export function AccountsPage({
               </button>
             ))}
           </div>
+          <div
+            className="view-toggle"
+            role="radiogroup"
+            aria-label={t("accounts.view.aria")}
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={viewMode === "grid"}
+              className={`view-toggle-btn ${viewMode === "grid" ? "active" : ""}`}
+              onClick={() => setViewModePersisted("grid")}
+              title={t("accounts.view.grid.title")}
+              aria-label={t("accounts.view.grid")}
+            >
+              <Icon d={ICON_GRID} />
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={viewMode === "list"}
+              className={`view-toggle-btn ${viewMode === "list" ? "active" : ""}`}
+              onClick={() => setViewModePersisted("list")}
+              title={t("accounts.view.list.title")}
+              aria-label={t("accounts.view.list")}
+            >
+              <Icon d={ICON_LIST} />
+            </button>
+          </div>
         </div>
         <div className="section">
           <div className="section-header">
@@ -454,10 +561,12 @@ export function AccountsPage({
             </span>
           </div>
           {accounts.length === 0 ? (
-            <div className="list">
-              {submitting ? (
-                <SkeletonRow />
-              ) : (
+            submitting ? (
+              <div className={`accounts-grid mode-${viewMode}`}>
+                <SkeletonCard />
+              </div>
+            ) : (
+              <div className="list">
                 <div className="list-empty">
                   <p>{t("accounts.empty.no_pool")}</p>
                   <button className="btn btn-secondary" onClick={startLogin}>
@@ -465,8 +574,8 @@ export function AccountsPage({
                     {t("accounts.empty.add_first")}
                   </button>
                 </div>
-              )}
-            </div>
+              </div>
+            )
           ) : filtered.length === 0 ? (
             <div className="list">
               <div className="list-empty">
@@ -483,16 +592,16 @@ export function AccountsPage({
               </div>
             </div>
           ) : (
-            <div className="list">
-              {submitting && <SkeletonRow />}
+            <div className={`accounts-grid mode-${viewMode}`}>
+              {submitting && <SkeletonCard />}
               {filtered.map((a) => (
-                <AccountRow
+                <AccountCard
                   key={a.id}
                   a={a}
                   nowMs={nowMs}
                   isInUse={a.id === managedAccountId}
                   isSelected={a.id === selectedAccountId}
-                  onClickRow={() =>
+                  onClickCard={() =>
                     onSelectRow(selectedAccountId === a.id ? null : a.id)
                   }
                   onUseNow={() => onUseNow(a.id)}

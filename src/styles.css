@@ -521,6 +521,228 @@ input {
   margin-top: 12px;
 }
 
+/* ─── Accounts card grid ─────────────────────────────────── */
+
+.accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+/* List mode: single-column layout, cards squash into compact horizontal
+   rows (see .mode-list .account-card below). */
+.accounts-grid.mode-list {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.account-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--bg-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 14px;
+  cursor: pointer;
+  transition: background var(--motion-quick), box-shadow var(--motion-quick);
+}
+
+.account-card:hover {
+  background: var(--bg-card-hover);
+}
+
+.account-card.active {
+  background: var(--bg-card-active);
+}
+
+.account-card.selected {
+  box-shadow:
+    var(--shadow-card),
+    0 0 0 1.5px var(--accent);
+}
+
+.account-card-head {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-card-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.account-card-title-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.account-card-title-line .name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-card-owner {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-card-plan {
+  align-self: center;
+}
+
+.account-card-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.usage-row-compact {
+  /* Drop the resets column the drawer uses; cards only need label / bar /
+     percent. Label column is 64px so "7d Sonnet" fits on one line. */
+  grid-template-columns: 64px 1fr 40px;
+}
+
+.usage-row-compact .usage-label {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.usage-row-compact .usage-track {
+  /* The drawer wraps the track in .usage-track-wrap (16px tall) for the
+     draggable threshold marker. Cards render the track inline, so give it
+     a vertical-center alignment via the row's grid `align-items: center`. */
+  width: 100%;
+}
+
+/* Skeleton helpers shared with row variant — sk-bar-track lives only on
+   the card skeleton. */
+.account-card.skeleton {
+  cursor: default;
+}
+
+.sk-bar-track {
+  height: 5px;
+  border-radius: 3px;
+}
+
+/* ─── List mode: card → compact horizontal row ──────────── */
+
+.mode-list .account-card {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-8);
+  padding: 8px 14px;
+}
+
+.mode-list .account-card-head {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Keep the 5-col template from card mode but tighten gap; plan + kebab
+     stay inside the head grid (they were getting bumped to a 2nd row when
+     the template only had 3 cols). */
+  gap: var(--space-3);
+}
+
+.mode-list .account-card-title {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.mode-list .account-card-title-line {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.mode-list .account-card-owner {
+  margin-top: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.mode-list .account-card-owner::before {
+  content: "·";
+  margin-right: var(--space-3);
+  color: var(--text-tertiary);
+}
+
+.mode-list .account-card-usage {
+  flex-direction: row;
+  flex: 0 0 auto;
+  gap: var(--space-6);
+}
+
+.mode-list .account-card-usage .usage-row-compact {
+  /* Fixed-width per bar so three usages line up across rows. Label column
+     is 52px so "7d Sonnet" doesn't clip; bar 70px keeps the row tight. */
+  grid-template-columns: 52px 70px 32px;
+  font-size: 10.5px;
+  gap: 6px;
+}
+
+@media (max-width: 900px) {
+  /* On narrower windows the three trailing bars push the title past
+     ellipsis. Drop to two bars (5h + 7d Opus) and let Sonnet hide. */
+  .mode-list .account-card-usage .usage-row-compact:nth-child(3) {
+    display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  /* On very narrow windows, hide all bars in list mode — owner+name only. */
+  .mode-list .account-card-usage {
+    display: none;
+  }
+}
+
+/* ─── View toggle ───────────────────────────────────────── */
+
+.view-toggle {
+  display: inline-flex;
+  background: var(--bg-card);
+  border-radius: var(--radius-button);
+  border: 0.5px solid var(--separator);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.view-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  background: transparent;
+  color: var(--text-tertiary);
+  transition: background var(--motion-quick), color var(--motion-quick);
+}
+
+.view-toggle-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-card-hover);
+}
+
+.view-toggle-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+
 /* ─── Login sheet ─────────────────────────────────────────── */
 
 .sheet {

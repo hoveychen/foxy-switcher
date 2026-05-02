@@ -24,3 +24,7 @@ export const ICON_TRASH =
 export const ICON_POWER = "M8 2v6 M5 4a4.5 4.5 0 1 0 6 0";
 export const ICON_LOGO_FOX =
   "M3 5l2-2 3 1.5L11 3l2 2-1 4a4 4 0 0 1-8 0z";
+export const ICON_GRID =
+  "M3 3h4v4H3z M9 3h4v4H9z M3 9h4v4H3z M9 9h4v4H9z";
+export const ICON_LIST =
+  "M3 4h10 M3 8h10 M3 12h10";

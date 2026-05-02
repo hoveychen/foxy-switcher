@@ -163,6 +163,11 @@
   "accounts.stale.aria": "数据可能已过期",
   "accounts.stale.title": "守护进程不可达 —— 列表可能已过期",
   "accounts.fmt.expired": "已过期",
+  "accounts.view.aria": "视图模式",
+  "accounts.view.grid": "卡片",
+  "accounts.view.list": "列表",
+  "accounts.view.grid.title": "卡片视图 —— 三条使用率独立显示",
+  "accounts.view.list.title": "紧凑列表 —— 一行一个账号，更密",
 
   "activity.title": "活动",
   "activity.filters.aria": "事件筛选",

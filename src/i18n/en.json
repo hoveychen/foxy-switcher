@@ -163,6 +163,11 @@
   "accounts.stale.aria": "Data may be stale",
   "accounts.stale.title": "Daemon unreachable — list may be out of date",
   "accounts.fmt.expired": "expired",
+  "accounts.view.aria": "View mode",
+  "accounts.view.grid": "Grid",
+  "accounts.view.list": "List",
+  "accounts.view.grid.title": "Card grid — bigger, room for all three usage bars",
+  "accounts.view.list.title": "Compact list — denser, one row per account",
 
   "activity.title": "Activity",
   "activity.filters.aria": "Event filter",
