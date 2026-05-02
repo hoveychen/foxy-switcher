@@ -329,7 +329,7 @@ func (p *dashboardPage) renderRecentActivity() string {
 	for _, e := range p.recent {
 		ts := time.UnixMilli(e.Timestamp).Format("15:04")
 		mark := severityGlyph(e.Severity)
-		msg := truncate(e.Message, 40)
+		msg := truncate(flattenWhitespace(e.Message), 40)
 		rows = append(rows, fmt.Sprintf("%s %s %s", dimStyle.Render(ts), mark, msg))
 	}
 	return heading + "\n" + strings.Join(rows, "\n")

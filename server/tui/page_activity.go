@@ -361,7 +361,7 @@ func (p *activityPage) renderRow(ev ActivityEvent, tw activityCols) string {
 		acct = "—"
 	}
 	acct = truncate(acct, tw.account)
-	msg := truncate(ev.Message, tw.message)
+	msg := truncate(flattenWhitespace(ev.Message), tw.message)
 
 	return strings.Join([]string{
 		dimStyle.Render(padRightPlain(ts, tw.time)),
@@ -406,6 +406,34 @@ func (p *activityPage) renderFooter() string {
 	hint := "f filter · ↑/↓ scroll · g/G top/bottom · r refresh"
 	stamp := "refreshed " + humanAge(p.loadedAt)
 	return helpStyle.Render(hint+" · "+stamp)
+}
+
+// flattenWhitespace collapses any run of whitespace (incl. newlines and tabs)
+// down to a single space so a single event message can never spill onto
+// multiple terminal rows. Required because the daemon stores raw HTTP error
+// bodies — e.g. multi-line JSON for 429s — directly in Event.Message.
+func flattenWhitespace(s string) string {
+	if !strings.ContainsAny(s, "\n\r\t") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := false
+	for _, r := range s {
+		if r == '\n' || r == '\r' || r == '\t' {
+			r = ' '
+		}
+		if r == ' ' {
+			if prevSpace {
+				continue
+			}
+			prevSpace = true
+		} else {
+			prevSpace = false
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // padRightPlain pads a possibly-styled string on the right to width cells.
