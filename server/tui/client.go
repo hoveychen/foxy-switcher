@@ -140,6 +140,13 @@ func (c *Client) RefreshNow(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/accounts/%d/refresh", id), nil, nil)
 }
 
+// SelectAccount pins this account as the next pick — the daemon's reconcile
+// loop will inject its credentials on the next tick. Mirrors the UI's "Use
+// now" button.
+func (c *Client) SelectAccount(ctx context.Context, id int64) error {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/accounts/%d/select", id), nil, nil)
+}
+
 func (c *Client) LoginStart(ctx context.Context) (LoginStart, error) {
 	var out LoginStart
 	if err := c.do(ctx, http.MethodPost, "/api/accounts/login", nil, &out); err != nil {

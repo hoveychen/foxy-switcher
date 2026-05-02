@@ -237,6 +237,12 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = max(0, len(m.accounts)-1)
 	case "R":
 		return m, m.refreshCmd()
+	case "u":
+		if a, ok := m.selected(); ok {
+			return m, m.startOp("Switching to "+a.Name+"…", "Now using "+a.Name, func(ctx context.Context) error {
+				return m.client.SelectAccount(ctx, a.ID)
+			})
+		}
 	case "r":
 		if a, ok := m.selected(); ok {
 			return m, m.startOp("Refreshing "+a.Name+"…", "Token refreshed for "+a.Name, func(ctx context.Context) error {

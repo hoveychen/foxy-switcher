@@ -369,6 +369,7 @@ type footerChipDef struct {
 func (m *model) footerChipDefs() []footerChipDef {
 	return []footerChipDef{
 		{"↑↓", "move", ""},
+		{"u", "use now", "u"},
 		{"a", "add", "a"},
 		{"r", "refresh", "r"},
 		{"p", "pause/resume", "p"},
