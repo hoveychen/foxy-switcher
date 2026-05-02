@@ -188,12 +188,22 @@ Shutdown: when an agent exits gracefully, `RestoreOnShutdown` calls `ReleaseLeas
 
 ## Frontend (Step 5)
 
-Tauri Settings page gains a single field: **Vault URL**.
+Step 5 keeps the frontend untouched. Instead, `--mode=agent` is a transparent reverse proxy:
 
-- Empty → embedded combined-mode daemon (today's behavior).
-- Non-empty → frontend points its API client at the remote vault, sidecar runs in `--mode=agent --vault-url=…`.
+- Local listener on the same port the Tauri sidecar always used.
+- `GET /healthz` and `GET /api/cred/status` served locally — those are the only routes whose answer depends on *this* machine (the cred-status surface reflects what credinject did to the local keychain, not anything stored on the vault).
+- Everything else under `/` proxies to the vault, with `Authorization: Bearer <device_token>` injected on every request. Streaming routes (the activity SSE) work because `httputil.ReverseProxy` already handles them.
+- Upstream-unreachable failures surface as `502 {"error":"vault unreachable: …"}` so the React error toast renders cleanly.
 
-Optionally vault ships a copy of the React build under `/web/` so a user without Tauri can manage accounts from any browser. The web UI is functionally identical except it can't show "currently injected on *this* machine" (no agent context) — it shows lease state across all paired devices.
+This means the existing Tauri React build, the TUI, and any external scripts that hit `127.0.0.1:<port>/api/...` keep working without source changes. To pair a new agent, the user runs `foxy-switcher pair --vault-url=https://vault.example.com` once; the resulting `~/.foxy-switcher/agent-config.json` is what `--mode=agent` reads at startup.
+
+Vault `/api/*` is not currently behind the Bearer middleware — it's protected today only by the agent proxy on the local machine and (in cloud deployments) the reverse proxy's IP allowlist. Step 6 will close that gap; for now vault-on-public-internet should sit behind a caddy/traefik that both terminates TLS and rate-limits.
+
+Optionally a future step ships the React build embedded in the vault binary under `/web/` so a user without Tauri can manage accounts from any browser. Out of scope for Step 5.
+
+## Migration plan recap
+
+Steps 1–5 have all landed. Each step kept the boundary stable, so combined-mode behaviour is identical to the pre-split daemon and the only files a Step N+1 needed to touch were the ones whose semantics actually changed.
 
 ## Migration plan
 

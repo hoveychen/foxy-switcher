@@ -70,15 +70,22 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := runDaemon(ctx, daemonOpts{
+	opts := daemonOpts{
 		DataDir:      dir,
 		Port:         *port,
 		ParentPID:    *parentPID,
 		NoCredInject: *noCredInject,
 		Mode:         dmode,
 		BindHost:     *bindHost,
-	}, nil); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	}
+	var runErr error
+	if dmode == modeAgent {
+		runErr = runAgent(ctx, opts, nil)
+	} else {
+		runErr = runDaemon(ctx, opts, nil)
+	}
+	if runErr != nil {
+		fmt.Fprintln(os.Stderr, runErr)
 		os.Exit(1)
 	}
 }
@@ -92,6 +99,11 @@ const (
 	// modeVault runs the vault side only: store, refresh, usage poll, frontend
 	// httpapi, plus the agent-facing httpserver. credinject does not run.
 	modeVault
+	// modeAgent runs only credinject + a transparent reverse proxy to a
+	// remote vault. No store, scheduler or usage poller. The local
+	// listener forwards /api/* to the vault and serves /api/cred/status
+	// locally — the existing Tauri / TUI frontend keeps working unchanged.
+	modeAgent
 )
 
 func parseMode(s string) (daemonMode, error) {
@@ -101,7 +113,7 @@ func parseMode(s string) (daemonMode, error) {
 	case "vault":
 		return modeVault, nil
 	case "agent":
-		return 0, fmt.Errorf("--mode=agent is not implemented yet (lands in Step 5 with the frontend wiring)")
+		return modeAgent, nil
 	default:
 		return 0, fmt.Errorf("--mode=%q: expected combined|vault|agent", s)
 	}
