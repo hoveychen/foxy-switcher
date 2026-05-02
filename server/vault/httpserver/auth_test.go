@@ -193,6 +193,68 @@ func TestSetup_FirstRunGate(t *testing.T) {
 	}
 }
 
+// TestPairCORS_PreflightAndPost covers the Step 8 contract the Tauri
+// Settings → Pair modal depends on: pair-init / pair-poll respond to
+// OPTIONS preflight and a real POST with permissive
+// Access-Control-Allow-Origin headers, so the React webview can drive
+// the device flow cross-origin without a local proxy.
+func TestPairCORS_PreflightAndPost(t *testing.T) {
+	f := newAuthFixture(t)
+
+	preflight, _ := http.NewRequest(http.MethodOptions, f.server.URL+"/agent/v1/devices/pair-init", nil)
+	preflight.Header.Set("Origin", "https://random-origin.local")
+	preflight.Header.Set("Access-Control-Request-Method", "POST")
+	resp, err := http.DefaultClient.Do(preflight)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("preflight status: got %s want 204", resp.Status)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("preflight CORS origin: got %q want *", got)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"client_nonce": "nonce-x",
+		"device_name":  "tauri-modal",
+	})
+	resp2, err := http.Post(f.server.URL+"/agent/v1/devices/pair-init",
+		"application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("post status: got %s want 200", resp2.Status)
+	}
+	if got := resp2.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("post CORS origin: got %q want *", got)
+	}
+}
+
+// TestPairCORS_BearerRoutesNotExposed pins down the negative side of
+// pairCORS — Bearer-protected routes deliberately stay un-CORS'd so a
+// malicious origin can't trick a logged-in browser into hitting
+// /agent/v1/accounts. Without this assertion, a "while we're at it"
+// future patch could quietly expand pairCORS to cover everything and
+// open the surface back up.
+func TestPairCORS_BearerRoutesNotExposed(t *testing.T) {
+	f := newAuthFixture(t)
+	req, _ := http.NewRequest(http.MethodOptions, f.server.URL+"/agent/v1/accounts", nil)
+	req.Header.Set("Origin", "https://hostile.example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got == "*" {
+		t.Errorf("/agent/v1/accounts must not advertise wildcard CORS, got %q", got)
+	}
+}
+
 func TestRevokeDevice_TokenStopsWorking(t *testing.T) {
 	f := newAuthFixture(t)
 	ctx := context.Background()

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PairVaultModal } from "../components/PairVaultModal";
 import { Topbar } from "../components/Topbar";
 import {
   AboutResponse,
@@ -93,6 +94,7 @@ export function SettingsPage({
   const [resetBusy, setResetBusy] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [pairCmdCopied, setPairCmdCopied] = useState(false);
+  const [pairOpen, setPairOpen] = useState(false);
   const localeOverride = getLocaleOverride();
 
   const vaultMode = (about?.mode || "combined").toLowerCase();
@@ -512,13 +514,27 @@ export function SettingsPage({
                   )}
                 </code>
               </div>
-              <button type="button" className="btn" onClick={onCopyPairCmd}>
-                {pairCmdCopied
-                  ? t("settings.vault.pair.copied")
-                  : t("settings.vault.pair.copy")}
-              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="btn" onClick={onCopyPairCmd}>
+                  {pairCmdCopied
+                    ? t("settings.vault.pair.copied")
+                    : t("settings.vault.pair.copy")}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => setPairOpen(true)}
+                >
+                  {t("settings.vault.pair.start")}
+                </button>
+              </div>
             </div>
           </div>
+          <PairVaultModal
+            open={pairOpen}
+            onClose={() => setPairOpen(false)}
+            defaultUrl={about?.vault_url}
+          />
         </section>
 
         <section className="settings-group">

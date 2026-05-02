@@ -349,6 +349,21 @@ export const autostartSet = (enabled: boolean): Promise<void> =>
 export const dataDirPath = (): Promise<string> => invoke<string>("data_dir_path");
 export const revealDataDir = (): Promise<void> => invoke<void>("reveal_data_dir");
 
+// saveAgentConfig writes the device-flow result to
+// ~/.foxy-switcher/agent-config.json. The next daemon launched with
+// --mode=agent reads this file to learn vault URL + bearer token. Returns
+// the file path so the UI can show "saved to …" feedback.
+export const saveAgentConfig = (params: {
+  vault_url: string;
+  device_id: string;
+  device_token: string;
+}): Promise<string> =>
+  invoke<string>("save_agent_config", {
+    vaultUrl: params.vault_url,
+    deviceId: params.device_id,
+    deviceToken: params.device_token,
+  });
+
 export const apiClient = {
   listAccounts: () =>
     api<{ accounts: Account[] }>("/api/accounts").then((r) => r.accounts),

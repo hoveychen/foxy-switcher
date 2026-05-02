@@ -106,6 +106,75 @@ fn data_dir_path() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+// save_agent_config writes ~/.foxy-switcher/agent-config.json (mode 0600)
+// from the Settings → Pair modal. The agent loads this file on startup
+// when --mode=agent. We do this through a Tauri command rather than the
+// daemon's HTTP surface because the daemon currently running may be in
+// combined mode and have no local /api/agent-config endpoint — and because
+// writing tokens belongs in the host shell, not behind a CORS-permissive
+// HTTP route.
+//
+// Atomic via tmp + rename; the agent's existing reader expects a complete
+// JSON file, never a half-written one.
+#[tauri::command]
+fn save_agent_config(
+    vault_url: String,
+    device_id: String,
+    device_token: String,
+) -> Result<String, String> {
+    use std::io::Write;
+    if vault_url.is_empty() || device_token.is_empty() {
+        return Err("vault_url and device_token are required".to_string());
+    }
+    let dir = sidecar::data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
+    let final_path = dir.join("agent-config.json");
+    let tmp_path = dir.join("agent-config.json.tmp");
+    let body = format!(
+        "{{\n  \"vault_url\": {},\n  \"device_id\": {},\n  \"device_token\": {}\n}}\n",
+        json_escape(&vault_url),
+        json_escape(&device_id),
+        json_escape(&device_token),
+    );
+    {
+        let mut f = std::fs::File::create(&tmp_path)
+            .map_err(|e| format!("create {}: {}", tmp_path.display(), e))?;
+        // Best effort 0600 on Unix. Windows ACLs are inherited from the
+        // user profile, so the perms layer is moot there.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
+        f.write_all(body.as_bytes())
+            .map_err(|e| format!("write tmp: {e}"))?;
+    }
+    std::fs::rename(&tmp_path, &final_path)
+        .map_err(|e| format!("rename to {}: {}", final_path.display(), e))?;
+    Ok(final_path.to_string_lossy().to_string())
+}
+
+// json_escape produces a JSON-quoted string without pulling serde_json into
+// the Rust dependency graph just for three fields. The agent's reader uses
+// encoding/json, which copes with the standard escapes this function emits.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 // build_app_menu wires up the native menubar. Items with stable string IDs
 // are dispatched in handle_menu_event; predefined items (Quit, Cut, Minimize,
 // etc.) are handled by the OS so we don't need IDs for them.
@@ -410,7 +479,8 @@ pub fn run() {
             autostart_is_enabled,
             autostart_set,
             reveal_data_dir,
-            data_dir_path
+            data_dir_path,
+            save_agent_config
         ])
         .setup(|app| {
             let handle = app.handle().clone();

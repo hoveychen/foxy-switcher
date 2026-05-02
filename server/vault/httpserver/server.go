@@ -50,12 +50,19 @@ func New(svc vault.Service, st *store.Store) *Server {
 // both into a single mux so combined / vault mode share one port).
 //
 // Bearer auth gates every route except pair-init / pair-poll, which the
-// agent calls before it has a token.
+// agent calls before it has a token. Those two routes also carry CORS
+// headers so the Tauri Settings page can drive the device flow from the
+// React webview directly without a local proxy. Bearer-protected routes
+// stay closed to browsers — exposing them via permissive CORS would let
+// any origin trick the user's browser into hitting /agent/v1/accounts.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	// Public routes — no auth (agent doesn't have a token yet).
-	mux.HandleFunc("POST /agent/v1/devices/pair-init", s.handlePairInit)
-	mux.HandleFunc("POST /agent/v1/devices/pair-poll", s.handlePairPoll)
+	// Public routes — no auth (agent doesn't have a token yet). Wrap each
+	// with CORS so a browser can preflight + POST cross-origin.
+	mux.Handle("POST /agent/v1/devices/pair-init", pairCORS(http.HandlerFunc(s.handlePairInit)))
+	mux.Handle("OPTIONS /agent/v1/devices/pair-init", pairCORS(http.HandlerFunc(handleOK)))
+	mux.Handle("POST /agent/v1/devices/pair-poll", pairCORS(http.HandlerFunc(s.handlePairPoll)))
+	mux.Handle("OPTIONS /agent/v1/devices/pair-poll", pairCORS(http.HandlerFunc(handleOK)))
 	// Protected routes — Bearer token required.
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /agent/v1/accounts", s.handleListAccounts)
@@ -68,6 +75,32 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("DELETE /agent/v1/leases/{id}", s.handleReleaseLease)
 	mux.Handle("/agent/v1/", s.requireBearer(protected))
 	return mux
+}
+
+// pairCORS wraps a handler with permissive CORS so the frontend's
+// device-flow modal can call pair-init / pair-poll cross-origin. We
+// only apply this to the two public pairing routes; bearer-protected
+// routes intentionally stay un-CORS'd so browsers can't be tricked into
+// driving them on behalf of a malicious origin.
+func pairCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "600")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// handleOK is the no-op handler the OPTIONS preflight registrations
+// hand to pairCORS. The wrapper writes the CORS headers and short-
+// circuits before this function ever runs in practice.
+func handleOK(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- pairing -------------------------------------------------------------
