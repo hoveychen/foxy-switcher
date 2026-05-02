@@ -59,6 +59,11 @@ type Coordinator struct {
 	mu               sync.Mutex
 	currentAccountID int64
 	lastAccessHash   string
+	// restoreOnQuit gates the shutdown restore path. True (default) puts the
+	// user's native blob back when the daemon exits cleanly; false leaves the
+	// last-injected credential in the keychain — useful when a user wants
+	// Claude Code to keep using the foxy account between sessions.
+	restoreOnQuit bool
 }
 
 // SetBus wires the activity bus after construction. Optional — when nil,
@@ -95,7 +100,20 @@ func New(st *store.Store, backend Backend, dataDir string, logger *log.Logger) *
 		updateFn: func(ctx context.Context, st *store.Store, id int64, at, rt string, exp int64) error {
 			return st.UpdateTokens(ctx, id, at, rt, exp)
 		},
+		restoreOnQuit: true,
 	}
+}
+
+// SetRestoreOnQuit toggles whether RestoreOnShutdown actually restores the
+// native credential blob. Called from PUT /api/settings so the user's
+// preference takes effect without a daemon restart. Safe on a nil receiver.
+func (c *Coordinator) SetRestoreOnQuit(v bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.restoreOnQuit = v
 }
 
 // Trigger schedules an immediate reconcile. Multiple triggers between two
@@ -128,14 +146,13 @@ func (c *Coordinator) CurrentAccountID() int64 {
 // state from disk on entry so a daemon restart resumes reverse-sync without
 // having to figure out which account is currently in the keychain.
 func (c *Coordinator) Run(ctx context.Context) {
-	c.loadState()
+	c.bootstrap(ctx)
 
 	reconcileT := time.NewTicker(c.reconcileInterval)
 	defer reconcileT.Stop()
 	syncT := time.NewTicker(c.reverseSyncInterval)
 	defer syncT.Stop()
 
-	c.reconcile(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -148,6 +165,23 @@ func (c *Coordinator) Run(ctx context.Context) {
 			c.reverseSync(ctx)
 		}
 	}
+}
+
+// bootstrap is the cold-start sequence: load persistent state, sync the
+// store with whatever the keychain currently holds, then reconcile.
+//
+// Why reverseSync runs first: choose() decides eligibility from
+// store.expires_at. If the daemon was off while CC (or another tool, or
+// another machine) rotated the keychain blob, the store still has the old
+// expires_at — long past. IsEligible would then mark the previously-injected
+// account "expired", choose() would fall back to LRU and pick a different
+// account, and reconcile would write that account's blob into the keychain,
+// clobbering the externally-rotated tokens. Pulling the rotation back into
+// the store first keeps the previously-injected account eligible.
+func (c *Coordinator) bootstrap(ctx context.Context) {
+	c.loadState()
+	c.reverseSync(ctx)
+	c.reconcile(ctx)
 }
 
 // loadState reads injected.json and warms the in-memory pointers. Missing
@@ -480,6 +514,13 @@ func (c *Coordinator) isFoxyOwned(blob []byte) bool {
 // exists). Safe on a nil receiver.
 func (c *Coordinator) RestoreOnShutdown() error {
 	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	restore := c.restoreOnQuit
+	c.mu.Unlock()
+	if !restore {
+		c.logger.Print("[credinject] shutdown: restore_native_on_quit=false, leaving injected credentials in place")
 		return nil
 	}
 	err := c.restoreLocked()

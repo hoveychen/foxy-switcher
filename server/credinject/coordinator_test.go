@@ -480,3 +480,76 @@ func TestNilCoordinator_TriggerAndShutdownAreSafe(t *testing.T) {
 		t.Errorf("nil RestoreOnShutdown: %v", err)
 	}
 }
+
+// TestBootstrap_ExternalRotationDoesNotForceSwitch guards the cold-start race:
+// while the daemon was off, Claude Code (or another machine) rotated the
+// previously-injected account's keychain blob — fresh access_token + expiry.
+// Our store still holds the old expires_at, which is now in the past. If
+// bootstrap reconciles before reverse-syncing, choose() reads the stale
+// store, decides A is "expired" via IsEligible, and switches to B —
+// clobbering the externally-rotated A blob in the keychain.
+//
+// Expected after fix: bootstrap calls reverseSync first, so the store
+// catches up with the rotated tokens and A is again the current,
+// untouched, in-use account.
+func TestBootstrap_ExternalRotationDoesNotForceSwitch(t *testing.T) {
+	ctx := context.Background()
+	c, be, st, dir := newCoord(t)
+
+	idA := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	seedActive(t, st, "beta", "sk-ant-oat01-beta")
+
+	// A's stored tokens look stale to the selector (token "expired" 1h ago).
+	staleAccess := "sk-ant-oat01-alpha"
+	staleRefresh := "sk-ant-oat01-alpha-refresh"
+	if err := st.UpdateTokens(ctx, idA, staleAccess, staleRefresh,
+		time.Now().Add(-time.Hour).UnixMilli()); err != nil {
+		t.Fatalf("UpdateTokens stale A: %v", err)
+	}
+
+	// injected.json says A is the current injection (matches a real shutdown).
+	if err := writeState(dir, stateFile{
+		AccountID:  idA,
+		AccessHash: hashToken(staleAccess),
+		InjectedAt: time.Now().Add(-2 * time.Hour).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("writeState: %v", err)
+	}
+
+	// Keychain holds A's externally-rotated blob: new tokens, fresh expiry.
+	rotatedAccess := "sk-ant-oat01-alpha-NEW"
+	rotatedRefresh := "sk-ant-ort01-alpha-NEW"
+	rotatedExpiry := time.Now().Add(8 * time.Hour).UnixMilli()
+	rotatedBlob, _ := json.Marshal(map[string]any{
+		"claudeAiOauth": map[string]any{
+			"accessToken":  rotatedAccess,
+			"refreshToken": rotatedRefresh,
+			"expiresAt":    rotatedExpiry,
+		},
+	})
+	be.mu.Lock()
+	be.oauthBlob = rotatedBlob
+	be.hasOAuth = true
+	be.mu.Unlock()
+
+	c.bootstrap(ctx)
+
+	if got := c.CurrentAccountID(); got != idA {
+		t.Fatalf("bootstrap switched off A despite the rotation belonging to A; CurrentAccountID=%d want %d",
+			got, idA)
+	}
+	if got := extractAccessToken(be.oauthBlob); got != rotatedAccess {
+		t.Fatalf("bootstrap clobbered the externally-rotated A blob in the keychain; got %q want %q",
+			got, rotatedAccess)
+	}
+	a, err := st.Get(ctx, idA)
+	if err != nil {
+		t.Fatalf("st.Get: %v", err)
+	}
+	if a.AccessToken != rotatedAccess {
+		t.Errorf("store did not catch up with rotated A access_token; got %q", a.AccessToken)
+	}
+	if a.RefreshToken != rotatedRefresh {
+		t.Errorf("store did not catch up with rotated A refresh_token; got %q", a.RefreshToken)
+	}
+}
