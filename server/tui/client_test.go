@@ -94,19 +94,19 @@ func TestClient_StatusToggle(t *testing.T) {
 	id := seedAccount(t, st, "alpha")
 
 	ctx := context.Background()
-	if err := c.Disable(ctx, id); err != nil {
-		t.Fatalf("disable: %v", err)
+	if err := c.Pause(ctx, id); err != nil {
+		t.Fatalf("pause: %v", err)
 	}
 	accs, err := c.ListAccounts(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(accs) != 1 || accs[0].Status != "disabled" {
-		t.Fatalf("expected status=disabled, got %+v", accs)
+	if len(accs) != 1 || accs[0].Status != "paused" {
+		t.Fatalf("expected status=paused, got %+v", accs)
 	}
 
-	if err := c.Enable(ctx, id); err != nil {
-		t.Fatalf("enable: %v", err)
+	if err := c.Resume(ctx, id); err != nil {
+		t.Fatalf("resume: %v", err)
 	}
 	accs, err = c.ListAccounts(ctx)
 	if err != nil {

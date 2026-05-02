@@ -13,7 +13,7 @@ import (
 // color alone (matters on NO_COLOR / 8-color terminals).
 func statusDot(a Account, nowMs int64) string {
 	switch {
-	case a.Status == "disabled":
+	case a.Status == "paused":
 		return lipgloss.NewStyle().Foreground(textTertiary).Render("○")
 	case a.CooldownUntil > nowMs:
 		return lipgloss.NewStyle().Foreground(tokenWarn).Render("◐")
@@ -24,8 +24,8 @@ func statusDot(a Account, nowMs int64) string {
 
 // statusLabel renders the textual status with the same tone as statusDot.
 func statusLabel(a Account, nowMs int64) string {
-	if a.Status == "disabled" {
-		return dimStyle.Render("disabled")
+	if a.Status == "paused" {
+		return dimStyle.Render("paused")
 	}
 	if a.CooldownUntil > nowMs {
 		left := time.Until(time.UnixMilli(a.CooldownUntil)).Round(time.Second)

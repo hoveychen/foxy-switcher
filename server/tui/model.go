@@ -236,16 +236,15 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m.client.RefreshNow(ctx, a.ID)
 			})
 		}
-	case "e":
+	case "p":
 		if a, ok := m.selected(); ok {
-			return m, m.startOp("Enabling "+a.Name+"…", "Enabled "+a.Name, func(ctx context.Context) error {
-				return m.client.Enable(ctx, a.ID)
-			})
-		}
-	case "d":
-		if a, ok := m.selected(); ok {
-			return m, m.startOp("Disabling "+a.Name+"…", "Disabled "+a.Name, func(ctx context.Context) error {
-				return m.client.Disable(ctx, a.ID)
+			if a.Status == "paused" {
+				return m, m.startOp("Resuming "+a.Name+"…", "Resumed "+a.Name, func(ctx context.Context) error {
+					return m.client.Resume(ctx, a.ID)
+				})
+			}
+			return m, m.startOp("Pausing "+a.Name+"…", "Paused "+a.Name, func(ctx context.Context) error {
+				return m.client.Pause(ctx, a.ID)
 			})
 		}
 	case "c":

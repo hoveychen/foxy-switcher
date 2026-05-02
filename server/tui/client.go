@@ -113,12 +113,12 @@ func (c *Client) CredStatus(ctx context.Context) (CredStatus, error) {
 	return out, nil
 }
 
-func (c *Client) Enable(ctx context.Context, id int64) error {
-	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/accounts/%d/enable", id), nil, nil)
+func (c *Client) Resume(ctx context.Context, id int64) error {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/accounts/%d/resume", id), nil, nil)
 }
 
-func (c *Client) Disable(ctx context.Context, id int64) error {
-	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/accounts/%d/disable", id), nil, nil)
+func (c *Client) Pause(ctx context.Context, id int64) error {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/accounts/%d/pause", id), nil, nil)
 }
 
 func (c *Client) Delete(ctx context.Context, id int64) error {

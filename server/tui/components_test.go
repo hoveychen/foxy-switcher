@@ -16,7 +16,7 @@ func TestStatusDot(t *testing.T) {
 		want string
 	}{
 		{"active", Account{Status: "active"}, "●"},
-		{"disabled", Account{Status: "disabled"}, "○"},
+		{"paused", Account{Status: "paused"}, "○"},
 		{"cooldown", Account{Status: "active", CooldownUntil: now + 60_000}, "◐"},
 	}
 	for _, tc := range cases {
