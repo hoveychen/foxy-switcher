@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Foxy Switcher — An account pool for Claude Code</title>
+    <meta
+      name="description"
+      content="Pool multiple Claude subscriptions and let Foxy Switcher quietly hand Claude Code whichever one still has runway. Stop logging in and out."
+    />
+    <meta name="theme-color" content="#ff7a1a" />
+    <link rel="icon" type="image/png" href="assets/foxy-icon.png" />
+    <meta property="og:title" content="Foxy Switcher" />
+    <meta
+      property="og:description"
+      content="An account pool for Claude Code. Stop logging in and out."
+    />
+    <meta property="og:image" content="assets/foxy-icon.png" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Foxy Switcher home">
+        <img src="assets/foxy-icon.png" alt="" width="28" height="28" />
+        <span>Foxy Switcher</span>
+      </a>
+      <nav class="topnav" aria-label="Primary">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#faq">FAQ</a>
+        <a
+          class="ghost"
+          href="https://github.com/hoveychen/foxy-switcher"
+          target="_blank"
+          rel="noopener"
+          >GitHub</a
+        >
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">
+            <span class="dot" aria-hidden="true"></span>
+            v1.0.0 · macOS + Windows · Beta
+          </span>
+          <h1>An account pool for Claude Code.</h1>
+          <p class="tagline">Stop logging in and out.</p>
+          <p class="lede">
+            If you keep multiple Claude subscriptions, Foxy Switcher pools them
+            together and quietly hands Claude Code whichever one still has
+            runway. When an account trips a 5-hour or 7-day cap, the next one
+            slides in. When you quit, your original login is restored — exactly
+            as you left it.
+          </p>
+          <div class="cta-row">
+            <a
+              class="btn primary"
+              href="https://github.com/hoveychen/foxy-switcher/releases/latest"
+              target="_blank"
+              rel="noopener"
+            >
+              Download
+              <span class="btn-sub">macOS .pkg · Windows .msi</span>
+            </a>
+            <a
+              class="btn secondary"
+              href="https://github.com/hoveychen/foxy-switcher"
+              target="_blank"
+              rel="noopener"
+            >
+              View on GitHub
+            </a>
+          </div>
+          <p class="micro-note">
+            Linux: build from source — see
+            <a
+              href="https://github.com/hoveychen/foxy-switcher#from-source"
+              target="_blank"
+              rel="noopener"
+              >instructions</a
+            >.
+          </p>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="halo"></div>
+          <img
+            src="assets/foxy-icon.png"
+            alt=""
+            width="320"
+            height="320"
+            class="mascot"
+          />
+        </div>
+      </section>
+
+      <section class="why">
+        <h2>Why</h2>
+        <p>
+          If you live in Claude Code, one subscription is rarely enough. You hit
+          a 5-hour cap mid-task, switch to your team plan, hit the 7-day Sonnet
+          cap a day later, and end up running
+          <code>claude logout</code> / <code>claude login</code> so often you've
+          memorized which account is which.
+        </p>
+        <p>
+          Foxy Switcher takes that loop off your hands. Enroll each subscription
+          once. The daemon watches the usage windows, picks the
+          least-recently-used account that still has runway, and quietly swaps
+          Claude Code's credentials in place — no restart, no copy-paste, no
+          terminal dance.
+        </p>
+      </section>
+
+      <section id="features" class="features">
+        <h2>Features</h2>
+        <div class="grid">
+          <article class="card">
+            <div class="card-icon" data-tone="brand">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="9" cy="7" r="3" />
+                <circle cx="17" cy="7" r="3" />
+                <path d="M3 19c0-3 2.5-5 6-5s6 2 6 5" />
+                <path d="M14 19c0-3 2-5 5-5" />
+              </svg>
+            </div>
+            <h3>Pool any number of subscriptions</h3>
+            <p>
+              Personal, team, premium — add each one once via the standard
+              Claude OAuth flow. No password ever leaves your machine.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="card-icon" data-tone="brand">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 12a9 9 0 0 1 15.5-6.4" />
+                <path d="M21 12a9 9 0 0 1-15.5 6.4" />
+                <path d="M18 3v4h-4" />
+                <path d="M6 21v-4h4" />
+              </svg>
+            </div>
+            <h3>Automatic rotation</h3>
+            <p>
+              Least-recently-used policy with a cooldown lane for accounts that
+              just hit a cap. The next one slides in without a restart.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="card-icon" data-tone="ok">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 17l5-5 4 4 8-9" />
+                <path d="M21 7v0M21 7v6" />
+              </svg>
+            </div>
+            <h3>Live usage at a glance</h3>
+            <p>
+              5-hour, 7-day, and 7-day Sonnet windows shown side by side, so you
+              know who's about to cool down before it matters.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="card-icon" data-tone="warn">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="6" width="18" height="12" rx="2" />
+                <path d="M7 12h10" />
+                <circle cx="9" cy="12" r="1.5" fill="currentColor" stroke="none" />
+              </svg>
+            </div>
+            <h3>Manual override</h3>
+            <p>
+              Flip <em>Auto Switch</em> off and pick the account yourself with
+              one click. The pool stays out of your way when you want control.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="card-icon" data-tone="ok">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z" />
+                <path d="M9 12l2 2 4-4" />
+              </svg>
+            </div>
+            <h3>Safe by default</h3>
+            <p>
+              Foxy never leaves Claude Code in a foreign state. Clean exit,
+              crash, or force-quit — your original keychain entry comes back.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="card-icon" data-tone="info">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="13" rx="2" />
+                <path d="M7 21h10" />
+                <path d="M12 17v4" />
+                <path d="M7 9l2 2-2 2" />
+                <path d="M12 13h4" />
+              </svg>
+            </div>
+            <h3>GUI and TUI</h3>
+            <p>
+              Full desktop app, plus a terminal UI for headless / SSH setups.
+              Run <code>foxy-switcher tui</code> on a server and manage the pool
+              from your shell.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="how" class="how">
+        <h2>Quick start</h2>
+        <ol class="steps">
+          <li>
+            <span class="step-num">1</span>
+            <div>
+              <h3>Launch the app</h3>
+              <p>
+                Click <strong>Add account</strong>. Your browser opens the
+                standard Claude login.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span class="step-num">2</span>
+            <div>
+              <h3>Repeat for each subscription</h3>
+              <p>Personal, team, premium — anything you want in the pool.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-num">3</span>
+            <div>
+              <h3>Open Claude Code as you normally would</h3>
+              <p>
+                Foxy is already standing in for one of your accounts; when it
+                caps out, the next one takes over.
+              </p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section id="faq" class="faq">
+        <h2>FAQ</h2>
+        <details>
+          <summary>Does this need my password?</summary>
+          <p>
+            No. Foxy Switcher uses Claude's official OAuth login — the same flow
+            <code>claude login</code> runs. It never sees your password.
+          </p>
+        </details>
+        <details>
+          <summary>Will it conflict with my normal Claude Code login?</summary>
+          <p>
+            No. On startup Foxy snapshots whatever you had logged in. On exit —
+            clean, crash, or force-quit — your original credentials go back
+            exactly where they were.
+          </p>
+        </details>
+        <details>
+          <summary>What if every account in the pool is exhausted?</summary>
+          <p>
+            The daemon detects that and restores your native login, so Claude
+            Code falls back to your normal account instead of getting stuck.
+          </p>
+        </details>
+        <details>
+          <summary>Is my data sent anywhere?</summary>
+          <p>
+            Everything stays on your machine. The daemon only talks to
+            Anthropic's official OAuth and usage APIs — the same endpoints
+            Claude Code uses.
+          </p>
+        </details>
+        <details>
+          <summary>Does it work without the GUI?</summary>
+          <p>
+            Yes. Run <code>foxy-switcher</code> headless and manage the pool
+            from a terminal with <code>foxy-switcher tui</code>.
+          </p>
+        </details>
+      </section>
+
+      <section class="cta-band">
+        <div>
+          <h2>Ready to stop the login dance?</h2>
+          <p>
+            Grab the latest build from the Releases page. Universal `.pkg` for
+            macOS (Intel + Apple Silicon), `.msi` for Windows x64.
+          </p>
+        </div>
+        <a
+          class="btn primary"
+          href="https://github.com/hoveychen/foxy-switcher/releases/latest"
+          target="_blank"
+          rel="noopener"
+        >
+          Download
+        </a>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <img src="assets/foxy-icon.png" alt="" width="24" height="24" />
+          <span>Foxy Switcher</span>
+        </div>
+        <nav class="footer-links" aria-label="Footer">
+          <a
+            href="https://github.com/hoveychen/foxy-switcher"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+          >
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/releases"
+            target="_blank"
+            rel="noopener"
+            >Releases</a
+          >
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/blob/main/docs/architecture.md"
+            target="_blank"
+            rel="noopener"
+            >Architecture</a
+          >
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/issues"
+            target="_blank"
+            rel="noopener"
+            >Issues</a
+          >
+        </nav>
+        <p class="footer-meta">
+          Open source · Single-user · macOS-first ·
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/blob/main/LICENSE"
+            target="_blank"
+            rel="noopener"
+            >License</a
+          >
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
