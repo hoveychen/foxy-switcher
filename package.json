@@ -10,13 +10,16 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@remotion/google-fonts": "4.0.456",
+    "@remotion/player": "4.0.456",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-http": "^2.2.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-shell": "^2.2.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "remotion": "4.0.456"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0",

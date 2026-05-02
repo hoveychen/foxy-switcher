@@ -38,3 +38,7 @@ src-tauri/gen
 
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
+
+# Local-only Remotion render workspace + plan scratchpad
+/video/
+/TASKS.md
