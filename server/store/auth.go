@@ -1,0 +1,329 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// authSchema holds the three tables that back vault Step 3 device-flow
+// auth: an opaque-token device registry, an in-flight pairing scratch
+// table, and HTTP cookie sessions for the Web UI. The admin password is a
+// single bcrypt blob stored in the existing kv table under
+// `auth.password_hash`, since "set the password" is a one-row operation
+// and doesn't justify its own table.
+const authSchema = `
+CREATE TABLE IF NOT EXISTS devices (
+  id            TEXT    PRIMARY KEY,
+  name          TEXT    NOT NULL,
+  token_hash    TEXT    NOT NULL,
+  created_at    INTEGER NOT NULL,
+  last_seen_at  INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS devices_token_hash ON devices (token_hash);
+
+CREATE TABLE IF NOT EXISTS pairings (
+  client_nonce  TEXT    PRIMARY KEY,
+  user_code     TEXT    NOT NULL UNIQUE,
+  device_name   TEXT    NOT NULL,
+  status        TEXT    NOT NULL,
+  device_id     TEXT    NOT NULL DEFAULT '',
+  device_token  TEXT    NOT NULL DEFAULT '',
+  expires_at    INTEGER NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pairings_user_code ON pairings (user_code);
+CREATE INDEX IF NOT EXISTS pairings_expires_at ON pairings (expires_at);
+
+CREATE TABLE IF NOT EXISTS web_sessions (
+  id            TEXT    PRIMARY KEY,
+  expires_at    INTEGER NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS web_sessions_expires_at ON web_sessions (expires_at);
+`
+
+const passwordHashKey = "auth.password_hash"
+
+// HasPassword reports whether an admin password has been set. The vault's
+// /setup route uses this to gate first-run onboarding: when false, every
+// other route redirects to /setup.
+func (s *Store) HasPassword(ctx context.Context) (bool, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, passwordHashKey).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return v != "", nil
+}
+
+// SetPasswordHash writes the password hash. Caller is responsible for
+// computing it (bcrypt lives in vault/auth so the store layer doesn't pull
+// in golang.org/x/crypto). The hash blob is stored verbatim.
+func (s *Store) SetPasswordHash(ctx context.Context, hash string) error {
+	if hash == "" {
+		return fmt.Errorf("password hash is empty")
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		passwordHashKey, hash, time.Now().UnixMilli())
+	return err
+}
+
+// PasswordHash returns the stored bcrypt blob. Empty when unset.
+func (s *Store) PasswordHash(ctx context.Context) (string, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, passwordHashKey).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+// Device is a paired agent. The token is never persisted in plaintext;
+// only its sha256 lives in the row.
+type Device struct {
+	ID         string
+	Name       string
+	TokenHash  string
+	CreatedAt  int64
+	LastSeenAt int64
+}
+
+// InsertDevice records a paired device. The caller has already produced
+// the token and its hash in vault/auth — the store treats both as opaque.
+func (s *Store) InsertDevice(ctx context.Context, d Device) error {
+	if d.ID == "" || d.Name == "" || d.TokenHash == "" {
+		return fmt.Errorf("device requires id, name, token_hash")
+	}
+	if d.CreatedAt == 0 {
+		d.CreatedAt = time.Now().UnixMilli()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO devices (id, name, token_hash, created_at, last_seen_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		d.ID, d.Name, d.TokenHash, d.CreatedAt, d.LastSeenAt)
+	return err
+}
+
+// FindDeviceByTokenHash is the per-request auth lookup. Returns
+// ErrNotFound when no match — the Bearer middleware translates that to 401.
+func (s *Store) FindDeviceByTokenHash(ctx context.Context, hash string) (*Device, error) {
+	var d Device
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, token_hash, created_at, last_seen_at
+		   FROM devices WHERE token_hash = ?`, hash).
+		Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// TouchDevice bumps last_seen_at; called from the Bearer middleware so the
+// Devices page can show a live "last active" column.
+func (s *Store) TouchDevice(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE devices SET last_seen_at = ? WHERE id = ?`,
+		time.Now().UnixMilli(), id)
+	return err
+}
+
+// ListDevices returns every paired device, newest first.
+func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, token_hash, created_at, last_seen_at
+		   FROM devices ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Device
+	for rows.Next() {
+		var d Device
+		if err := rows.Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// DeleteDevice revokes a device. Subsequent requests with that token 401.
+func (s *Store) DeleteDevice(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM devices WHERE id = ?`, id)
+	return err
+}
+
+// PairingStatus is the pairing-row state machine. Values are wire-format
+// strings so callers (and the agent's poll loop) can compare directly.
+type PairingStatus = string
+
+const (
+	PairingPending  PairingStatus = "pending"
+	PairingApproved PairingStatus = "approved"
+	PairingDenied   PairingStatus = "denied"
+)
+
+// Pairing is a row in the pairings table — used by the device-flow handshake.
+type Pairing struct {
+	ClientNonce string
+	UserCode    string
+	DeviceName  string
+	Status      PairingStatus
+	DeviceID    string
+	DeviceToken string
+	ExpiresAt   int64
+	CreatedAt   int64
+}
+
+// InsertPairing records a pair-init request. The caller has already
+// generated the user_code in vault/auth — store treats it as opaque.
+func (s *Store) InsertPairing(ctx context.Context, p Pairing) error {
+	if p.ClientNonce == "" || p.UserCode == "" || p.DeviceName == "" {
+		return fmt.Errorf("pairing requires client_nonce, user_code, device_name")
+	}
+	if p.CreatedAt == 0 {
+		p.CreatedAt = time.Now().UnixMilli()
+	}
+	if p.Status == "" {
+		p.Status = PairingPending
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO pairings
+		 (client_nonce, user_code, device_name, status, device_id, device_token, expires_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ClientNonce, p.UserCode, p.DeviceName, p.Status,
+		p.DeviceID, p.DeviceToken, p.ExpiresAt, p.CreatedAt)
+	return err
+}
+
+// FindPairingByNonce returns the row for an agent's pair-poll. Filters out
+// expired rows so the agent sees them as "expired" rather than stuck pending.
+func (s *Store) FindPairingByNonce(ctx context.Context, nonce string) (*Pairing, error) {
+	return s.findPairing(ctx, `client_nonce = ?`, nonce)
+}
+
+// FindPairingByCode powers the Web UI's /pair?code=… landing — finds the
+// pending row the user is approving.
+func (s *Store) FindPairingByCode(ctx context.Context, code string) (*Pairing, error) {
+	return s.findPairing(ctx, `user_code = ?`, code)
+}
+
+func (s *Store) findPairing(ctx context.Context, where, val string) (*Pairing, error) {
+	var p Pairing
+	err := s.db.QueryRowContext(ctx,
+		`SELECT client_nonce, user_code, device_name, status, device_id, device_token, expires_at, created_at
+		   FROM pairings WHERE `+where+` AND expires_at > ?`,
+		val, time.Now().UnixMilli()).
+		Scan(&p.ClientNonce, &p.UserCode, &p.DeviceName, &p.Status,
+			&p.DeviceID, &p.DeviceToken, &p.ExpiresAt, &p.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// ApprovePairing flips pending → approved and stamps the device token /
+// device id on the row. The agent's next pair-poll picks them up.
+// Returns ErrNotFound when the pairing row has expired or doesn't exist.
+func (s *Store) ApprovePairing(ctx context.Context, code, deviceID, deviceToken string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE pairings
+		    SET status = ?, device_id = ?, device_token = ?
+		  WHERE user_code = ? AND status = ? AND expires_at > ?`,
+		PairingApproved, deviceID, deviceToken, code, PairingPending, time.Now().UnixMilli())
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DenyPairing flips pending → denied without producing a device token.
+func (s *Store) DenyPairing(ctx context.Context, code string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE pairings SET status = ?
+		   WHERE user_code = ? AND status = ? AND expires_at > ?`,
+		PairingDenied, code, PairingPending, time.Now().UnixMilli())
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SweepPairings removes expired rows. Run on a goroutine timer or before
+// each pair-init to keep the table from growing.
+func (s *Store) SweepPairings(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM pairings WHERE expires_at <= ?`, time.Now().UnixMilli())
+	return err
+}
+
+// WebSession is a Web UI cookie session.
+type WebSession struct {
+	ID        string
+	ExpiresAt int64
+	CreatedAt int64
+}
+
+// CreateWebSession persists a session row. ID is random hex generated by
+// the caller; expiresAt is unix millis.
+func (s *Store) CreateWebSession(ctx context.Context, id string, expiresAt int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO web_sessions (id, expires_at, created_at) VALUES (?, ?, ?)`,
+		id, expiresAt, time.Now().UnixMilli())
+	return err
+}
+
+// LookupWebSession returns the session row when it exists and hasn't
+// expired. Returns ErrNotFound otherwise so the middleware can 302 to
+// /login.
+func (s *Store) LookupWebSession(ctx context.Context, id string) (*WebSession, error) {
+	var w WebSession
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, expires_at, created_at FROM web_sessions
+		  WHERE id = ? AND expires_at > ?`,
+		id, time.Now().UnixMilli()).
+		Scan(&w.ID, &w.ExpiresAt, &w.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
+// DeleteWebSession invalidates the cookie — used by /logout and the
+// session sweeper.
+func (s *Store) DeleteWebSession(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE id = ?`, id)
+	return err
+}
+
+// SweepWebSessions drops expired rows.
+func (s *Store) SweepWebSessions(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM web_sessions WHERE expires_at <= ?`, time.Now().UnixMilli())
+	return err
+}

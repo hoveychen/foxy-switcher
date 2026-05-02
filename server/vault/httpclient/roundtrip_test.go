@@ -9,6 +9,7 @@ import (
 
 	"github.com/hoveychen/foxy-switcher/server/store"
 	"github.com/hoveychen/foxy-switcher/server/vault"
+	vaultauth "github.com/hoveychen/foxy-switcher/server/vault/auth"
 	"github.com/hoveychen/foxy-switcher/server/vault/httpserver"
 )
 
@@ -34,13 +35,28 @@ func newRoundtripFixture(t *testing.T) *roundtripFixture {
 	t.Cleanup(func() { st.Close() })
 
 	svc := vault.NewInProc(st)
-	srv := httptest.NewServer(httpserver.New(svc).Handler())
+	srv := httptest.NewServer(httpserver.New(svc, st).Handler())
 	t.Cleanup(srv.Close)
+
+	// Seed a device + bearer token so the protected /agent/v1/* routes
+	// pass the Bearer middleware. Tests that exercise the pair-init / poll
+	// flow drive that path explicitly; the rest just want an authenticated
+	// client.
+	token := vaultauth.NewToken()
+	if err := st.InsertDevice(context.Background(), store.Device{
+		ID:        vaultauth.NewID(),
+		Name:      "test-device",
+		TokenHash: vaultauth.HashToken(token),
+	}); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+	c := New(srv.URL)
+	c.SetToken(token)
 	return &roundtripFixture{
 		st:     st,
 		leases: svc.Leases(),
 		server: srv,
-		client: New(srv.URL),
+		client: c,
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 type Client struct {
 	baseURL string
 	hc      *http.Client
+	token   string // bearer token; empty until SetToken
 }
 
 // New constructs a Client. baseURL must include scheme and host (e.g.
@@ -38,6 +39,13 @@ func New(baseURL string) *Client {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		hc:      &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// SetToken installs the bearer token used by every subsequent HTTP call.
+// The agent receives the token from the device-flow pair-poll response and
+// persists it; on startup it loads the token from disk and calls this.
+func (c *Client) SetToken(token string) {
+	c.token = token
 }
 
 // Compile-time assertion.
@@ -203,6 +211,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	return c.hc.Do(req)
 }

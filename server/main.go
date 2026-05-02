@@ -40,6 +40,10 @@ func main() {
 		runTUI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "pair" {
+		runPair(os.Args[2:])
+		return
+	}
 
 	var (
 		dataDir      = flag.String("data-dir", "", "directory for state.db / port file (default ~/.foxy-switcher)")
@@ -258,13 +262,15 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	up.Start(ctx)
 	defer up.Stop()
 
-	// Compose the frontend httpapi (under /api/* etc) with the agent-facing
-	// vault httpserver (under /agent/v1/*) on a single listener. ServeMux
-	// uses longest-prefix matching, so the agent routes win when applicable.
-	// Combined mode exposes both — that lets a second device run --mode=agent
-	// against this binary if the user opens the port on their LAN.
+	// Compose three handlers on one listener:
+	//   - /agent/v1/*  — agent surface (Bearer-auth'd vault.Service)
+	//   - /setup, /login, /, /pair, /devices, /password — admin Web UI
+	//   - /api/*, /healthz — existing frontend httpapi (catch-all)
+	// More specific patterns win over the catch-all "/" mount.
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/agent/v1/", httpserver.New(vaultSvc).Handler())
+	vaultHTTP := httpserver.New(vaultSvc, st)
+	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
+	vaultHTTP.RegisterWebRoutes(rootMux)
 	rootMux.Handle("/", server.Handler())
 	httpSrv := &http.Server{
 		Handler:           rootMux,

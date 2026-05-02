@@ -255,6 +255,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply usage_history schema: %w", err)
 	}
+	if _, err := db.Exec(authSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply auth schema: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
