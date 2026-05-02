@@ -41,35 +41,58 @@ func (s *Server) requireBearer(next http.Handler) http.Handler {
 // public internet can't be hit by an unauthenticated client. Combined
 // mode skips the wrap because loopback is its own attacker model.
 //
-// On miss / unknown token: 401 with a JSON error body. On success:
-// next handler runs with the device id in request context (key is
-// internal — no callers consume it today; the pattern is here so
-// rate-limit / audit middleware can grow next to this without an API
-// change).
+// Accepts EITHER a paired-device bearer token in the Authorization
+// header OR a Web UI session cookie (so a logged-in browser session
+// can also drive /api/* without needing to hold a device token).
+// Step 9 added the cookie path to make the embedded React account
+// panel possible — a browser deployed at the vault origin uses cookies
+// for auth, not Bearer.
+//
+// On miss / unknown credential: 401 with a JSON error body.
 func BearerAuth(st *store.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, ok := extractBearer(r)
-			if !ok {
-				writeError(w, http.StatusUnauthorized, errors.New("missing bearer token"))
+			if devID, ok := authenticateRequest(r, st); ok {
+				ctx := context.WithValue(r.Context(), agentDeviceCtxKey{}, devID)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			dev, err := st.FindDeviceByTokenHash(r.Context(), vaultauth.HashToken(token))
-			if err != nil {
-				if errors.Is(err, store.ErrNotFound) {
-					writeError(w, http.StatusUnauthorized, errors.New("unknown device token"))
-					return
-				}
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			// Best-effort heartbeat for the Devices page; failure here is
-			// non-fatal — the request still succeeds.
-			_ = st.TouchDevice(r.Context(), dev.ID)
-			ctx := context.WithValue(r.Context(), agentDeviceCtxKey{}, dev.ID)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			writeError(w, http.StatusUnauthorized, errors.New("authentication required"))
 		})
 	}
+}
+
+// authenticateRequest tries the bearer header first, then the Web UI
+// session cookie. Returns the device id (or "session" sentinel for
+// cookie auth) and ok=true on any successful match. Writes nothing —
+// the middleware decides how to respond.
+func authenticateRequest(r *http.Request, st *store.Store) (string, bool) {
+	if token, ok := extractBearer(r); ok {
+		dev, err := st.FindDeviceByTokenHash(r.Context(), vaultauth.HashToken(token))
+		if err == nil {
+			_ = st.TouchDevice(r.Context(), dev.ID)
+			return dev.ID, true
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			// SQL error is treated as "not authenticated" — better to 401
+			// than 500 from the auth layer; the operator sees the underlying
+			// failure in store-layer logs.
+			return "", false
+		}
+		// Fall through and try cookie — agents normally don't have a
+		// session cookie, but a misrouted request shouldn't 401 just
+		// because both surfaces are mounted on the same listener.
+	}
+	if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
+		if _, err := st.LookupWebSession(r.Context(), c.Value); err == nil {
+			// "session" is a sentinel value the per-request context can
+			// distinguish from a real device id. Today nothing consumes
+			// it; if a route later needs to differentiate, it's a clean
+			// hook.
+			return "session", true
+		}
+	}
+	return "", false
 }
 
 func extractBearer(r *http.Request) (string, bool) {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/store"
 	vaultauth "github.com/hoveychen/foxy-switcher/server/vault/auth"
@@ -53,6 +54,33 @@ func TestVaultModeBearer_GuardsApi(t *testing.T) {
 	srv.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("real-bearer: got %d want 200, body=%q", w.Code, w.Body.String())
+	}
+}
+
+// TestVaultModeBearer_AcceptsSessionCookie covers the Step 9 admission
+// that an embedded React build, served from the vault's origin, drives
+// /api/* with the same Web UI session cookie used by /devices and
+// /pair — no bearer token. Without this path, cookie-auth'd browser
+// users would 401 on every account fetch.
+func TestVaultModeBearer_AcceptsSessionCookie(t *testing.T) {
+	st, _ := newTestStore(t)
+	srv := New(st, nil, nil, "")
+	srv.Middleware = append(srv.Middleware, httpserver.BearerAuth(st))
+
+	// Seed an active session row directly — equivalent to the user
+	// having logged in via /login on the Web UI.
+	sessID := vaultauth.NewToken()
+	expires := time.Now().Add(time.Hour).UnixMilli()
+	if err := st.CreateWebSession(context.Background(), sessID, expires); err != nil {
+		t.Fatalf("CreateWebSession: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
+	req.AddCookie(&http.Cookie{Name: httpserver.SessionCookieName, Value: sessID})
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("session cookie auth: got %d want 200, body=%q", w.Code, w.Body.String())
 	}
 }
 
