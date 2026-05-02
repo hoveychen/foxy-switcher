@@ -207,7 +207,7 @@ function AccountRow({
       }}
     >
       <span className={`row-status ${status.tone}`} aria-label={status.text} />
-      <FoxAvatar id={a.id} size={32} />
+      <FoxAvatar name={a.name} size={32} />
       <div className="row-main">
         <div className="row-title">
           <span className="name">{a.name}</span>

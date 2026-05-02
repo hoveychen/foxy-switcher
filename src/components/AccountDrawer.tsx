@@ -196,7 +196,7 @@ export function AccountDrawer({
     <Drawer open={true} title={account.name} onClose={onClose}>
       <div className="drawer-section">
         <div className="drawer-identity">
-          <FoxAvatar id={account.id} size={56} className="drawer-identity-fox" />
+          <FoxAvatar name={account.name} size={56} className="drawer-identity-fox" />
           <div className="drawer-identity-line">
             {account.full_name && (
               <span className="drawer-identity-name">{account.full_name}</span>

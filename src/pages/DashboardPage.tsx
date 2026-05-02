@@ -361,7 +361,7 @@ function HeroCard({
 }) {
   return (
     <section className="dash-hero">
-      <FoxAvatar id={account.id} size={64} className="dash-hero-fox" />
+      <FoxAvatar name={account.name} size={64} className="dash-hero-fox" />
       <div className="dash-hero-body">
         <div className="dash-hero-eyebrow">{t("dashboard.hero.in_use")}</div>
         <h2 className="dash-hero-title">{account.name}</h2>
@@ -620,7 +620,7 @@ function CompactRow({
   return (
     <div className={`compact-row ${isActive ? "active" : ""}`}>
       <span className="compact-avatar-wrap">
-        <FoxAvatar id={a.id} size={32} />
+        <FoxAvatar name={a.name} size={32} />
         <span
           className={`row-status compact-status ${statusTone}`}
           aria-label={statusText}
