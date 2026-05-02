@@ -27,13 +27,17 @@ const (
 )
 
 // Run is the package entry point invoked by `foxy-switcher tui`.
+//
+// WithMouseCellMotion enables click + wheel events; this means the terminal's
+// native click-to-select-text is intercepted while the TUI runs (hold Option
+// on macOS terminals to get native selection back).
 func Run(dataDir string) error {
 	c, err := NewClient(dataDir)
 	if err != nil {
 		return err
 	}
 	m := newModel(c)
-	prog := tea.NewProgram(m, tea.WithAltScreen())
+	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = prog.Run()
 	return err
 }
@@ -182,6 +186,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 
 	// Forward to whichever input is focused.

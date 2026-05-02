@@ -359,22 +359,37 @@ func (m *model) renderStatusLine() string {
 	}
 }
 
-func (m *model) footerChips() []string {
-	return []string{
-		keyChip("↑↓", "move"),
-		keyChip("a", "add"),
-		keyChip("r", "refresh"),
-		keyChip("e", "enable"),
-		keyChip("d", "disable"),
-		keyChip("c", "cooldown"),
-		keyChip("x", "delete"),
-		keyChip("R", "reload"),
-		keyChip("q", "quit"),
+// footerChipDef pairs the chip's display key/label with the runtime key it
+// emits when clicked. emit == "" means the chip is informational only and
+// does not respond to mouse clicks (e.g. "↑↓ move").
+type footerChipDef struct {
+	key, label, emit string
+}
+
+func (m *model) footerChipDefs() []footerChipDef {
+	return []footerChipDef{
+		{"↑↓", "move", ""},
+		{"a", "add", "a"},
+		{"r", "refresh", "r"},
+		{"p", "pause/resume", "p"},
+		{"c", "cooldown", "c"},
+		{"x", "delete", "x"},
+		{"R", "reload", "R"},
+		{"q", "quit", "q"},
 	}
 }
 
+func (m *model) footerChipsRendered() []string {
+	defs := m.footerChipDefs()
+	out := make([]string, len(defs))
+	for i, d := range defs {
+		out[i] = keyChip(d.key, d.label)
+	}
+	return out
+}
+
 func (m *model) renderFooter() string {
-	chips := m.footerChips()
+	chips := m.footerChipsRendered()
 	row := keyChipRow(chips...)
 	if lipgloss.Width(row) <= m.width {
 		return row
@@ -384,7 +399,7 @@ func (m *model) renderFooter() string {
 }
 
 func (m *model) footerHeight() int {
-	row := keyChipRow(m.footerChips()...)
+	row := keyChipRow(m.footerChipsRendered()...)
 	if lipgloss.Width(row) <= m.width {
 		return 1
 	}
@@ -478,6 +493,99 @@ func padBodyToHeight(body string, target int) string {
 		return body
 	}
 	return body + strings.Repeat("\n", target-cur)
+}
+
+// listRowAt maps a click coordinate to an account index. Returns false if the
+// click is outside the list rows (panel borders, padding, header/footer area).
+//
+// The wide layout draws account[i] at y = 3 + i (header(1) + blank(1) +
+// panel top(1)). The regular layout is the same except the cursor row has 5
+// inline detail rows tucked under it, so accounts after the cursor get pushed
+// down by 5. The narrow layout is intentionally left unmapped — small windows
+// usually have other concerns and one line of slop isn't worth the math.
+func (m *model) listRowAt(x, y int) (int, bool) {
+	_ = x
+	if len(m.accounts) == 0 {
+		return 0, false
+	}
+	switch computeLayout(m.width) {
+	case layoutWide:
+		idx := y - 3
+		if idx < 0 || idx >= len(m.accounts) {
+			return 0, false
+		}
+		return idx, true
+	case layoutRegular:
+		rel := y - 3
+		if rel < 0 {
+			return 0, false
+		}
+		for i := range m.accounts {
+			if rel == 0 {
+				return i, true
+			}
+			rel--
+			if i == m.cursor {
+				if rel < inlineDetailRows {
+					return i, true
+				}
+				rel -= inlineDetailRows
+			}
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+// inlineDetailRows is the number of rows renderInlineDetail produces below
+// the cursor row in the regular layout (owner + 5h + 7d Opus + 7d Sonnet +
+// token meta).
+const inlineDetailRows = 5
+
+// footerChipAt maps a click coordinate to the key the chip should emit.
+// Returns ("", false) when the click is outside the footer or lands on an
+// informational chip (one with emit == "").
+func (m *model) footerChipAt(x, y int) (string, bool) {
+	defs := m.footerChipDefs()
+	rendered := m.footerChipsRendered()
+	rowH := 1
+	if lipgloss.Width(keyChipRow(rendered...)) > m.width {
+		rowH = 2
+	}
+	footerY := m.height - rowH
+	if y < footerY || y >= footerY+rowH {
+		return "", false
+	}
+
+	var rowChips []string
+	var rowDefs []footerChipDef
+	if rowH == 1 {
+		rowChips = rendered
+		rowDefs = defs
+	} else {
+		mid := (len(rendered) + 1) / 2
+		if y == footerY {
+			rowChips = rendered[:mid]
+			rowDefs = defs[:mid]
+		} else {
+			rowChips = rendered[mid:]
+			rowDefs = defs[mid:]
+		}
+	}
+
+	cur := 0
+	for i, c := range rowChips {
+		w := lipgloss.Width(c)
+		if x >= cur && x < cur+w {
+			if rowDefs[i].emit == "" {
+				return "", false
+			}
+			return rowDefs[i].emit, true
+		}
+		cur += w + 3 // keyChipRow joins chips with three spaces
+	}
+	return "", false
 }
 
 // computeBodyHeight returns the number of body rows a panel can occupy so the
