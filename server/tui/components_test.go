@@ -34,9 +34,10 @@ func TestStatusDot(t *testing.T) {
 
 func TestPlanBadge(t *testing.T) {
 	got := planBadge("max20")
-	if !strings.Contains(got, "[max20]") {
-		t.Fatalf("planBadge missing literal: %q", got)
+	if !strings.Contains(got, "max20") {
+		t.Fatalf("planBadge missing label: %q", got)
 	}
+	// soft pill: text + 1-cell padding on each side = 5 + 2 = 7.
 	if w := lipgloss.Width(got); w != 7 {
 		t.Errorf("planBadge visual width = %d, want 7", w)
 	}
@@ -78,14 +79,15 @@ func TestProgressBarEmpty(t *testing.T) {
 
 func TestKeyChip(t *testing.T) {
 	got := keyChip("a", "add")
-	if !strings.Contains(got, "[a]") {
-		t.Fatalf("keyChip missing bracketed key: %q", got)
+	if !strings.Contains(got, "a") {
+		t.Fatalf("keyChip missing key: %q", got)
 	}
 	if !strings.Contains(got, "add") {
 		t.Fatalf("keyChip missing label: %q", got)
 	}
+	// pill ` a ` (3) + space (1) + label `add` (3) = 7.
 	if w := lipgloss.Width(got); w != 7 {
-		t.Errorf("keyChip visual width = %d, want 7 ([a] add)", w)
+		t.Errorf("keyChip visual width = %d, want 7", w)
 	}
 }
 

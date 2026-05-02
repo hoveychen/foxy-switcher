@@ -43,25 +43,18 @@ func statusLabel(a Account, nowMs int64) string {
 	return okStyle.Render("active")
 }
 
-// planBadge renders the plan as `[max20]` with accent colors. Empty plan → "".
+// planBadge renders the plan as a soft accent pill. Empty plan → "".
 func planBadge(plan string) string {
 	if plan == "" {
 		return ""
 	}
-	return lipgloss.NewStyle().
-		Foreground(accentBrand).
-		Background(accentSoft).
-		Render("[" + plan + "]")
+	return pill(plan, pillAccent, pillSoft)
 }
 
-// inUseChip renders ` in use ` with inverted accent — used in list rows next
+// inUseChip renders `in use` as a filled accent pill — used in list rows next
 // to the plan badge to flag the currently-injected account.
 func inUseChip() string {
-	return lipgloss.NewStyle().
-		Foreground(textOnAccent).
-		Background(accentBrand).
-		Bold(true).
-		Render(" in use ")
+	return pill("in use", pillAccent, pillFilled)
 }
 
 const progressBarDefaultWidth = 10
@@ -105,13 +98,9 @@ func progressBarEmpty(width int) string {
 	return bar + "    —"
 }
 
-// keyChip renders `[k] label`: bracketed key in accent colors, then label dim.
+// keyChip renders `k label`: key in a soft accent pill, label dim.
 func keyChip(key, label string) string {
-	chip := lipgloss.NewStyle().
-		Foreground(accentBrand).
-		Background(accentSoft).
-		Render("[" + key + "]")
-	return chip + " " + dimStyle.Render(label)
+	return pill(key, pillAccent, pillSoft) + " " + dimStyle.Render(label)
 }
 
 // keyChipRow joins chips with three spaces.
@@ -150,14 +139,20 @@ func panel(title, body string, totalWidth int) string {
 	}
 	border := lipgloss.NewStyle().Foreground(borderSubtle)
 
-	titleRendered := titleStyle.Render(title)
-	titleW := lipgloss.Width(titleRendered)
-	// Top edge composition: ╭ + "─ " + title + " " + N×─ + ╮  (totalWidth chars)
-	fillN := totalWidth - 5 - titleW
-	if fillN < 1 {
-		fillN = 1
+	var top string
+	if title == "" {
+		// Borderless title: full-width top edge, no caption gap.
+		top = border.Render("╭" + strings.Repeat("─", totalWidth-2) + "╮")
+	} else {
+		titleRendered := titleStyle.Render(title)
+		titleW := lipgloss.Width(titleRendered)
+		// Top edge composition: ╭ + "─ " + title + " " + N×─ + ╮  (totalWidth chars)
+		fillN := totalWidth - 5 - titleW
+		if fillN < 1 {
+			fillN = 1
+		}
+		top = border.Render("╭─ ") + titleRendered + border.Render(" "+strings.Repeat("─", fillN)+"╮")
 	}
-	top := border.Render("╭─ ") + titleRendered + border.Render(" "+strings.Repeat("─", fillN)+"╮")
 
 	innerW := totalWidth - 4 // -2 borders -2 padding
 	if innerW < 1 {

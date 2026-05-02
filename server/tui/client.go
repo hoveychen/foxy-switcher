@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -159,6 +160,110 @@ func (c *Client) LoginStart(ctx context.Context) (LoginStart, error) {
 func (c *Client) LoginCallback(ctx context.Context, pasted, state string) error {
 	body := map[string]string{"pasted": pasted, "state": state}
 	return c.do(ctx, http.MethodPost, "/api/accounts/callback", body, nil)
+}
+
+// DashboardKPIs mirrors httpapi.DashboardKPIs.
+type DashboardKPIs struct {
+	PoolSize        int   `json:"pool_size"`
+	ActiveCount     int   `json:"active_count"`
+	InUseAccountID  int64 `json:"in_use_account_id"`
+	NextCooldownAt  int64 `json:"next_cooldown_at"`
+	PeakUtilPercent int   `json:"peak_util_percent"`
+}
+
+// DashboardTrendBucket mirrors httpapi.DashboardTrendBucket. One hour-aligned
+// bucket of pool-wide max utilization.
+type DashboardTrendBucket struct {
+	TS             int64   `json:"ts"`
+	FiveHour       float64 `json:"five_hour"`
+	SevenDay       float64 `json:"seven_day"`
+	SevenDaySonnet float64 `json:"seven_day_sonnet"`
+}
+
+// Dashboard mirrors httpapi.DashboardResponse.
+type Dashboard struct {
+	KPIs  DashboardKPIs          `json:"kpis"`
+	Trend []DashboardTrendBucket `json:"trend"`
+}
+
+func (c *Client) GetDashboard(ctx context.Context) (Dashboard, error) {
+	var out Dashboard
+	if err := c.do(ctx, http.MethodGet, "/api/dashboard", nil, &out); err != nil {
+		return Dashboard{}, err
+	}
+	return out, nil
+}
+
+// About mirrors httpapi.AboutResponse.
+type About struct {
+	Version       string `json:"version"`
+	Commit        string `json:"commit"`
+	CommitDirty   bool   `json:"commit_dirty"`
+	BuildTime     string `json:"build_time"`
+	GoVersion     string `json:"go_version"`
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+	PID           int    `json:"pid"`
+	Port          int    `json:"port"`
+	DataDir       string `json:"data_dir"`
+	SQLitePath    string `json:"sqlite_path"`
+	SQLiteSizeB   int64  `json:"sqlite_size_b"`
+	StartedAtMS   int64  `json:"started_at_ms"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+}
+
+func (c *Client) GetAbout(ctx context.Context) (About, error) {
+	var out About
+	if err := c.do(ctx, http.MethodGet, "/api/about", nil, &out); err != nil {
+		return About{}, err
+	}
+	return out, nil
+}
+
+// ActivityEvent mirrors activity.Event. Severity is "info" / "warn" / "error".
+type ActivityEvent struct {
+	ID        int64           `json:"id"`
+	Timestamp int64           `json:"timestamp"`
+	Type      string          `json:"type"`
+	Severity  string          `json:"severity"`
+	AccountID int64           `json:"account_id,omitempty"`
+	Message   string          `json:"message"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+}
+
+// ActivityFilter is the subset of /api/activity query params the TUI uses.
+type ActivityFilter struct {
+	Limit    int      // 0 = server default (200)
+	SinceID  int64    // 0 = no incremental anchor
+	Types    []string // OR-ed; empty = all
+	Severity string   // "" / "info" / "warn" / "error"
+}
+
+func (c *Client) ListActivity(ctx context.Context, f ActivityFilter) ([]ActivityEvent, error) {
+	q := url.Values{}
+	if f.Limit > 0 {
+		q.Set("limit", strconv.Itoa(f.Limit))
+	}
+	if f.SinceID > 0 {
+		q.Set("since", strconv.FormatInt(f.SinceID, 10))
+	}
+	if len(f.Types) > 0 {
+		q.Set("type", strings.Join(f.Types, ","))
+	}
+	if f.Severity != "" {
+		q.Set("severity", f.Severity)
+	}
+	path := "/api/activity"
+	if enc := q.Encode(); enc != "" {
+		path = path + "?" + enc
+	}
+	var out struct {
+		Events []ActivityEvent `json:"events"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Events, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {

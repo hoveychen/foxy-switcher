@@ -39,9 +39,8 @@ func Run(dataDir, mode string) error {
 	if err != nil {
 		return err
 	}
-	m := newModel(c)
-	m.daemonMode = mode
-	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	app := newApp(c, dataDir, mode)
+	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = prog.Run()
 	return err
 }
