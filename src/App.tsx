@@ -359,7 +359,6 @@ export default function App() {
           nowMs={now}
           onNavigate={setRoute}
           autoSwitch={autoSwitch}
-          onAutoSwitchChange={setAutoSwitch}
           onAutoSwitchToggle={onAutoSwitchToggle}
           recentEvents={recentEvents}
           stale={!daemonOk}
@@ -396,6 +395,7 @@ export default function App() {
         <SettingsPage
           autoSwitch={autoSwitch}
           onAutoSwitchToggle={onAutoSwitchToggle}
+          onAutoSwitchChange={setAutoSwitch}
           settings={settings}
           onSettingsChange={persistSettings}
         />

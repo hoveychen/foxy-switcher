@@ -334,34 +334,30 @@
 /* ─── Dashboard ────────────────────────────────────────── */
 
 .dash-welcome {
-  margin-bottom: var(--space-8);
+  margin-bottom: var(--space-6);
 }
 
 .dash-welcome h2 {
-  margin: 0 0 var(--space-2);
-  font: var(--font-h1);
+  margin: 0 0 var(--space-1);
+  font: var(--font-h2);
   letter-spacing: -0.01em;
 }
 
-.dash-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: var(--space-8);
-  align-items: start;
-}
-
-.dash-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-8);
-}
-
-.dash-side {
+.dash-stack {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
+  min-width: 0;
 }
+
+.dash-row-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+
+.dash-row-split .dash-section { margin-bottom: 0; }
 
 .dash-hero {
   display: grid;
@@ -433,41 +429,7 @@
   grid-template-columns: repeat(3, 1fr);
 }
 
-/* ─── Auto Switch card ─────────────────────────────────── */
-
-.auto-switch-card {
-  background: var(--bg-card);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: var(--space-6);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.auto-switch-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-}
-
-.auto-switch-eyebrow {
-  font: var(--font-meta);
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.auto-switch-head h3 {
-  margin: 2px 0 0;
-  font: var(--font-h2);
-  letter-spacing: -0.01em;
-}
-
-.auto-switch-desc {
-  margin: 0;
-}
+/* ─── Auto Switch policy radios (used in Settings) ──────── */
 
 .auto-switch-policy {
   border: none;
@@ -510,8 +472,6 @@
   font: var(--font-body-strong);
   color: var(--text-primary);
 }
-
-.auto-switch-foot { margin: 0; }
 
 /* ─── Toggle ───────────────────────────────────────────── */
 
@@ -580,14 +540,14 @@
 .kpi-card.tone-muted .kpi-value { color: var(--text-secondary); }
 
 .dash-section {
-  margin-bottom: var(--space-10);
+  margin-bottom: 0;
 }
 
 .dash-section-header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-3);
 }
 
 .dash-section-header h3 {
@@ -640,7 +600,7 @@
 }
 
 @media (max-width: 1023px) {
-  .dash-grid { grid-template-columns: 1fr; }
+  .dash-row-split { grid-template-columns: 1fr; }
   .kpi-grid,
   .kpi-grid-3 { grid-template-columns: repeat(2, 1fr); }
   .dash-hero { grid-template-columns: 56px 1fr auto; }
@@ -887,7 +847,25 @@
 
 .settings-row:last-child { border-bottom: none; }
 
+.settings-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+}
+
 .settings-row-text { min-width: 0; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 .settings-row-label {
   font: var(--font-body-strong);
