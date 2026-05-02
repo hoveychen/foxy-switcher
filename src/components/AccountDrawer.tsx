@@ -2,11 +2,12 @@ import React, { useCallback, useRef, useState } from "react";
 import type { Account, ThresholdInput, UsageWindow } from "../api";
 import { Drawer } from "./Drawer";
 import { FoxAvatar } from "./FoxAvatar";
+import { t, tf } from "../i18n";
 
 type Tone = "ok" | "warn" | "danger" | "muted";
 
 function fmtRemaining(ms: number): string {
-  if (ms <= 0) return "expired";
+  if (ms <= 0) return t("drawer.fmt.expired");
   const s = Math.floor(ms / 1000);
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -16,26 +17,26 @@ function fmtRemaining(ms: number): string {
 
 function fmtResetsAt(rfc3339: string, nowMs: number): string {
   if (!rfc3339) return "—";
-  const t = Date.parse(rfc3339);
-  if (Number.isNaN(t)) return rfc3339;
-  const diff = t - nowMs;
-  if (diff <= 0) return "rolling over";
-  return `resets in ${fmtRemaining(diff)}`;
+  const ts = Date.parse(rfc3339);
+  if (Number.isNaN(ts)) return rfc3339;
+  const diff = ts - nowMs;
+  if (diff <= 0) return t("drawer.usage.rolling_over");
+  return tf("drawer.usage.resets_in", { time: fmtRemaining(diff) });
 }
 
 function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
-  if (a.status !== "active") return { text: "paused", tone: "muted" };
-  if (a.token_expired) return { text: "token expired", tone: "danger" };
+  if (a.status !== "active") return { text: t("drawer.status.paused"), tone: "muted" };
+  if (a.token_expired) return { text: t("drawer.status.token_expired"), tone: "danger" };
   if (a.cooldown_until > nowMs) {
     return {
-      text: `cooldown ${fmtRemaining(a.cooldown_until - nowMs)}`,
+      text: tf("drawer.status.cooldown", { time: fmtRemaining(a.cooldown_until - nowMs) }),
       tone: "warn",
     };
   }
   if (a.expires_at - nowMs < 5 * 60 * 1000) {
-    return { text: "refresh due", tone: "warn" };
+    return { text: t("drawer.status.refresh_due"), tone: "warn" };
   }
-  return { text: "active", tone: "ok" };
+  return { text: t("drawer.status.active"), tone: "ok" };
 }
 
 function isSelectable(a: Account, nowMs: number): boolean {
@@ -111,7 +112,7 @@ function UsageBar({
     return (
       <div className="usage-row">
         <span className="usage-label">{label}</span>
-        <span className="usage-empty">No data yet</span>
+        <span className="usage-empty">{t("drawer.usage.no_data")}</span>
       </div>
     );
   }
@@ -128,7 +129,7 @@ function UsageBar({
         <div
           className={`usage-threshold ${draft !== null ? "dragging" : ""}`}
           style={{ left: `${markerPct}%` }}
-          title={`Skip ≥ ${Math.round(markerPct)}%`}
+          title={tf("drawer.usage.threshold_title", { pct: Math.round(markerPct) })}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={finishDrag}
@@ -137,7 +138,7 @@ function UsageBar({
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(markerPct)}
-          aria-label={`${label} skip threshold`}
+          aria-label={tf("drawer.usage.threshold_aria", { label })}
         />
       </div>
       <span className="usage-pct">{pct.toFixed(0)}%</span>
@@ -196,7 +197,7 @@ export function AccountDrawer({
               <span className="drawer-identity-name">{account.full_name}</span>
             )}
             {account.plan && <span className="pill">{account.plan}</span>}
-            {isInUse && <span className="pill active-pill">In use</span>}
+            {isInUse && <span className="pill active-pill">{t("drawer.identity.in_use")}</span>}
           </div>
           {account.email && (
             <div className="text-meta">{account.email}</div>
@@ -217,7 +218,7 @@ export function AccountDrawer({
             onClick={onSelect}
             disabled={isInUse || !isSelectable(account, nowMs) || busy}
           >
-            {isInUse ? "In use" : "Use now"}
+            {isInUse ? t("drawer.actions.in_use") : t("drawer.actions.use_now")}
           </button>
           <button
             type="button"
@@ -225,7 +226,7 @@ export function AccountDrawer({
             onClick={onRefresh}
             disabled={busy}
           >
-            Refresh
+            {t("drawer.actions.refresh")}
           </button>
           <button
             type="button"
@@ -233,7 +234,7 @@ export function AccountDrawer({
             onClick={onTogglePause}
             disabled={busy}
           >
-            {paused ? "Resume" : "Pause"}
+            {paused ? t("drawer.actions.resume") : t("drawer.actions.pause")}
           </button>
           <button
             type="button"
@@ -241,30 +242,30 @@ export function AccountDrawer({
             onClick={onDelete}
             disabled={busy}
           >
-            Delete
+            {t("drawer.actions.delete")}
           </button>
         </div>
       </div>
 
       <div className="drawer-section">
-        <h3 className="drawer-section-title">Usage</h3>
+        <h3 className="drawer-section-title">{t("drawer.section.usage")}</h3>
         <div className="usage-list">
           <UsageBar
-            label="5h"
+            label={t("drawer.usage.5h")}
             win={account.five_hour}
             nowMs={nowMs}
             threshold={account.five_hour_threshold}
             onCommitThreshold={(pct) => commit("five_hour", pct)}
           />
           <UsageBar
-            label="7d Opus"
+            label={t("drawer.usage.7d_opus")}
             win={account.seven_day}
             nowMs={nowMs}
             threshold={account.seven_day_threshold}
             onCommitThreshold={(pct) => commit("seven_day", pct)}
           />
           <UsageBar
-            label="7d Sonnet"
+            label={t("drawer.usage.7d_sonnet")}
             win={account.seven_day_sonnet}
             nowMs={nowMs}
             threshold={account.seven_day_sonnet_threshold}
@@ -274,30 +275,32 @@ export function AccountDrawer({
       </div>
 
       <div className="drawer-section">
-        <h3 className="drawer-section-title">Details</h3>
+        <h3 className="drawer-section-title">{t("drawer.section.details")}</h3>
         <dl className="detail-meta">
           <div>
-            <dt>Status</dt>
+            <dt>{t("drawer.detail.status")}</dt>
             <dd>{status.text}</dd>
           </div>
           <div>
-            <dt>Last used</dt>
+            <dt>{t("drawer.detail.last_used")}</dt>
             <dd>
               {account.last_used_at
                 ? new Date(account.last_used_at).toLocaleString()
-                : "Never"}
+                : t("drawer.detail.last_used.never")}
             </dd>
           </div>
           <div>
-            <dt>Token expires</dt>
+            <dt>{t("drawer.detail.token_expires")}</dt>
             <dd>{fmtRemaining(account.expires_at - nowMs)}</dd>
           </div>
           <div>
-            <dt>Usage updated</dt>
+            <dt>{t("drawer.detail.usage_updated")}</dt>
             <dd>
               {account.usage_fetched_at
-                ? `${fmtRemaining(nowMs - account.usage_fetched_at)} ago`
-                : "Pending"}
+                ? tf("drawer.detail.usage_updated.ago", {
+                    time: fmtRemaining(nowMs - account.usage_fetched_at),
+                  })
+                : t("drawer.detail.usage_updated.pending")}
             </dd>
           </div>
         </dl>

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
 import { ICON_X } from "./icons";
+import { t } from "../i18n";
 
 export function Drawer({
   open,
@@ -32,7 +33,7 @@ export function Drawer({
         <button
           type="button"
           className="btn-icon"
-          aria-label="Close detail"
+          aria-label={t("drawer.close")}
           onClick={onClose}
         >
           <Icon d={ICON_X} />

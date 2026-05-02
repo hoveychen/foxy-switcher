@@ -2,17 +2,24 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   Account,
+  ActivityEvent,
   AutoSwitchSettings,
+  DaemonMode,
+  Settings,
   ThresholdInput,
   apiClient,
+  getDaemonMode,
+  restartDaemon,
 } from "./api";
 import { AppShell } from "./components/AppShell";
 import { AccountDrawer } from "./components/AccountDrawer";
 import type { Route } from "./components/Sidebar";
+import { notifyForEvents } from "./notify";
 import { DashboardPage } from "./pages/DashboardPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { ActivityPage } from "./pages/ActivityPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { t, tf } from "./i18n";
 
 const ROUTE_KEYS: Route[] = ["dashboard", "accounts", "activity", "settings"];
 
@@ -23,6 +30,8 @@ export default function App() {
   const [now, setNow] = useState<number>(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [daemonOk, setDaemonOk] = useState<boolean>(true);
+  const [daemonMode, setDaemonMode] = useState<DaemonMode | null>(null);
+  const [restarting, setRestarting] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(
     null,
   );
@@ -32,15 +41,60 @@ export default function App() {
     policy: "lru",
   });
   const [addAccountTick, setAddAccountTick] = useState(0);
+  // Dashboard's "Recent activity" lives in App so its 5s refresh shares the
+  // same listAccounts cadence — one daemon round-trip per tick instead of
+  // every page mounting its own poller.
+  const [recentEvents, setRecentEvents] = useState<ActivityEvent[]>([]);
+  // User prefs are loaded once, then driven by Settings page edits. We don't
+  // re-poll: the daemon never mutates these on its own, so the local copy
+  // can't drift unless another window writes — and that's a v0.3 problem.
+  const [settings, setSettings] = useState<Settings>({
+    theme: "system",
+    sidebar_mode: "auto",
+    usage_poll_interval_sec: 60,
+    cooldown_threshold_percent: 95,
+    restore_native_on_quit: true,
+  });
+
+  // Skip applying GET'd auto-switch state while a local write is in flight,
+  // so a refresh tick that races a POST doesn't briefly revert the toggle to
+  // the pre-write server value.
+  const autoSwitchWritingRef = useRef(false);
+  // Highwater mark for desktop notifications. We seed it from the FIRST
+  // refresh that returns events (prevents a flood of stale alerts at app
+  // launch), then only notify for events with id > this value.
+  const lastNotifiedIDRef = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [list, cred] = await Promise.all([
+      const [list, cred, events, auto] = await Promise.all([
         apiClient.listAccounts(),
         apiClient.credStatus(),
+        // Dashboard only renders the top 5; ask for a small slice so the JSON
+        // payload stays tight on every poll.
+        apiClient.listActivity({ limit: 10 }).catch(() => [] as ActivityEvent[]),
+        // Polled so TUI / other client edits to the policy show up here.
+        apiClient.getAutoSwitch().catch(() => null),
       ]);
       setAccounts(list);
       setManagedAccountId(cred.managed_account_id);
+      setRecentEvents(events);
+      if (events.length > 0) {
+        const newest = events[0].id; // events are newest-first
+        if (lastNotifiedIDRef.current === null) {
+          // First poll: seed without firing so backlog doesn't spam.
+          lastNotifiedIDRef.current = newest;
+        } else if (newest > lastNotifiedIDRef.current) {
+          const fresh = events
+            .filter((e) => e.id > (lastNotifiedIDRef.current ?? 0))
+            .reverse(); // chronological order
+          lastNotifiedIDRef.current = newest;
+          void notifyForEvents(fresh);
+        }
+      }
+      if (auto && !autoSwitchWritingRef.current) {
+        setAutoSwitchState(auto);
+      }
       setDaemonOk(true);
       setError(null);
     } catch (e) {
@@ -49,19 +103,62 @@ export default function App() {
     }
   }, []);
 
-  // One-shot: hydrate auto-switch from the daemon. The 5s refresh loop doesn't
-  // re-fetch this — toggles are driver, not driven, so we only resync on explicit
-  // user action (or after a write echoes back the persisted state).
   useEffect(() => {
     apiClient
-      .getAutoSwitch()
-      .then((v) => setAutoSwitchState(v))
+      .getSettings()
+      .then(setSettings)
       .catch(() => {
-        // Daemon not up yet or older daemon — keep optimistic defaults.
+        // Older daemon without /api/settings — keep optimistic defaults.
       });
+    // Daemon mode is fixed at sidecar spawn time, so we only fetch it once.
+    // Drives whether the disconnect banner offers a Restart button (owned)
+    // or just a Retry (attached, since we don't own the lifecycle).
+    getDaemonMode()
+      .then(setDaemonMode)
+      .catch(() => {});
+  }, []);
+
+  const onRestartDaemon = useCallback(async () => {
+    setRestarting(true);
+    try {
+      await restartDaemon();
+      // Give the new sidecar a beat to bind before the next refresh polls.
+      // 400ms covers the typical launch — refresh will retry on its own
+      // 5s tick if this still races.
+      await new Promise((r) => setTimeout(r, 400));
+      await refresh();
+    } catch (e) {
+      setError(tf("app.error.restart_failed", { error: String(e) }));
+    } finally {
+      setRestarting(false);
+    }
+  }, [refresh]);
+
+  // Apply theme to <html data-theme>. CSS tokens.css already keys its
+  // dark-mode block off both `prefers-color-scheme: dark` (system) and
+  // `[data-theme="dark"]` so we only need to set the attribute.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (settings.theme === "system") {
+      root.removeAttribute("data-theme");
+    } else {
+      root.setAttribute("data-theme", settings.theme);
+    }
+  }, [settings.theme]);
+
+  const persistSettings = useCallback(async (patch: Partial<Settings>) => {
+    setSettings((prev) => ({ ...prev, ...patch })); // optimistic
+    try {
+      const echoed = await apiClient.setSettings(patch);
+      setSettings(echoed);
+    } catch (e) {
+      setError(String(e));
+      apiClient.getSettings().then(setSettings).catch(() => {});
+    }
   }, []);
 
   const persistAutoSwitch = useCallback(async (next: AutoSwitchSettings) => {
+    autoSwitchWritingRef.current = true;
     setAutoSwitchState(next); // optimistic
     try {
       const echoed = await apiClient.setAutoSwitch(next);
@@ -70,6 +167,8 @@ export default function App() {
       setError(String(e));
       // Re-pull authoritative state so the toggle visually reverts on failure.
       apiClient.getAutoSwitch().then(setAutoSwitchState).catch(() => {});
+    } finally {
+      autoSwitchWritingRef.current = false;
     }
   }, []);
 
@@ -136,8 +235,8 @@ export default function App() {
   );
   const onDelete = useCallback(
     async (id: number) => {
-      const ok = await ask("Delete this account from the pool?", {
-        title: "Confirm delete",
+      const ok = await ask(t("app.delete_account.prompt"), {
+        title: t("app.delete_account.title"),
         kind: "warning",
       });
       if (!ok) return;
@@ -231,11 +330,45 @@ export default function App() {
         ) : undefined
       }
     >
+      {!daemonOk && (
+        <div className="banner banner-disconnect">
+          <div className="banner-body">
+            <strong>{t("banner.disconnect.title")}</strong>
+            <span className="text-meta">
+              {daemonMode === "attached"
+                ? t("banner.disconnect.attached")
+                : t("banner.disconnect.owned")}
+            </span>
+          </div>
+          <div className="banner-actions">
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => void refresh()}
+              disabled={restarting}
+            >
+              {t("banner.disconnect.retry")}
+            </button>
+            {daemonMode !== "attached" && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={onRestartDaemon}
+                disabled={restarting}
+              >
+                {restarting
+                  ? t("banner.disconnect.restarting")
+                  : t("banner.disconnect.restart")}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {error && (
         <div className="banner err">
           <span>{error}</span>
           <button className="btn btn-ghost" onClick={() => setError(null)}>
-            Dismiss
+            {t("banner.dismiss")}
           </button>
         </div>
       )}
@@ -248,6 +381,8 @@ export default function App() {
           autoSwitch={autoSwitch}
           onAutoSwitchChange={setAutoSwitch}
           onAutoSwitchToggle={onAutoSwitchToggle}
+          recentEvents={recentEvents}
+          stale={!daemonOk}
         />
       )}
       {route === "accounts" && (
@@ -267,6 +402,7 @@ export default function App() {
           onDelete={onDelete}
           onRefresh={refresh}
           onError={setError}
+          stale={!daemonOk}
         />
       )}
       {route === "activity" && (
@@ -279,6 +415,8 @@ export default function App() {
         <SettingsPage
           autoSwitch={autoSwitch}
           onAutoSwitchToggle={onAutoSwitchToggle}
+          settings={settings}
+          onSettingsChange={persistSettings}
         />
       )}
     </AppShell>

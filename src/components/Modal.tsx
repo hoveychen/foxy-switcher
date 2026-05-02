@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
 import { ICON_X } from "./icons";
+import { t } from "../i18n";
 
 export function Modal({
   open,
@@ -55,7 +56,7 @@ export function Modal({
           <button
             type="button"
             className="btn-icon"
-            aria-label="Close"
+            aria-label={t("modal.close")}
             onClick={requestClose}
           >
             <Icon d={ICON_X} />

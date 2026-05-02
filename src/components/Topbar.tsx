@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { t } from "../i18n";
 
 type AutoSwitchValue = {
   enabled: boolean;
@@ -24,9 +25,9 @@ export function Topbar({
       <div className="topbar-left">
         <h1 className="topbar-title">{title}</h1>
         {manual && (
-          <span className="topbar-manual" title="Auto Switch is off">
+          <span className="topbar-manual" title={t("topbar.manual.title")}>
             <span className="dot" />
-            Manual
+            {t("topbar.manual.label")}
           </span>
         )}
         {status && (
@@ -43,12 +44,16 @@ export function Topbar({
             type="button"
             role="switch"
             aria-checked={autoSwitch.enabled}
-            aria-label="Auto Switch"
+            aria-label={t("topbar.auto.aria")}
             className={`topbar-auto ${autoSwitch.enabled ? "on" : "off"}`}
             onClick={onAutoSwitchToggle}
-            title={`Auto Switch: ${autoSwitch.enabled ? "On" : "Off"}`}
+            title={
+              autoSwitch.enabled
+                ? t("topbar.auto.title.on")
+                : t("topbar.auto.title.off")
+            }
           >
-            <span className="topbar-auto-label">Auto</span>
+            <span className="topbar-auto-label">{t("topbar.auto.label")}</span>
             <span className={`toggle ${autoSwitch.enabled ? "on" : "off"}`}>
               <span className="toggle-thumb" aria-hidden />
             </span>

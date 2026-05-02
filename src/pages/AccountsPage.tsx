@@ -12,6 +12,7 @@ import {
   ICON_CHEVRON_RIGHT,
   ICON_SEARCH,
 } from "../components/icons";
+import { t, tf } from "../i18n";
 
 type LoginState =
   | { phase: "idle" }
@@ -23,15 +24,15 @@ type Tone = "ok" | "warn" | "danger" | "muted";
 
 type StatusFilter = "all" | "active" | "paused" | "cooling";
 
-const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
-  { key: "all", label: "All" },
-  { key: "active", label: "Active" },
-  { key: "paused", label: "Paused" },
-  { key: "cooling", label: "In cooldown" },
+const STATUS_FILTERS: Array<{ key: StatusFilter; labelKey: string }> = [
+  { key: "all", labelKey: "accounts.filters.all" },
+  { key: "active", labelKey: "accounts.filters.active" },
+  { key: "paused", labelKey: "accounts.filters.paused" },
+  { key: "cooling", labelKey: "accounts.filters.cooling" },
 ];
 
 function fmtRemaining(ms: number): string {
-  if (ms <= 0) return "expired";
+  if (ms <= 0) return t("accounts.fmt.expired");
   const s = Math.floor(ms / 1000);
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -40,17 +41,17 @@ function fmtRemaining(ms: number): string {
 }
 
 function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
-  if (a.status !== "active") return { text: "paused", tone: "muted" };
+  if (a.status !== "active") return { text: t("accounts.row.status.paused"), tone: "muted" };
   if (a.cooldown_until > nowMs) {
     return {
-      text: `cooldown ${fmtRemaining(a.cooldown_until - nowMs)}`,
+      text: tf("accounts.row.status.cooldown", { time: fmtRemaining(a.cooldown_until - nowMs) }),
       tone: "warn",
     };
   }
   if (a.expires_at - nowMs < 5 * 60 * 1000) {
-    return { text: "refresh due", tone: "warn" };
+    return { text: t("accounts.row.status.refresh_due"), tone: "warn" };
   }
-  return { text: "active", tone: "ok" };
+  return { text: t("accounts.row.status.active"), tone: "ok" };
 }
 
 function isSelectable(a: Account, nowMs: number): boolean {
@@ -115,7 +116,7 @@ function KebabMenu({ items, busy }: { items: KebabItem[]; busy: boolean }) {
       <button
         type="button"
         className="btn-icon kebab-btn"
-        aria-label="Account actions"
+        aria-label={t("accounts.kebab.aria")}
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={busy}
@@ -206,7 +207,7 @@ function AccountRow({
         <div className="row-title">
           <span className="name">{a.name}</span>
           {a.plan && <span className="pill">{a.plan}</span>}
-          {isInUse && <span className="pill active-pill">In use</span>}
+          {isInUse && <span className="pill active-pill">{t("accounts.row.in_use")}</span>}
         </div>
         <div className="row-subtitle">
           {ownerLine}
@@ -220,13 +221,13 @@ function AccountRow({
         busy={busy}
         items={[
           {
-            label: isInUse ? "Already in use" : "Use now",
+            label: isInUse ? t("accounts.kebab.in_use") : t("accounts.kebab.use_now"),
             onClick: onUseNow,
             disabled: isInUse || !isSelectable(a, nowMs),
           },
-          { label: "Refresh now", onClick: onRefresh },
-          { label: paused ? "Resume" : "Pause", onClick: onTogglePause },
-          { label: "Delete", onClick: onDelete, danger: true },
+          { label: t("accounts.kebab.refresh"), onClick: onRefresh },
+          { label: paused ? t("accounts.kebab.resume") : t("accounts.kebab.pause"), onClick: onTogglePause },
+          { label: t("accounts.kebab.delete"), onClick: onDelete, danger: true },
         ]}
       />
       <Icon d={ICON_CHEVRON_RIGHT} className="row-chevron" />
@@ -236,7 +237,7 @@ function AccountRow({
 
 function SkeletonRow() {
   return (
-    <div className="row skeleton" aria-busy="true" aria-label="Adding account">
+    <div className="row skeleton" aria-busy="true" aria-label={t("accounts.skeleton.aria")}>
       <span className="row-status sk-dot" />
       <span className="sk-avatar" aria-hidden />
       <div className="row-main">
@@ -272,6 +273,7 @@ export function AccountsPage({
   onDelete,
   onRefresh,
   onError,
+  stale,
 }: {
   accounts: Account[];
   managedAccountId: number;
@@ -288,6 +290,7 @@ export function AccountsPage({
   onDelete: (id: number) => void;
   onRefresh: () => Promise<void>;
   onError: (msg: string) => void;
+  stale: boolean;
 }) {
   const [loginState, setLoginState] = useState<LoginState>({ phase: "idle" });
   const [pasted, setPasted] = useState("");
@@ -358,8 +361,8 @@ export function AccountsPage({
     if (submitting) return;
     if (pasted.trim().length > 0) {
       const ok = await ask(
-        "You have an unsubmitted code. Discard and close this dialog?",
-        { title: "Discard code?", kind: "warning" },
+        t("accounts.modal.discard_prompt"),
+        { title: t("accounts.modal.discard_title"), kind: "warning" },
       );
       if (!ok) return;
     }
@@ -370,11 +373,11 @@ export function AccountsPage({
   return (
     <>
       <Topbar
-        title="Accounts"
+        title={t("accounts.title")}
         status={
           activeAccount
-            ? { label: `Managing ${activeAccount.name}`, tone: "ok" }
-            : { label: "Idle", tone: "muted" }
+            ? { label: tf("accounts.status.managing", { name: activeAccount.name }), tone: "ok" }
+            : { label: t("accounts.status.idle"), tone: "muted" }
         }
         autoSwitch={autoSwitch}
         onAutoSwitchToggle={onAutoSwitchToggle}
@@ -385,7 +388,7 @@ export function AccountsPage({
             disabled={modalOpen}
           >
             <Icon d={ICON_PLUS} />
-            Add Account
+            {t("accounts.add_button")}
           </button>
         }
       />
@@ -395,13 +398,13 @@ export function AccountsPage({
             <Icon d={ICON_SEARCH} />
             <input
               type="search"
-              placeholder="Search by name, email, or org…"
+              placeholder={t("accounts.search_placeholder")}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              aria-label="Search accounts"
+              aria-label={t("accounts.search_aria")}
             />
           </label>
-          <div className="filter-chips" role="tablist" aria-label="Status">
+          <div className="filter-chips" role="tablist" aria-label={t("accounts.filters.aria")}>
             {STATUS_FILTERS.map((f) => (
               <button
                 key={f.key}
@@ -411,22 +414,35 @@ export function AccountsPage({
                 className={`filter-chip ${statusFilter === f.key ? "active" : ""}`}
                 onClick={() => setStatusFilter(f.key)}
               >
-                {f.label}
+                {t(f.labelKey)}
               </button>
             ))}
           </div>
         </div>
         <div className="section">
           <div className="section-header">
-            <h2 className="section-title">Pool</h2>
+            <h2 className="section-title">
+              {t("accounts.section.pool")}
+              {stale && (
+                <span
+                  className="stale-dot"
+                  role="status"
+                  title={t("accounts.stale.title")}
+                  aria-label={t("accounts.stale.aria")}
+                />
+              )}
+            </h2>
             <span className="section-meta">
               {accounts.length === 0
-                ? "Empty"
+                ? t("accounts.section.empty")
                 : filtered.length === accounts.length
-                  ? `${accounts.length} total${
-                      activeAccount ? " · 1 active" : ""
-                    }`
-                  : `${filtered.length} of ${accounts.length}`}
+                  ? activeAccount
+                    ? tf("accounts.section.total_one_active", { total: accounts.length })
+                    : tf("accounts.section.total", { total: accounts.length })
+                  : tf("accounts.section.filtered", {
+                      shown: filtered.length,
+                      total: accounts.length,
+                    })}
             </span>
           </div>
           {accounts.length === 0 ? (
@@ -435,10 +451,10 @@ export function AccountsPage({
                 <SkeletonRow />
               ) : (
                 <div className="list-empty">
-                  <p>No accounts in the pool yet.</p>
+                  <p>{t("accounts.empty.no_pool")}</p>
                   <button className="btn btn-secondary" onClick={startLogin}>
                     <Icon d={ICON_PLUS} />
-                    Add your first account
+                    {t("accounts.empty.add_first")}
                   </button>
                 </div>
               )}
@@ -446,7 +462,7 @@ export function AccountsPage({
           ) : filtered.length === 0 ? (
             <div className="list">
               <div className="list-empty">
-                <p>No accounts match the current filter.</p>
+                <p>{t("accounts.empty.no_match")}</p>
                 <button
                   className="btn btn-ghost"
                   onClick={() => {
@@ -454,7 +470,7 @@ export function AccountsPage({
                     setStatusFilter("all");
                   }}
                 >
-                  Clear filters
+                  {t("accounts.empty.clear_filters")}
                 </button>
               </div>
             </div>
@@ -484,8 +500,8 @@ export function AccountsPage({
 
         <Modal
           open={modalOpen}
-          title="Add a new account"
-          subtitle="Sign in with the Claude account you want to add to the pool."
+          title={t("accounts.modal.title")}
+          subtitle={t("accounts.modal.subtitle")}
           onClose={() => {
             setPasted("");
             setLoginState({ phase: "idle" });
@@ -498,7 +514,7 @@ export function AccountsPage({
                 onClick={requestCloseModal}
                 disabled={submitting}
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 className="btn btn-primary"
@@ -508,10 +524,10 @@ export function AccountsPage({
                 {submitting ? (
                   <>
                     <span className="spinner" aria-hidden />
-                    Submitting
+                    {t("accounts.modal.submitting")}
                   </>
                 ) : (
-                  "Sign In"
+                  t("accounts.modal.sign_in")
                 )}
               </button>
             </>
@@ -520,12 +536,12 @@ export function AccountsPage({
           <div className="sheet-step">
             <span className="sheet-step-num">1</span>
             <div className="sheet-step-body">
-              Copy the authorization URL and open it in the browser profile you
-              want to sign in with.
+              {t("accounts.modal.step1")}
               <div className="sheet-field">
                 <input
                   className="mono"
                   readOnly
+                  aria-label={t("accounts.modal.url_aria")}
                   value={
                     loginState.phase === "started" ||
                     loginState.phase === "submitting"
@@ -549,12 +565,12 @@ export function AccountsPage({
                   {copied ? (
                     <>
                       <Icon d={ICON_CHECK} />
-                      Copied
+                      {t("accounts.modal.copied")}
                     </>
                   ) : (
                     <>
                       <Icon d={ICON_COPY} />
-                      Copy
+                      {t("accounts.modal.copy")}
                     </>
                   )}
                 </button>
@@ -565,12 +581,14 @@ export function AccountsPage({
           <div className="sheet-step">
             <span className="sheet-step-num">2</span>
             <div className="sheet-step-body">
-              After approving, paste the code shown on the page (format{" "}
-              <code>code#state</code>).
+              {t("accounts.modal.step2.prefix")}
+              <code>code#state</code>
+              {t("accounts.modal.step2.suffix")}
               <div className="sheet-field">
                 <input
                   className="mono"
-                  placeholder="paste code#state here"
+                  placeholder={t("accounts.modal.code_placeholder")}
+                  aria-label={t("accounts.modal.code_aria")}
                   value={pasted}
                   onChange={(e) => setPasted(e.target.value)}
                   disabled={submitting}
@@ -583,12 +601,12 @@ export function AccountsPage({
 
         {loginState.phase === "error" && (
           <div className="banner err">
-            <span>Login failed: {loginState.message}</span>
+            <span>{tf("accounts.error.login_failed", { message: loginState.message })}</span>
             <button
               className="btn btn-ghost"
               onClick={() => setLoginState({ phase: "idle" })}
             >
-              Dismiss
+              {t("banner.dismiss")}
             </button>
           </div>
         )}

@@ -6,14 +6,15 @@ import {
   ICON_GEAR,
   ICON_CHEVRON_RIGHT,
 } from "./icons";
+import { t } from "../i18n";
 
 export type Route = "dashboard" | "accounts" | "activity" | "settings";
 
-const NAV: Array<{ key: Route; label: string; icon: string }> = [
-  { key: "dashboard", label: "Dashboard", icon: ICON_DASHBOARD },
-  { key: "accounts", label: "Accounts", icon: ICON_USERS },
-  { key: "activity", label: "Activity", icon: ICON_PULSE },
-  { key: "settings", label: "Settings", icon: ICON_GEAR },
+const NAV: Array<{ key: Route; labelKey: string; icon: string }> = [
+  { key: "dashboard", labelKey: "nav.dashboard", icon: ICON_DASHBOARD },
+  { key: "accounts", labelKey: "nav.accounts", icon: ICON_USERS },
+  { key: "activity", labelKey: "nav.activity", icon: ICON_PULSE },
+  { key: "settings", labelKey: "nav.settings", icon: ICON_GEAR },
 ];
 
 export function Sidebar({
@@ -32,7 +33,7 @@ export function Sidebar({
   return (
     <nav
       className={`sidebar ${collapsed ? "collapsed" : ""}`}
-      aria-label="Primary"
+      aria-label={t("sidebar.aria")}
     >
       <div className="sidebar-brand">
         <span className="brand-mark sidebar-mark">
@@ -42,39 +43,42 @@ export function Sidebar({
       </div>
 
       <ul className="sidebar-nav">
-        {NAV.map((item) => (
-          <li key={item.key}>
-            <button
-              type="button"
-              className={`sidebar-link ${current === item.key ? "active" : ""}`}
-              onClick={() => onNavigate(item.key)}
-              aria-current={current === item.key ? "page" : undefined}
-              title={collapsed ? item.label : undefined}
-            >
-              <Icon d={item.icon} size={16} />
-              <span>{item.label}</span>
-            </button>
-          </li>
-        ))}
+        {NAV.map((item) => {
+          const label = t(item.labelKey);
+          return (
+            <li key={item.key}>
+              <button
+                type="button"
+                className={`sidebar-link ${current === item.key ? "active" : ""}`}
+                onClick={() => onNavigate(item.key)}
+                aria-current={current === item.key ? "page" : undefined}
+                title={collapsed ? label : undefined}
+              >
+                <Icon d={item.icon} size={16} />
+                <span>{label}</span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
 
       <div className="sidebar-footer">
         <span
           className={`sidebar-health ${daemonOk ? "ok" : "danger"}`}
-          aria-label={daemonOk ? "Daemon healthy" : "Daemon unreachable"}
+          aria-label={daemonOk ? t("sidebar.health.ok") : t("sidebar.health.down")}
         >
           <span className="dot" />
           <span className="sidebar-health-label">
-            {daemonOk ? "Daemon" : "Offline"}
+            {daemonOk ? t("sidebar.health.label.ok") : t("sidebar.health.label.down")}
           </span>
         </span>
         <button
           type="button"
           className="sidebar-collapse-btn"
           onClick={onToggleCollapse}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
           aria-pressed={collapsed}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
         >
           <Icon
             d={ICON_CHEVRON_RIGHT}
