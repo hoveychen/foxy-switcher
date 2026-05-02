@@ -12,10 +12,6 @@
 
 If you keep multiple Claude subscriptions, Foxy Switcher pools them together and quietly hands Claude Code whichever one still has runway. When an account trips a 5-hour or 7-day cap, the next one slides in. When you quit, your original login is restored — exactly as you left it.
 
-<p align="center">
-  <img src="docs/design.png" alt="Foxy Switcher dashboard" />
-</p>
-
 ## Why
 
 If you live in Claude Code, one subscription is rarely enough. You hit a 5-hour cap mid-task, switch to your team plan, hit the 7-day Sonnet cap a day later, and end up running `claude logout` / `claude login` so often you've memorized which account is which.
@@ -38,7 +34,7 @@ Foxy Switcher takes that loop off your hands. Enroll each subscription once. The
 Grab the latest build from the [Releases page](https://github.com/hoveychen/foxy-switcher/releases).
 
 - **macOS** — universal `.dmg` (Intel + Apple Silicon)
-- **Windows / Linux** — the daemon and TUI compile, but credential injection is currently macOS-only.
+- **Windows / Linux** — no prebuilt installer yet; build from source. The daemon, TUI, and credential injector all run cross-platform (Linux/Windows just swap Claude Code's `~/.claude/.credentials.json` directly instead of the macOS keychain).
 
 ### From source
 
@@ -83,4 +79,4 @@ Yes. Run `foxy-switcher` headless and manage the pool from a terminal with `foxy
 
 ## Status
 
-`v0.1.0` — single-user, macOS-first. Other platforms compile the daemon but the credential injector is stubbed; follow [issues](https://github.com/hoveychen/foxy-switcher/issues) for progress.
+`v0.1.0` — single-user, macOS-first. Linux and Windows build from source and the credential injector works there too (it edits `~/.claude/.credentials.json` directly), but the only prebuilt installer right now is the macOS `.dmg`. Follow [issues](https://github.com/hoveychen/foxy-switcher/issues) for progress on packaged Win/Linux releases.

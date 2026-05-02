@@ -79,7 +79,8 @@ Daemon flags (see [server/main.go](../server/main.go)):
 
 ## Credential injection
 
-- **macOS**: the daemon writes Claude Code's existing keychain entry under `com.anthropic.claude-code` (see [server/credinject/darwin.go](../server/credinject/darwin.go)). Other platforms are stubbed in [server/credinject/other.go](../server/credinject/other.go).
+- **macOS**: the daemon writes Claude Code's existing keychain entry under `com.anthropic.claude-code` (see [server/credinject/darwin.go](../server/credinject/darwin.go)).
+- **Linux / Windows**: the daemon replaces `~/.claude/.credentials.json` (mode 0600, atomic via `.tmp` + rename) and clears `primaryApiKey` in `~/.claude.json` so Claude Code falls through to the OAuth path (see [server/credinject/other.go](../server/credinject/other.go)).
 - The user's pre-existing native login is captured before the first inject and restored on shutdown via `Coordinator.RestoreOnShutdown`.
 
 Deep dive on macOS keychain layout: [keychain-credentials-pool.md](keychain-credentials-pool.md).
