@@ -220,6 +220,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         Some("CmdOrCtrl+R"),
     )?;
 
+    #[allow(unused_mut)]
     let mut view_builder = SubmenuBuilder::new(app, "View")
         .item(&nav_dashboard)
         .item(&nav_accounts)
