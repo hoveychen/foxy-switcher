@@ -1,166 +1,86 @@
-# foxy-switcher
+<div align="center">
+  <img src="docs/foxy-icon.png" alt="Foxy Switcher" width="128" />
+  <h1>Foxy Switcher</h1>
+  <p><strong>An account pool for Claude Code. Stop logging in and out.</strong></p>
+  <p>
+    <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-blue" />
+    <img alt="Status" src="https://img.shields.io/badge/status-beta-orange" />
+  </p>
+</div>
 
-> OAuth account pool for Claude Code — pick an account, inject its credentials, rotate when one hits a rate limit.
+---
 
-`foxy-switcher` runs a tiny localhost daemon that holds a pool of Claude subscription accounts and feeds Claude Code a fresh OAuth token from whichever account is healthiest. A Tauri desktop app drives the daemon as a sidecar; a terminal UI is also available for headless setups.
+If you keep multiple Claude subscriptions, Foxy Switcher pools them together and quietly hands Claude Code whichever one still has runway. When an account trips a 5-hour or 7-day cap, the next one slides in. When you quit, your original login is restored — exactly as you left it.
 
-When the daemon exits — gracefully, on Ctrl-C, or because its parent GUI died — it restores your original native Claude Code login so the keychain is never left in a foreign state.
+<p align="center">
+  <img src="docs/design.png" alt="Foxy Switcher dashboard" />
+</p>
 
 ## Why
 
-If you have multiple Claude subscriptions (personal, team, premium) and you're constantly hitting per-account 5-hour or 7-day usage caps in Claude Code, you end up logging in and out by hand. `foxy-switcher` automates that: enroll each account once via OAuth, and the daemon picks the least-recently-used non-cooldown account and injects it into Claude Code's keychain entry.
+If you live in Claude Code, one subscription is rarely enough. You hit a 5-hour cap mid-task, switch to your team plan, hit the 7-day Sonnet cap a day later, and end up running `claude logout` / `claude login` so often you've memorized which account is which.
 
-## Architecture
+Foxy Switcher takes that loop off your hands. Enroll each subscription once. The daemon watches the usage windows, picks the least-recently-used account that still has runway, and quietly swaps Claude Code's credentials in place — no restart, no copy-paste, no terminal dance. When everything cools down, your original login comes back as if nothing happened.
 
-```
-+------------------+   IPC    +-----------------------+
-|  Tauri GUI       | <------> |  Go daemon (sidecar)  |
-|  React + Vite    |   HTTP   |  127.0.0.1:<port>     |
-+------------------+          +----+----+----+--------+
-                                   |    |    |
-                                   v    v    v
-                           +-------+ +--+--+ +------------+
-                           | SQLite| | OS  | | Anthropic  |
-                           | state | | key | | OAuth +    |
-                           | .db   | | chn | | usage API  |
-                           +-------+ +-----+ +------------+
-```
+## Features
 
-- **GUI** ([src/](src/)) — React single-page app, talks to the daemon over plain HTTP.
-- **Daemon** ([server/](server/)) — Go, binds 127.0.0.1 only, no auth (single-user product).
-- **TUI** ([server/tui/](server/tui/)) — `foxy-switcher tui`, reuses the same HTTP API.
-
-### Daemon packages
-
-| Package | Responsibility |
-| --- | --- |
-| [server/store/](server/store/) | SQLite schema for accounts, tokens, cooldowns, usage snapshots |
-| [server/authz/](server/authz/) | PKCE state store for the OAuth login flow |
-| [server/anthropic/](server/anthropic/) | Anthropic OAuth + profile + usage API client |
-| [server/selector/](server/selector/) | Picks the next account — skip disabled / in-cooldown, prefer LRU |
-| [server/refresh/](server/refresh/) | `Scheduler` refreshes expiring tokens; `UsagePoller` pulls 5h / 7d / 7d-Sonnet windows |
-| [server/credinject/](server/credinject/) | Owns Claude Code's keychain entry while running; restores native login on shutdown |
-| [server/httpapi/](server/httpapi/) | The localhost HTTP surface |
-| [server/tui/](server/tui/) | `tui` subcommand — terminal client for the same API |
+- **Pool any number of Claude subscriptions** — personal, team, premium. Add each once via the standard Claude OAuth flow.
+- **Automatic rotation** — least-recently-used policy with a cooldown lane for accounts that just hit a cap.
+- **Live usage at a glance** — see each account's 5-hour, 7-day, and 7-day Sonnet windows side by side, so you know who's about to cool down.
+- **Manual override** — flip Auto Switch off and pick the account yourself with one click.
+- **Safe by default** — Foxy never leaves Claude Code in a foreign state. Clean exit, crash, or force-quit, your original keychain entry comes back.
+- **GUI and TUI** — full desktop app, plus a terminal UI for headless / SSH setups.
 
 ## Install
 
-### From source
+### Download
 
-Prerequisites: Go 1.22+, Node 20+, pnpm, Rust toolchain (for Tauri).
+Grab the latest build from the [Releases page](https://github.com/hoveychen/foxy-switcher/releases).
+
+- **macOS** — universal `.dmg` (Intel + Apple Silicon)
+- **Windows / Linux** — the daemon and TUI compile, but credential injection is currently macOS-only.
+
+### From source
 
 ```sh
 pnpm install
-scripts/build-server.sh host    # builds the Go sidecar for the current host
-pnpm tauri build                # builds the desktop app
+pnpm tauri build
 ```
 
-Platform bundles are produced via:
+Build instructions for sidecar binaries and platform bundles live in [docs/architecture.md](docs/architecture.md#building-from-source).
 
-```sh
-scripts/build-app.sh            # release build for the current host
-scripts/build-app.sh mac        # universal .app + .pkg
-scripts/build-app.sh win        # .exe + .msi (must run on Windows)
-scripts/build-app.sh linux      # AppImage / .deb (must run on Linux)
-scripts/build-app.sh dev        # debug build for the current host
-```
+## Quick start
 
-The Go sidecar uses `modernc.org/sqlite` (pure Go), so cross-compilation works with `CGO_ENABLED=0` — no zig / mingw needed.
+1. **Launch the app** and click **Add account**. Your browser opens the standard Claude login.
+2. **Repeat** for each subscription you want in the pool.
+3. **Open Claude Code** as you normally would. Foxy is already standing in for one of your accounts; when it caps out, the next one takes over.
 
-### Headless / standalone daemon
+Want to take over manually? Toggle **Auto Switch** off and click **Use now** on any account.
 
-The daemon also runs without the GUI:
+## FAQ
 
-```sh
-foxy-switcher --port=0                    # random port, written to ~/.foxy-switcher/port
-foxy-switcher --data-dir=/path/to/dir     # override state location
-foxy-switcher --no-cred-inject            # don't touch the keychain (debug mode)
-foxy-switcher tui                         # terminal UI against a running daemon
-```
+**Does this need my password?**
+No. Foxy Switcher uses Claude's official OAuth login — the same flow `claude login` runs. It never sees your password.
 
-Daemon flags (see [server/main.go](server/main.go)):
+**Will it conflict with my normal Claude Code login?**
+No. On startup Foxy snapshots whatever you had logged in. On exit — clean, crash, or force-quit — your original credentials go back exactly where they were.
 
-| Flag | Description |
-| --- | --- |
-| `--data-dir` | Directory for `state.db` and the port file (default `~/.foxy-switcher`) |
-| `--port` | TCP port on 127.0.0.1; `0` = random |
-| `--parent-pid` | Sidecar safety net — exit when this PID disappears |
-| `--no-cred-inject` | Skip the entire keychain lifecycle (no inject, no reverse-sync, no restore) |
+**What if every account in the pool is exhausted?**
+The daemon detects that and restores your native login, so Claude Code falls back to your normal account instead of getting stuck.
 
-## Usage
+**Is my data sent anywhere?**
+Everything stays on your machine. The daemon only talks to Anthropic's official OAuth and usage APIs — the same endpoints Claude Code uses.
 
-1. Launch the GUI (or the daemon + `foxy-switcher tui`).
-2. Click **Add account** — the daemon opens an OAuth PKCE flow against `console.anthropic.com`. The account name is derived from the profile (email preferred, then full name).
-3. Repeat for each subscription.
-4. Open Claude Code — it will pick up whichever account the daemon currently has injected.
-5. When an account hits a rate limit, mark it as in-cooldown (or the daemon will infer it from the usage poller); on the next reconcile, credinject swaps to the next LRU candidate.
+**Does it work without the GUI?**
+Yes. Run `foxy-switcher` headless and manage the pool from a terminal with `foxy-switcher tui`.
 
-### What gets injected where
+## Documentation
 
-- **macOS**: the daemon writes Claude Code's existing keychain entry under `com.anthropic.claude-code` (see [server/credinject/darwin.go](server/credinject/darwin.go)). Other platforms are stubbed in [server/credinject/other.go](server/credinject/other.go).
-- The user's pre-existing native login is captured before the first inject and restored on shutdown via `Coordinator.RestoreOnShutdown`.
-
-## HTTP API
-
-All endpoints bind to `127.0.0.1:<port>` — read the port from `~/.foxy-switcher/port`. No auth (single-user, loopback only). Defined in [server/httpapi/routes.go](server/httpapi/routes.go).
-
-| Method + Path | Purpose |
-| --- | --- |
-| `GET /api/accounts` | List accounts with status, expiry, cooldown, usage snapshot |
-| `POST /api/accounts/login` | Start a PKCE flow, returns `{ state, authorize_url }` |
-| `POST /api/accounts/callback` | Complete PKCE — body `{ state, code }`, enrolls the account |
-| `DELETE /api/accounts/{id}` | Remove an account |
-| `POST /api/accounts/{id}/disable` | Mark inactive (skipped by the selector) |
-| `POST /api/accounts/{id}/enable` | Re-activate |
-| `POST /api/accounts/{id}/cooldown` | Manually park an account in cooldown |
-| `POST /api/accounts/{id}/refresh` | Refresh access_token + usage snapshot now |
-| `POST /api/accounts/{id}/select` | Promote to front of LRU queue (one-shot) |
-| `GET /api/cred/status` | Current credinject state — which account is injected, last error |
-| `GET /healthz` | Liveness probe |
-
-## Selection strategy
-
-[`selector.Pick`](server/selector/selector.go):
-
-1. Skip accounts with `status != "active"`.
-2. Skip accounts whose `cooldown_until` is still in the future.
-3. From the rest, return the one with the smallest `last_used_at` (LRU).
-
-Returns `ErrNoAvailable` when every account is unusable — the credinject coordinator treats this as the trigger to restore native credentials so Claude Code can fall back to the user's own login.
-
-## Usage tracking
-
-`refresh.UsagePoller` polls Anthropic's usage API and stores three windows per account: `five_hour`, `seven_day`, `seven_day_sonnet`. Each window carries `utilization` on a **0–100 scale** (not 0–1) and `resets_at`. The frontend uses the peak of the three to color-code each row (warn ≥ 75, danger ≥ 90).
-
-## Data layout
-
-```
-~/.foxy-switcher/
-├── state.db          # SQLite — accounts, tokens, usage, last_used_at
-├── port              # current daemon listen port (atomic write)
-└── original-creds*   # snapshot of the user's pre-inject native login
-```
-
-`state.db` is chmod'd to `0600`.
-
-## Project layout
-
-```
-foxy-switcher/
-├── src/                React + TypeScript GUI
-├── src-tauri/          Tauri 2 wrapper, externalBin = the Go sidecar
-├── server/             Go daemon + TUI
-├── scripts/            build-app.sh / build-server.sh / build-pkg.sh
-└── docs/               keychain-credentials-pool.md, release-signing.md
-```
-
-## Security model
-
-- All HTTP listens on `127.0.0.1` only; CORS is wildcard because there's no remote-attacker model and no cookies are used.
-- `state.db` and the port file are mode `0600`.
-- The daemon never persists raw passwords — only OAuth refresh + access tokens.
-- `--no-cred-inject` lets you run alongside a real native login without clobbering it (useful for debugging the API surface in isolation).
+- [Architecture & API](docs/architecture.md) — how the daemon, GUI, and credential injector fit together; flags, HTTP API, data layout.
+- [Keychain mechanics (macOS)](docs/keychain-credentials-pool.md) — research notes on how Claude Code stores credentials and how Foxy swaps them.
+- [Release signing](docs/release-signing.md) — notarization and code-signing setup for the macOS build.
+- [Design system](docs/DESIGN_SYSTEM.md) and [PRD](docs/PRD.md) — for contributors.
 
 ## Status
 
-`v0.1.0` — single-user, macOS-first. Other platforms compile but the keychain backend is stubbed.
+`v0.1.0` — single-user, macOS-first. Other platforms compile the daemon but the credential injector is stubbed; follow [issues](https://github.com/hoveychen/foxy-switcher/issues) for progress.
