@@ -1,0 +1,19 @@
+node_modules/
+out/
+dist/
+
+# Vite cache
+.vite/
+
+# Remotion bundle cache
+.remotion/
+
+# Source raw BGM downloads (regeneratable from FMA URLs in README) — keep public/bgm.mp3
+assets/cand-*.mp3
+assets/_BGM-SAMPLE-MEDLEY.mp3
+assets/bgm.mp3
+assets/bgm-beats.txt
+
+# OS / editor noise
+.DS_Store
+*.tsbuildinfo
