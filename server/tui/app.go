@@ -262,7 +262,7 @@ func (a *App) View() string {
 		tabs := renderSidebarTabs(a.screen, a.width)
 		body = tabs + "\n" + pageView
 	} else {
-		sb := renderSidebar(mode, a.screen, a.pageHeight(), a.daemonStatusLine())
+		sb := renderSidebar(mode, a.screen, a.pageHeight())
 		body = lipgloss.JoinHorizontal(lipgloss.Top, sb, pageView)
 	}
 
@@ -291,25 +291,6 @@ func (a *App) activePageView() string {
 		return a.settings.view()
 	}
 	return ""
-}
-
-// daemonStatusLine renders the bottom-of-sidebar daemon health row. Format:
-// `<dot> <mode>` — `mode` is the same label as in the inner header chip.
-func (a *App) daemonStatusLine() string {
-	mode := a.accounts.daemonMode
-	if mode == "" {
-		mode = "daemon"
-	}
-	var dot string
-	switch {
-	case a.accounts.fatalErr != "":
-		dot = lipgloss.NewStyle().Foreground(tokenDanger).Render("●")
-	case a.accounts.cred.ManagedAccountID != 0 || a.accounts.cred.NativeBackupPresent:
-		dot = lipgloss.NewStyle().Foreground(tokenOK).Render("●")
-	default:
-		dot = lipgloss.NewStyle().Foreground(tokenWarn).Render("○")
-	}
-	return dot + " " + dimStyle.Render(mode)
 }
 
 func (a *App) statusbarState() statusbarState {

@@ -93,12 +93,10 @@ func sidebarItems() []sidebarItem {
 //	 ◐ Accounts
 //	 ◷ Activity
 //	 ⚙ Settings
-//	 ...                 <- vertical fill
-//	 ● daemon owned      <- bottom: daemon health + mode
 //
-// daemonStatusLine is the pre-rendered status row (status dot + label) so this
-// component stays pure-presentational and doesn't depend on the model.
-func renderSidebar(mode sidebarMode, active screen, height int, daemonStatusLine string) string {
+// Daemon health is rendered by the bottom statusbar instead of duplicated
+// here.
+func renderSidebar(mode sidebarMode, active screen, height int) string {
 	if mode == sidebarTabs {
 		return ""
 	}
@@ -106,19 +104,14 @@ func renderSidebar(mode sidebarMode, active screen, height int, daemonStatusLine
 
 	header := renderSidebarHeader(mode, width)
 	nav := renderSidebarNav(mode, active, width)
-	footer := renderSidebarFooter(mode, width, daemonStatusLine)
 
 	headerLines := strings.Count(header, "\n") + 1
 	if header == "" {
 		headerLines = 0
 	}
 	navLines := strings.Count(nav, "\n") + 1
-	footerLines := strings.Count(footer, "\n") + 1
-	if footer == "" {
-		footerLines = 0
-	}
 
-	used := headerLines + 1 + navLines + footerLines // +1 spacer after header
+	used := headerLines + 1 + navLines // +1 spacer after header
 	pad := height - used
 	if pad < 0 {
 		pad = 0
@@ -128,9 +121,6 @@ func renderSidebar(mode sidebarMode, active screen, height int, daemonStatusLine
 	parts := []string{header, rail, nav}
 	for i := 0; i < pad; i++ {
 		parts = append(parts, strings.Repeat(" ", width))
-	}
-	if footer != "" {
-		parts = append(parts, footer)
 	}
 	return strings.Join(parts, "\n")
 }
@@ -210,15 +200,6 @@ func renderSidebarRow(mode sidebarMode, it sidebarItem, isActive bool, width int
 		body = truncateANSI(body, innerWidth)
 	}
 	return rail + bodyStyle.Render(body)
-}
-
-// renderSidebarFooter renders the daemon health line at the bottom of the
-// rail. Hidden in collapsed mode (no room for the label).
-func renderSidebarFooter(mode sidebarMode, width int, daemonStatusLine string) string {
-	if mode != sidebarExpanded || daemonStatusLine == "" {
-		return ""
-	}
-	return padRight(daemonStatusLine, width)
 }
 
 // renderSidebarTabs is the narrow-mode replacement for the left rail — a
