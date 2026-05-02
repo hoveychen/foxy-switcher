@@ -34,6 +34,11 @@ const requestTimeout = 5 * time.Second
 // response contains more (capabilities, feature flags, etc.) but those drift
 // across Claude releases and aren't worth coupling to.
 type Profile struct {
+	// AccountUUID is the stable per-user identifier (`account.uuid` from the
+	// OAuth profile response). Email and full_name can change over time
+	// (alias swap, SSO rebind, primary-email migration), but uuid is
+	// permanent — so this is what the store deduplicates on, not email.
+	AccountUUID      string
 	Email            string
 	FullName         string
 	OrganizationName string
@@ -104,6 +109,7 @@ func FetchProfile(ctx context.Context, accessToken string) (*Profile, error) {
 	}
 
 	return &Profile{
+		AccountUUID:      asString(acct["uuid"]),
 		Email:            asString(acct["email"]),
 		FullName:         asString(acct["full_name"]),
 		OrganizationName: asString(org["name"]),

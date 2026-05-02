@@ -64,6 +64,7 @@ export interface Account {
   // UI doesn't have to re-implement the clock check (and selector / TUI /
   // desktop stay in lock-step on what counts as "expired").
   token_expired: boolean;
+  account_uuid: string;
   organization_uuid: string;
   subscription_type: string;
   expires_at: number;

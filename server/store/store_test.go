@@ -50,6 +50,45 @@ func TestUpsertDistinctEmailsCoexist(t *testing.T) {
 	}
 }
 
+// TestUpsertSameUUIDDifferentEmailMerges covers the bug where re-logging in
+// with the same Anthropic account but a different surfaced email (alias
+// swap, primary-email migration on Anthropic's side) created a duplicate row
+// instead of refreshing the original. The dedup key must be the stable
+// `account.uuid`, not email.
+func TestUpsertSameUUIDDifferentEmailMerges(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	first := &Account{
+		Name: "alice", Email: "alice@old.com", AccountUUID: "uuid-1",
+		AccessToken: "at-1", RefreshToken: "rt-1", ExpiresAt: 1,
+	}
+	if err := st.Upsert(ctx, first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	second := &Account{
+		Name: "alice", Email: "alice@new.com", AccountUUID: "uuid-1",
+		AccessToken: "at-2", RefreshToken: "rt-2", ExpiresAt: 2,
+	}
+	if err := st.Upsert(ctx, second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("expected same id (uuid dedup), got first=%d second=%d", first.ID, second.ID)
+	}
+	list, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 row after uuid-keyed merge, got %d (%+v)", len(list), list)
+	}
+	got := list[0]
+	if got.AccessToken != "at-2" || got.RefreshToken != "rt-2" || got.Email != "alice@new.com" {
+		t.Fatalf("merge did not refresh tokens/email: %+v", got)
+	}
+}
+
 // TestUpsertSameEmailUpdatesTokens is the dedup half: re-logging in with the
 // same email refreshes the row in place rather than creating a duplicate.
 func TestUpsertSameEmailUpdatesTokens(t *testing.T) {

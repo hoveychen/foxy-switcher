@@ -262,6 +262,7 @@
   "drawer.detail.usage_updated": "Usage updated",
   "drawer.detail.usage_updated.pending": "Pending",
   "drawer.detail.usage_updated.ago": "{time} ago",
+  "drawer.detail.account_uuid": "Account UUID",
   "drawer.status.paused": "paused",
   "drawer.status.token_expired": "token expired",
   "drawer.status.cooling": "cooling — resets in {time}",

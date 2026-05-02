@@ -16,11 +16,14 @@ mod sidecar;
 use std::sync::{Arc, Mutex};
 
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, SubmenuBuilder},
     tray::TrayIconBuilder,
-    AppHandle, Manager, RunEvent, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, WindowEvent, Wry,
 };
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
+use tauri_plugin_opener::OpenerExt;
+
+const REPO_URL: &str = "https://github.com/hoveychen/foxy-switcher";
 
 #[derive(Default)]
 struct ServerState {
@@ -103,6 +106,242 @@ fn data_dir_path() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+// build_app_menu wires up the native menubar. Items with stable string IDs
+// are dispatched in handle_menu_event; predefined items (Quit, Cut, Minimize,
+// etc.) are handled by the OS so we don't need IDs for them.
+//
+// The Restart Daemon item is enabled only when this Tauri instance owns the
+// sidecar — the daemon mode is fixed at spawn time, so a setup-time check is
+// sufficient. Attached daemons keep the disconnect-banner Retry path instead.
+fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let app_name = app.package_info().name.clone();
+
+    let owned = app
+        .try_state::<Arc<sidecar::ChildHandle>>()
+        .map(|h| h.0.lock().unwrap().is_some())
+        .unwrap_or(false);
+
+    let about_label = format!("About {app_name}");
+    let about = PredefinedMenuItem::about(app, Some(&about_label), None)?;
+    let settings = MenuItem::with_id(
+        app,
+        "menu.settings",
+        "Settings…",
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
+
+    let app_submenu = SubmenuBuilder::new(app, &app_name)
+        .item(&about)
+        .separator()
+        .item(&settings)
+        .separator()
+        .item(&PredefinedMenuItem::services(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::hide(app, None)?)
+        .item(&PredefinedMenuItem::hide_others(app, None)?)
+        .item(&PredefinedMenuItem::show_all(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::quit(app, None)?)
+        .build()?;
+
+    let add_account = MenuItem::with_id(
+        app,
+        "menu.add_account",
+        "Add Account…",
+        true,
+        Some("CmdOrCtrl+N"),
+    )?;
+    let reveal = MenuItem::with_id(
+        app,
+        "menu.reveal_data_dir",
+        "Reveal Data Directory",
+        true,
+        None::<&str>,
+    )?;
+    let restart = MenuItem::with_id(
+        app,
+        "menu.restart_daemon",
+        "Restart Daemon",
+        owned,
+        None::<&str>,
+    )?;
+    let file_submenu = SubmenuBuilder::new(app, "File")
+        .item(&add_account)
+        .separator()
+        .item(&reveal)
+        .item(&restart)
+        .build()?;
+
+    let edit_submenu = SubmenuBuilder::new(app, "Edit")
+        .item(&PredefinedMenuItem::undo(app, None)?)
+        .item(&PredefinedMenuItem::redo(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::cut(app, None)?)
+        .item(&PredefinedMenuItem::copy(app, None)?)
+        .item(&PredefinedMenuItem::paste(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::select_all(app, None)?)
+        .build()?;
+
+    let nav_dashboard = MenuItem::with_id(
+        app,
+        "menu.nav.dashboard",
+        "Dashboard",
+        true,
+        Some("CmdOrCtrl+1"),
+    )?;
+    let nav_accounts = MenuItem::with_id(
+        app,
+        "menu.nav.accounts",
+        "Accounts",
+        true,
+        Some("CmdOrCtrl+2"),
+    )?;
+    let nav_activity = MenuItem::with_id(
+        app,
+        "menu.nav.activity",
+        "Activity",
+        true,
+        Some("CmdOrCtrl+3"),
+    )?;
+    let nav_settings = MenuItem::with_id(
+        app,
+        "menu.nav.settings",
+        "Settings",
+        true,
+        Some("CmdOrCtrl+4"),
+    )?;
+    let refresh = MenuItem::with_id(
+        app,
+        "menu.refresh",
+        "Refresh Data",
+        true,
+        Some("CmdOrCtrl+R"),
+    )?;
+
+    let mut view_builder = SubmenuBuilder::new(app, "View")
+        .item(&nav_dashboard)
+        .item(&nav_accounts)
+        .item(&nav_activity)
+        .item(&nav_settings)
+        .separator()
+        .item(&refresh);
+
+    #[cfg(debug_assertions)]
+    let devtools = MenuItem::with_id(
+        app,
+        "menu.devtools",
+        "Toggle Developer Tools",
+        true,
+        Some("CmdOrCtrl+Alt+I"),
+    )?;
+    #[cfg(debug_assertions)]
+    {
+        view_builder = view_builder.separator().item(&devtools);
+    }
+    let view_submenu = view_builder.build()?;
+
+    let window_submenu = SubmenuBuilder::new(app, "Window")
+        .item(&PredefinedMenuItem::minimize(app, None)?)
+        .item(&PredefinedMenuItem::maximize(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::close_window(app, None)?)
+        .build()?;
+
+    let docs = MenuItem::with_id(
+        app,
+        "menu.help.docs",
+        "Documentation",
+        true,
+        None::<&str>,
+    )?;
+    let issue = MenuItem::with_id(
+        app,
+        "menu.help.issue",
+        "Report Issue",
+        true,
+        None::<&str>,
+    )?;
+    let help_submenu = SubmenuBuilder::new(app, "Help")
+        .item(&docs)
+        .item(&issue)
+        .build()?;
+
+    let menu = Menu::with_items(
+        app,
+        &[
+            &app_submenu,
+            &file_submenu,
+            &edit_submenu,
+            &view_submenu,
+            &window_submenu,
+            &help_submenu,
+        ],
+    )?;
+    Ok(menu)
+}
+
+// handle_menu_event routes ID'd items. Navigation/refresh/add-account are
+// emitted to the frontend via Tauri events so App.tsx owns the actual page
+// state — same pattern the in-app keyboard shortcuts already use, just
+// driven from the OS menu instead of webview keydown.
+fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
+    match event.id.as_ref() {
+        "menu.settings" => emit_navigate(app, "settings"),
+        "menu.nav.dashboard" => emit_navigate(app, "dashboard"),
+        "menu.nav.accounts" => emit_navigate(app, "accounts"),
+        "menu.nav.activity" => emit_navigate(app, "activity"),
+        "menu.nav.settings" => emit_navigate(app, "settings"),
+        "menu.add_account" => {
+            show_main(app);
+            let _ = app.emit("menu:add-account", ());
+        }
+        "menu.refresh" => {
+            let _ = app.emit("menu:refresh", ());
+        }
+        "menu.reveal_data_dir" => {
+            let _ = reveal_data_dir(app.clone());
+        }
+        "menu.restart_daemon" => {
+            let _ = sidecar::restart(app);
+        }
+        #[cfg(debug_assertions)]
+        "menu.devtools" => {
+            if let Some(w) = app.get_webview_window("main") {
+                if w.is_devtools_open() {
+                    w.close_devtools();
+                } else {
+                    w.open_devtools();
+                }
+            }
+        }
+        "menu.help.docs" => {
+            let _ = app
+                .opener()
+                .open_url(format!("{REPO_URL}#readme"), None::<&str>);
+        }
+        "menu.help.issue" => {
+            let _ = app
+                .opener()
+                .open_url(format!("{REPO_URL}/issues"), None::<&str>);
+        }
+        _ => {}
+    }
+}
+
+fn emit_navigate(app: &AppHandle, page: &str) {
+    show_main(app);
+    let _ = app.emit("menu:navigate", page);
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 // Hook SIGTERM/SIGINT (Ctrl-C on Windows) into the same exit path the tray
 // "Quit" menu uses. Without this, a `kill <pid>` from the parent shell skips
 // `RunEvent::ExitRequested`, leaks the sidecar, and prints AppKit teardown
@@ -161,6 +400,8 @@ pub fn run() {
             Some(vec!["--start-minimized"]),
         ))
         .manage(ServerState::default())
+        .menu(|h| build_app_menu(h))
+        .on_menu_event(handle_menu_event)
         .invoke_handler(tauri::generate_handler![
             get_server_port,
             get_daemon_mode,

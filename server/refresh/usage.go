@@ -120,10 +120,11 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		// always gets a non-empty value at login. We only run this when
 		// missing so the per-tick cost stays one HTTP call per account in
 		// steady state.
-		if a.Plan == "" {
+		if a.Plan == "" || a.AccountUUID == "" {
 			if prof, err := anthropic.FetchProfile(ctx, a.AccessToken); err != nil {
 				p.logger.Printf("[usage] account %d profile backfill: %v", a.ID, err)
 			} else if err := p.st.SetProfile(ctx, a.ID,
+				prof.AccountUUID,
 				prof.Email, prof.FullName, prof.OrganizationName,
 				prof.Plan, prof.SubscriptionType,
 			); err != nil {

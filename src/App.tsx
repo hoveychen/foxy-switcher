@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   Account,
   ActivityEvent,
@@ -250,11 +251,6 @@ export default function App() {
     void persistAutoSwitch({ ...autoSwitch, enabled: !autoSwitch.enabled });
   }, [autoSwitch, persistAutoSwitch]);
 
-  const triggerAddAccount = useCallback(() => {
-    setRoute("accounts");
-    setAddAccountTick((t) => t + 1);
-  }, []);
-
   const selectedAccount =
     selectedAccountId !== null
       ? accounts.find((a) => a.id === selectedAccountId) ?? null
@@ -265,48 +261,32 @@ export default function App() {
     setSelectedAccountId(null);
   }, []);
 
-  // Global keyboard shortcuts (PRD §4.3)
+  // Native menu (lib.rs build_app_menu) emits these events. They duplicate
+  // the in-webview keyboard shortcuts below — the OS menu's accelerator
+  // intercepts the keystroke before it reaches the webview, so the menu
+  // path is what actually fires when an accelerator is bound.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
-      const target = e.target as HTMLElement | null;
-      // Allow native Cmd-A/C/V/X/Z inside text inputs.
-      if (
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable)
-      ) {
-        if (!(e.key === "," || (e.key >= "1" && e.key <= "4"))) return;
-      }
-      switch (e.key) {
-        case "n":
-        case "N":
-          e.preventDefault();
-          triggerAddAccount();
-          return;
-        case ",":
-          e.preventDefault();
-          setRoute("settings");
+    const subs: Promise<UnlistenFn>[] = [
+      listen<string>("menu:navigate", (e) => {
+        const r = e.payload as Route;
+        if (ROUTE_KEYS.includes(r)) {
+          setRoute(r);
           setSelectedAccountId(null);
-          return;
-        case "r":
-        case "R":
-          e.preventDefault();
-          refresh();
-          return;
-      }
-      if (e.key >= "1" && e.key <= "4") {
-        e.preventDefault();
-        const idx = Number(e.key) - 1;
-        setRoute(ROUTE_KEYS[idx]);
+        }
+      }),
+      listen<void>("menu:add-account", () => {
+        setRoute("accounts");
         setSelectedAccountId(null);
-      }
+        setAddAccountTick((t) => t + 1);
+      }),
+      listen<void>("menu:refresh", () => {
+        void refresh();
+      }),
+    ];
+    return () => {
+      subs.forEach((p) => void p.then((u) => u()));
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [triggerAddAccount, refresh]);
+  }, [refresh]);
 
   return (
     <AppShell

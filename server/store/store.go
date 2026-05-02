@@ -34,6 +34,11 @@ type Account struct {
 	UpdatedAt        int64
 
 	// Profile fields populated once at login from /api/oauth/profile.
+	// AccountUUID is the stable per-user id and the dedup key used by Upsert.
+	// Email / FullName can change (alias swap, SSO rebind, primary-email
+	// migration on Anthropic's side); uuid does not. Older rows that predate
+	// this column carry "" until the next UsagePoller tick fills them in.
+	AccountUUID      string
 	Email            string
 	FullName         string
 	OrganizationName string
@@ -105,15 +110,24 @@ CREATE TABLE IF NOT EXISTS accounts (
   usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
   five_hour_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
-  seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95
+  seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
+  account_uuid               TEXT    NOT NULL DEFAULT ''
 );
 `
 
+// indexSchema's account_uuid_uniq is the canonical dedup key — email can
+// shift over time (alias swap, SSO rebind), but Anthropic's account.uuid is
+// stable, so two re-logins of the same user collapse onto one row. The
+// pre-existing email_uniq is kept as a soft guardrail for rows that don't
+// yet have an account_uuid (older installs before the next UsagePoller tick
+// fills it in).
 const indexSchema = `
 CREATE INDEX IF NOT EXISTS accounts_status_lru
   ON accounts (status, last_used_at);
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_uniq
   ON accounts (email) WHERE email != '';
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_uuid_uniq
+  ON accounts (account_uuid) WHERE account_uuid != '';
 `
 
 // kvSchema holds simple daemon-wide key/value settings (auto-switch toggle,
@@ -167,6 +181,9 @@ var columnMigrations = []string{
 	`ALTER TABLE accounts ADD COLUMN five_hour_threshold REAL NOT NULL DEFAULT 95`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_threshold REAL NOT NULL DEFAULT 95`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_sonnet_threshold REAL NOT NULL DEFAULT 95`,
+	// account_uuid is the stable per-user id from /api/oauth/profile. Older
+	// rows backfill this on the next UsagePoller tick (see refresh.UsagePoller).
+	`ALTER TABLE accounts ADD COLUMN account_uuid TEXT NOT NULL DEFAULT ''`,
 }
 
 type Store struct {
@@ -277,7 +294,8 @@ CREATE TABLE accounts_new (
   usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
   five_hour_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
-  seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95
+  seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
+  account_uuid               TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
   id, name, access_token, refresh_token, expires_at, scopes,
@@ -288,7 +306,8 @@ INSERT INTO accounts_new SELECT
   seven_day_util, seven_day_resets_at,
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
-  five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold FROM accounts;
+  five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
+  account_uuid FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -346,7 +365,8 @@ CREATE TABLE accounts_new (
   usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
   five_hour_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
-  seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95
+  seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
+  account_uuid               TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
   id, name, access_token, refresh_token, expires_at, scopes,
@@ -357,7 +377,8 @@ INSERT INTO accounts_new SELECT
   seven_day_util, seven_day_resets_at,
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
-  five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold FROM accounts;
+  five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
+  account_uuid FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -377,14 +398,21 @@ func (s *Store) Close() error { return s.db.Close() }
 // before issuing the network exchange).
 func (s *Store) DB() *sql.DB { return s.db }
 
-// Upsert inserts a new account or, when an account with the same non-empty
-// email already exists, replaces its tokens / metadata. The id of the
-// resulting row is set on a.ID.
+// Upsert inserts a new account or, when one already represents the same
+// underlying Anthropic user, replaces its tokens / metadata in place. The id
+// of the resulting row is set on a.ID.
 //
-// Dedup is keyed on email because the OAuth profile API surfaces email
-// reliably (organization_uuid is not exposed). Empty emails fall through to
-// a plain INSERT — the partial unique index `accounts_email_uniq` excludes
-// the empty case, so multiple email-less accounts coexist as distinct rows.
+// Dedup precedence:
+//  1. account_uuid (the stable id from /api/oauth/profile). This is the
+//     canonical key — Anthropic's primary email can shift over time (alias
+//     swap, SSO rebind, account migration), but uuid does not.
+//  2. email — only when the existing row has no account_uuid yet (legacy
+//     rows from before this column existed). This is the transition path:
+//     once UsagePoller's profile-backfill writes account_uuid into older
+//     rows, future Upserts hit case 1 cleanly.
+//
+// Both keys are skipped when their value is empty, so accounts that haven't
+// surfaced either field coexist as distinct rows.
 func (s *Store) Upsert(ctx context.Context, a *Account) error {
 	now := time.Now().UnixMilli()
 	if a.CreatedAt == 0 {
@@ -395,36 +423,73 @@ func (s *Store) Upsert(ctx context.Context, a *Account) error {
 		a.LastUsedAt = now
 	}
 
-	const q = `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var existingID int64
+	err = tx.QueryRowContext(ctx, `
+SELECT id FROM accounts
+ WHERE (? != '' AND account_uuid = ?)
+    OR (? != '' AND account_uuid = '' AND email = ?)
+ ORDER BY id
+ LIMIT 1`,
+		a.AccountUUID, a.AccountUUID,
+		a.Email, a.Email,
+	).Scan(&existingID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	if existingID > 0 {
+		a.ID = existingID
+		if _, err := tx.ExecContext(ctx, `
+UPDATE accounts SET
+  name = ?,
+  access_token = ?, refresh_token = ?, expires_at = ?,
+  scopes = ?, subscription_type = ?, organization_uuid = ?,
+  email = ?, full_name = ?, organization_name = ?, plan = ?,
+  account_uuid = ?,
+  status = 'active',
+  updated_at = ?
+WHERE id = ?`,
+			a.Name,
+			a.AccessToken, a.RefreshToken, a.ExpiresAt,
+			a.Scopes, a.SubscriptionType, a.OrganizationUUID,
+			a.Email, a.FullName, a.OrganizationName, a.Plan,
+			a.AccountUUID,
+			a.UpdatedAt, existingID,
+		); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+	res, err := tx.ExecContext(ctx, `
 INSERT INTO accounts
   (name, access_token, refresh_token, expires_at, scopes, subscription_type,
    organization_uuid, status, last_used_at,
    created_at, updated_at,
-   email, full_name, organization_name, plan)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(email) WHERE email != '' DO UPDATE SET
-  name = excluded.name,
-  access_token = excluded.access_token,
-  refresh_token = excluded.refresh_token,
-  expires_at = excluded.expires_at,
-  scopes = excluded.scopes,
-  subscription_type = excluded.subscription_type,
-  organization_uuid = excluded.organization_uuid,
-  full_name = excluded.full_name,
-  organization_name = excluded.organization_name,
-  plan = excluded.plan,
-  status = 'active',
-  updated_at = excluded.updated_at
-RETURNING id`
-
-	row := s.db.QueryRowContext(ctx, q,
+   email, full_name, organization_name, plan, account_uuid)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
 		a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 		ifEmpty(a.Status, "active"), a.LastUsedAt,
 		a.CreatedAt, a.UpdatedAt,
 		a.Email, a.FullName, a.OrganizationName, a.Plan,
+		a.AccountUUID,
 	)
-	return row.Scan(&a.ID)
+	if err != nil {
+		return err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+	a.ID = id
+	return tx.Commit()
 }
 
 // UpdateTokens rewrites the access/refresh/expires columns for one account,
@@ -441,16 +506,36 @@ UPDATE accounts
 // SetProfile rewrites the columns populated by /api/oauth/profile. Called
 // at login time and as a one-shot backfill for accounts that predate the
 // profile-fetching feature.
+//
+// account_uuid is only written when (a) the existing row has none, (b) the
+// caller actually has a uuid, and (c) no other row has already claimed
+// that uuid. Condition (c) is the legacy-duplicate guard: when two rows
+// historically represent the same Anthropic user (e.g. an email-shifted
+// re-login created a second row before this column existed), only the
+// first poll wins; the loser keeps account_uuid='' so the partial unique
+// index doesn't trip. The user resolves the duplicate by deleting one row
+// in the UI.
 func (s *Store) SetProfile(ctx context.Context, id int64,
-	email, fullName, organizationName, plan, subscriptionType string,
+	accountUUID, email, fullName, organizationName, plan, subscriptionType string,
 ) error {
 	const q = `
 UPDATE accounts
    SET email = ?, full_name = ?, organization_name = ?, plan = ?,
-       subscription_type = ?, updated_at = ?
+       subscription_type = ?,
+       account_uuid = CASE
+         WHEN account_uuid = ''
+              AND ? != ''
+              AND NOT EXISTS (
+                SELECT 1 FROM accounts WHERE account_uuid = ? AND id != ?
+              )
+           THEN ?
+         ELSE account_uuid
+       END,
+       updated_at = ?
  WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, q,
 		email, fullName, organizationName, plan, subscriptionType,
+		accountUUID, accountUUID, id, accountUUID,
 		time.Now().UnixMilli(), id)
 	return err
 }
@@ -606,7 +691,8 @@ five_hour_util, five_hour_resets_at,
 seven_day_util, seven_day_resets_at,
 seven_day_sonnet_util, seven_day_sonnet_resets_at,
 usage_fetched_at,
-five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold`
+five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
+account_uuid`
 
 // List returns every row ordered by id (stable insertion order).
 func (s *Store) List(ctx context.Context) ([]Account, error) {
@@ -652,6 +738,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
+			&a.AccountUUID,
 		); err != nil {
 			return nil, err
 		}

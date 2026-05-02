@@ -108,7 +108,11 @@ type accountView struct {
 	Scopes           string `json:"scopes"`
 	SubscriptionType string `json:"subscription_type"`
 	OrganizationUUID string `json:"organization_uuid"`
-	Status           string `json:"status"`
+	// AccountUUID is exposed for debug-surface use (e.g. spotting two local
+	// rows that map to the same Anthropic user). Empty for older rows that
+	// haven't been backfilled yet by the next UsagePoller tick.
+	AccountUUID string `json:"account_uuid"`
+	Status      string `json:"status"`
 	// TokenExpired is a derived flag (ExpiresAt <= now). Persisted state is
 	// just ExpiresAt; this exists so UIs don't all need the same clock-math
 	// to render the "can't be used" state. The selector treats this as a
@@ -139,7 +143,9 @@ func toView(a store.Account) accountView {
 	view := accountView{
 		ID: a.ID, Name: a.Name, ExpiresAt: a.ExpiresAt, Scopes: a.Scopes,
 		SubscriptionType: a.SubscriptionType,
-		OrganizationUUID: a.OrganizationUUID, Status: a.Status,
+		OrganizationUUID: a.OrganizationUUID,
+		AccountUUID:      a.AccountUUID,
+		Status:           a.Status,
 		TokenExpired: a.TokenExpired(time.Now()),
 		LastUsedAt:   a.LastUsedAt,
 		CreatedAt:    a.CreatedAt, UpdatedAt: a.UpdatedAt,
@@ -241,6 +247,7 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		RefreshToken:     tr.RefreshToken,
 		ExpiresAt:        expiresAt,
 		Scopes:           tr.Scope,
+		AccountUUID:      prof.AccountUUID,
 		Email:            prof.Email,
 		FullName:         prof.FullName,
 		OrganizationName: prof.OrganizationName,

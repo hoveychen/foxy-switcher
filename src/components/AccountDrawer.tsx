@@ -308,6 +308,12 @@ export function AccountDrawer({
                 : t("drawer.detail.usage_updated.pending")}
             </dd>
           </div>
+          {account.account_uuid && (
+            <div>
+              <dt>{t("drawer.detail.account_uuid")}</dt>
+              <dd className="detail-uuid">{account.account_uuid}</dd>
+            </div>
+          )}
         </dl>
       </div>
     </Drawer>

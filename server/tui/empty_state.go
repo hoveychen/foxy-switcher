@@ -6,36 +6,26 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// renderEmptyState produces the centered fox mascot + headline + CTA used when
+// renderEmptyState produces the centered foxy logo + headline + CTA used when
 // the account pool is empty. innerW is the cell width to center within.
 //
-//	 ╱\___/╲
-//	(  o o  )
-//	 \\  v //
-//	  ─────
-//	 no accounts yet
-//	 press [a] to add your first
+// The mascot is the embedded foxy-icon.png rendered as 24×12 truecolor ANSI
+// half-blocks (see comp_logo.go). On terminals without 24-bit color the
+// glyphs still render but lose the brand colors.
 func renderEmptyState(innerW int) string {
 	if innerW < 24 {
 		innerW = 24
 	}
 
-	mascotStyle := lipgloss.NewStyle().Foreground(accentBrand).Bold(true)
 	headline := lipgloss.NewStyle().Foreground(textPrimary).Bold(true).Render("no accounts in the pool yet")
 	subline := dimStyle.Render("press ") +
 		keyChip("a", "add") +
 		dimStyle.Render(" to add your first")
 
-	mascot := []string{
-		` ╱\___/╲`,
-		`(  o o  )`,
-		` \\  v //`,
-		`  ─────`,
-	}
-
 	var sb strings.Builder
-	for _, ln := range mascot {
-		sb.WriteString(centerLine(mascotStyle.Render(ln), innerW))
+	logo := renderFoxLogo(24, 12)
+	for _, ln := range strings.Split(logo, "\n") {
+		sb.WriteString(centerLine(ln, innerW))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")

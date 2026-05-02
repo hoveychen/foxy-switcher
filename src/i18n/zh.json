@@ -262,6 +262,7 @@
   "drawer.detail.usage_updated": "用量更新于",
   "drawer.detail.usage_updated.pending": "等待中",
   "drawer.detail.usage_updated.ago": "{time} 前",
+  "drawer.detail.account_uuid": "账号 UUID",
   "drawer.status.paused": "已暂停",
   "drawer.status.token_expired": "Token 已过期",
   "drawer.status.cooling": "冷却中 — {time} 后重置",
