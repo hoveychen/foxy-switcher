@@ -42,7 +42,7 @@ func newApp(c *Client, dataDir, daemonMode string) *App {
 	inner := newModel(c)
 	inner.daemonMode = daemonMode
 
-	return &App{
+	app := &App{
 		dataDir:   dataDir,
 		screen:    screenDashboard,
 		accounts:  inner,
@@ -50,6 +50,8 @@ func newApp(c *Client, dataDir, daemonMode string) *App {
 		activity:  newActivityPage(),
 		settings:  newSettingsPage(),
 	}
+	app.settings.setDaemonMode(daemonMode)
+	return app
 }
 
 func (a *App) Init() tea.Cmd {
@@ -59,6 +61,7 @@ func (a *App) Init() tea.Cmd {
 		dashboardTickCmd(),
 		activityLoadCmd(a.accounts.client, a.activity.filter),
 		activityTickCmd(),
+		settingsLoadCmd(a.accounts.client),
 	)
 }
 
@@ -72,6 +75,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case activityLoadedMsg, activityTickMsg:
 		cmd, _ := a.activity.Update(msg, a.accounts.client)
 		return a, cmd
+	case settingsLoadedMsg, settingsSavedMsg:
+		cmd, _ := a.settings.Update(msg, a.accounts.client)
+		return a, cmd
+	case themeChangedMsg:
+		_ = saveTUIConfig(a.dataDir, tuiConfig{Theme: msg.name})
+		return a, nil
 	case accountsMsg:
 		// Forward to the inner Accounts model so its existing handler runs,
 		// then mirror the fresh slice into the Dashboard / Activity pages so
@@ -121,6 +130,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if a.screen == screenActivity {
 			cmd, _ := a.activity.Update(msg, a.accounts.client)
+			return a, cmd
+		}
+		if a.screen == screenSettings {
+			cmd, _ := a.settings.Update(msg, a.accounts.client)
 			return a, cmd
 		}
 		return a, nil

@@ -239,6 +239,74 @@ type ActivityFilter struct {
 	Severity string   // "" / "info" / "warn" / "error"
 }
 
+// Settings mirrors store.Settings. Numeric fields are clamped server-side, so
+// callers can submit raw values and rely on the response to echo the canonical
+// form (the TUI snaps its row state to the response).
+type Settings struct {
+	Theme                    string  `json:"theme"`
+	SidebarMode              string  `json:"sidebar_mode"`
+	UsagePollIntervalSec     int     `json:"usage_poll_interval_sec"`
+	CooldownThresholdPercent float64 `json:"cooldown_threshold_percent"`
+	RestoreNativeOnQuit      bool    `json:"restore_native_on_quit"`
+}
+
+func (c *Client) GetSettings(ctx context.Context) (Settings, error) {
+	var out Settings
+	if err := c.do(ctx, http.MethodGet, "/api/settings", nil, &out); err != nil {
+		return Settings{}, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetSettings(ctx context.Context, s Settings) (Settings, error) {
+	var out Settings
+	if err := c.do(ctx, http.MethodPut, "/api/settings", s, &out); err != nil {
+		return Settings{}, err
+	}
+	return out, nil
+}
+
+// AutoSwitch mirrors httpapi.autoSwitchView. Policies the daemon honors are
+// "lru" / "lowest" / "rr" — clients that submit anything else get a 400.
+type AutoSwitch struct {
+	Enabled bool   `json:"enabled"`
+	Policy  string `json:"policy"`
+}
+
+func (c *Client) GetAutoSwitch(ctx context.Context) (AutoSwitch, error) {
+	var out AutoSwitch
+	if err := c.do(ctx, http.MethodGet, "/api/auto-switch", nil, &out); err != nil {
+		return AutoSwitch{}, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetAutoSwitch(ctx context.Context, v AutoSwitch) (AutoSwitch, error) {
+	var out AutoSwitch
+	if err := c.do(ctx, http.MethodPost, "/api/auto-switch", v, &out); err != nil {
+		return AutoSwitch{}, err
+	}
+	return out, nil
+}
+
+// ResetData wipes the daemon's persistent state and triggers a process exit.
+// The next poll will fail with connection refused; the TUI surfaces that as a
+// regular error rather than try to recover (the user expects a clean restart).
+func (c *Client) ResetData(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/api/reset", nil, nil)
+}
+
+// SetThresholds writes per-account utilization thresholds (0–100). Used by the
+// Accounts page's stepper. Values outside the range are clamped server-side.
+func (c *Client) SetThresholds(ctx context.Context, id int64, fiveHour, sevenDay, sevenDaySonnet float64) error {
+	body := map[string]float64{
+		"five_hour":        fiveHour,
+		"seven_day":        sevenDay,
+		"seven_day_sonnet": sevenDaySonnet,
+	}
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/accounts/%d/thresholds", id), body, nil)
+}
+
 func (c *Client) ListActivity(ctx context.Context, f ActivityFilter) ([]ActivityEvent, error) {
 	q := url.Values{}
 	if f.Limit > 0 {
