@@ -247,7 +247,7 @@ func runTUI(args []string) {
 
 	if pingDaemon(dir) {
 		// Already serving — attach as a plain HTTP client.
-		if err := tui.Run(dir); err != nil {
+		if err := tui.Run(dir, "attached"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -290,7 +290,7 @@ func runTUI(args []string) {
 		os.Exit(1)
 	}
 
-	tuiErr := tui.Run(dir)
+	tuiErr := tui.Run(dir, "embedded")
 	cancel()
 	<-daemonErr // wait for daemon cleanup (cred restore, store close, port file remove)
 	if tuiErr != nil {

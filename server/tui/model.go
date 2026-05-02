@@ -26,17 +26,21 @@ const (
 	modeError
 )
 
-// Run is the package entry point invoked by `foxy-switcher tui`.
+// Run is the package entry point invoked by `foxy-switcher tui`. mode is a
+// short label rendered in the header so the user can tell whether this TUI
+// session is talking to a pre-existing daemon ("attached") or running its own
+// embedded one ("embedded"); pass "" to hide the chip entirely.
 //
 // WithMouseCellMotion enables click + wheel events; this means the terminal's
 // native click-to-select-text is intercepted while the TUI runs (hold Option
 // on macOS terminals to get native selection back).
-func Run(dataDir string) error {
+func Run(dataDir, mode string) error {
 	c, err := NewClient(dataDir)
 	if err != nil {
 		return err
 	}
 	m := newModel(c)
+	m.daemonMode = mode
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = prog.Run()
 	return err
@@ -77,6 +81,11 @@ type model struct {
 	// command is in flight; empty means idle.
 	spinner   spinner.Model
 	pendingOp string
+
+	// daemonMode labels the source of the daemon this TUI is talking to —
+	// "attached" (pre-existing) or "embedded" (started by this TUI). Empty
+	// hides the header chip.
+	daemonMode string
 }
 
 var cooldownPresets = []struct {

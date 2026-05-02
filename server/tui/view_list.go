@@ -142,7 +142,11 @@ func (m *model) viewListNarrow() string {
 // ============================================================================
 
 func (m *model) renderHeader() string {
-	parts := []string{titleStyle.Render("foxy-switcher"), m.renderCredText()}
+	parts := []string{titleStyle.Render("foxy-switcher")}
+	if m.daemonMode != "" {
+		parts = append(parts, dimStyle.Render("("+m.daemonMode+")"))
+	}
+	parts = append(parts, m.renderCredText())
 	parts = append(parts, dimStyle.Render(fmt.Sprintf("%d account(s)", len(m.accounts))))
 	if !m.lastRefresh.IsZero() {
 		parts = append(parts, dimStyle.Render("refreshed "+humanAge(m.lastRefresh)))
