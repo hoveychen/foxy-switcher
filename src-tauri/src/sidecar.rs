@@ -208,32 +208,86 @@ pub fn data_dir() -> Result<std::path::PathBuf> {
 fn try_attach(port_file: &std::path::Path) -> Option<u16> {
     let raw = std::fs::read_to_string(port_file).ok()?;
     let port: u16 = raw.trim().parse().ok()?;
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(500)))
-        .ok()?;
-    stream
-        .write_all(b"GET /healthz HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
-        .ok()?;
-    let mut buf = [0u8; 64];
-    let n = stream.read(&mut buf).ok()?;
-    if n == 0 {
-        return None;
-    }
-    // Status line is "HTTP/1.x 200 OK" — match the leading bytes loosely so
-    // we don't depend on the exact Go net/http phrasing.
-    let prefix = &buf[..n];
-    let head = std::str::from_utf8(prefix).ok()?;
-    let mut parts = head.split_whitespace();
-    let _ = parts.next()?; // HTTP/1.0
-    let code = parts.next()?;
-    if code == "200" {
+    if probe_healthz(port) {
         Some(port)
     } else {
         None
     }
+}
+
+// One-shot HTTP /healthz probe over a fresh TCP connection. Used by
+// try_attach (port-file based discovery) and by rediscover (liveness check
+// for an already-cached port). 500ms timeouts cap the worst case so a dead
+// loopback port doesn't block the GUI's invoke handler for long.
+fn probe_healthz(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    if stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .is_err()
+        || stream
+            .set_write_timeout(Some(Duration::from_millis(500)))
+            .is_err()
+    {
+        return false;
+    }
+    if stream
+        .write_all(b"GET /healthz HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    let n = match stream.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    if n == 0 {
+        return false;
+    }
+    // Status line is "HTTP/1.x 200 OK" — match the leading bytes loosely so
+    // we don't depend on the exact Go net/http phrasing.
+    let head = match std::str::from_utf8(&buf[..n]) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let mut parts = head.split_whitespace();
+    let _ = match parts.next() {
+        Some(v) => v,
+        None => return false,
+    };
+    matches!(parts.next(), Some("200"))
+}
+
+// rediscover_port is the GUI's recovery path for "the daemon I attached to
+// got restarted on a different port". Cheap when the cached port is alive
+// (one local TCP probe, ~sub-ms); on a dead probe it re-reads
+// ~/.foxy-switcher/port and re-runs the /healthz handshake to find whatever
+// daemon is alive now, then mirrors it into ServerState so the next
+// get_server_port returns the fresh value.
+//
+// Owned mode is implicitly handled: an alive owned daemon passes the probe
+// fast-path; a crashed owned daemon already cleared ServerState in the
+// CommandEvent::Terminated handler, so we fall through to the port-file
+// branch and either find a successor or return None (the caller surfaces
+// "no daemon" up to the disconnect banner).
+pub fn rediscover_port(app: &AppHandle) -> Option<u16> {
+    let cached = app
+        .try_state::<ServerState>()
+        .and_then(|s| *s.port.lock().unwrap());
+    if let Some(port) = cached {
+        if probe_healthz(port) {
+            return Some(port);
+        }
+    }
+    let port_file = data_dir().ok()?.join("port");
+    let fresh = try_attach(&port_file)?;
+    if let Some(state) = app.try_state::<ServerState>() {
+        *state.port.lock().unwrap() = Some(fresh);
+    }
+    eprintln!("[sidecar] rediscovered daemon on port {fresh}");
+    Some(fresh)
 }

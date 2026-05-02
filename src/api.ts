@@ -14,17 +14,32 @@ async function api<T>(
   path: string,
   init?: RequestInit & { json?: unknown },
 ): Promise<T> {
-  const port = await getPort();
-  const url = `http://127.0.0.1:${port}${path}`;
   const headers = new Headers(init?.headers);
   if (init?.json !== undefined) {
     headers.set("content-type", "application/json");
   }
-  const res = await fetch(url, {
-    ...init,
-    headers,
-    body: init?.json !== undefined ? JSON.stringify(init.json) : init?.body,
-  });
+  const body = init?.json !== undefined ? JSON.stringify(init.json) : init?.body;
+
+  const doFetch = (port: number) =>
+    fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers, body });
+
+  const firstPort = await getPort();
+  let res: Response;
+  try {
+    res = await doFetch(firstPort);
+  } catch (err) {
+    // Connection-level failure (refused/reset/timeout) — typically the
+    // attached daemon was restarted on a fresh port, leaving cachedPort
+    // pointing at a dead listener. Drop the cache, re-invoke
+    // get_server_port (which probes liveness and re-attaches via the port
+    // file on the Rust side), and try once more. If the rediscovered port
+    // matches what we just tried, the daemon really is down — surface the
+    // original error so the disconnect banner shows.
+    cachedPort = null;
+    const freshPort = await getPort();
+    if (freshPort === firstPort) throw err;
+    res = await doFetch(freshPort);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`${res.status} ${res.statusText}: ${text}`);

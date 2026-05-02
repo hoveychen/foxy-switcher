@@ -26,13 +26,16 @@ struct ServerState {
     port: Mutex<Option<u16>>,
 }
 
+// get_server_port returns the port of a daemon that is *currently alive*.
+// The frontend caches the returned port across api() calls and only re-
+// invokes after a connection-level failure, so paying for one /healthz
+// probe per invoke buys us automatic recovery from "attached daemon
+// restarted on a different port": when the cached port goes dead,
+// sidecar::rediscover_port re-reads ~/.foxy-switcher/port and re-handshakes
+// /healthz, transparently swapping ServerState to the new daemon.
 #[tauri::command]
-fn get_server_port(state: tauri::State<'_, ServerState>) -> Result<u16, String> {
-    state
-        .port
-        .lock()
-        .unwrap()
-        .ok_or_else(|| "server not started yet".to_string())
+fn get_server_port(app: AppHandle) -> Result<u16, String> {
+    sidecar::rediscover_port(&app).ok_or_else(|| "server not started yet".to_string())
 }
 
 // "owned" → this Tauri process spawned the sidecar. "attached" → another
