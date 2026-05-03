@@ -82,6 +82,9 @@ fn spawn_into(app: &AppHandle) -> Result<()> {
         .sidecar("foxy-switcher-server")
         .map_err(|e| anyhow!("sidecar lookup: {e}"))?
         .args([
+            // The bare server binary now defaults to the TUI; `--server` is
+            // the explicit gate that keeps the desktop-callable daemon mode.
+            "--server",
             "--port",
             "0",
             "--data-dir",

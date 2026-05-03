@@ -33,6 +33,7 @@
           "name": "binaries/foxy-switcher-server",
           "sidecar": true,
           "args": [
+            "--server",
             "--port",
             { "validator": "\\d+" },
             "--data-dir",
