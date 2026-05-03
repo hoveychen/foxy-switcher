@@ -236,3 +236,76 @@ jobs:
           draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  # Linux ships the standalone Go binary instead of a Tauri bundle. The same
+  # executable runs the TUI by default and the desktop-callable daemon under
+  # `--server`, so headless / SSH users get a one-file install. We also bake
+  # the React account panel into the binary via //go:embed so a Linux user
+  # running `--mode=vault` gets the embedded /app surface without a separate
+  # frontend deployment.
+  release-linux:
+    name: release (linux-amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Build React webapp
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Bake webapp into Go embed dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf server/vault/webapp/static
+          mkdir -p server/vault/webapp/static
+          cp -R dist/* server/vault/webapp/static/
+          : > server/vault/webapp/static/.gitkeep
+          ls server/vault/webapp/static | head -5
+
+      - name: Build foxy-switcher (linux/amd64)
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          set -euo pipefail
+          mkdir -p dist-bin
+          ( cd server && go build -trimpath -ldflags="-s -w" \
+              -o ../dist-bin/foxy-switcher-linux-amd64 . )
+          chmod +x dist-bin/foxy-switcher-linux-amd64
+          stat -c '%n %s bytes' dist-bin/foxy-switcher-linux-amd64
+
+      - name: Generate sha256
+        shell: bash
+        run: |
+          cd dist-bin
+          sha256sum foxy-switcher-linux-amd64 > foxy-switcher-linux-amd64.sha256
+          cat foxy-switcher-linux-amd64.sha256
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-bin/foxy-switcher-linux-amd64
+            dist-bin/foxy-switcher-linux-amd64.sha256
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true

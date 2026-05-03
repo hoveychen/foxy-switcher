@@ -38,12 +38,15 @@ bake_webapp() {
     return
   fi
   echo "==> webapp: copying dist/ → server/vault/webapp/static/"
-  rm -rf "$EMBED"
+  # Wipe build output (assets/, index.html) but PRESERVE the tracked
+  # sentinels (.gitignore + .gitkeep). Earlier versions of this script
+  # rm -rf'd the whole directory, which deleted .gitignore and made
+  # every subsequent `git status` show the untracked dist contents.
+  find "$EMBED" -mindepth 1 \
+    \! -name '.gitignore' \! -name '.gitkeep' \
+    -exec rm -rf {} +
   mkdir -p "$EMBED"
   cp -R "$DIST/"* "$EMBED/"
-  # Keep .gitkeep around so a `git clean` survivor still satisfies
-  # //go:embed; cp -R already overwrote it if dist had one, otherwise
-  # we replace it explicitly.
   : > "$EMBED/.gitkeep"
 }
 
