@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { fetch } from "@tauri-apps/plugin-http";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 // inTauri reflects whether this React build is running inside the
 // desktop shell. Step 9 lets the same React bundle also be served
@@ -12,6 +12,17 @@ import { fetch } from "@tauri-apps/plugin-http";
 const inTauri =
   typeof window !== "undefined" &&
   ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+
+// httpFetch picks the right transport. @tauri-apps/plugin-http's fetch
+// is a CORS-respecting bridge that must call window.__TAURI_INTERNALS__
+// .invoke under the hood; in a plain browser that global is undefined
+// and the call throws "Cannot read properties of undefined (reading
+// 'invoke')". The vault deployment serves /app and /api on the same
+// origin, so the browser's built-in fetch works without CORS concerns.
+// Exported so PairVaultModal can use the same selector.
+export const httpFetch: typeof fetch = inTauri
+  ? (tauriFetch as typeof fetch)
+  : (...args) => globalThis.fetch(...args);
 
 let cachedPort: number | null = null;
 
@@ -53,7 +64,7 @@ async function api<T>(
   const body = init?.json !== undefined ? JSON.stringify(init.json) : init?.body;
 
   const doFetch = (port: number) =>
-    fetch(`${apiBase(port)}${path}`, { ...init, headers, body });
+    httpFetch(`${apiBase(port)}${path}`, { ...init, headers, body });
 
   const firstPort = await getPort();
   let res: Response;

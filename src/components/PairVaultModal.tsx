@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { fetch } from "@tauri-apps/plugin-http";
 import { Modal } from "./Modal";
-import { saveAgentConfig } from "../api";
+import { httpFetch, saveAgentConfig } from "../api";
 import { t } from "../i18n";
 
 // PairVaultModal walks the user through the device-flow handshake against
@@ -81,7 +80,7 @@ export function PairVaultModal({
         : "Foxy device";
 
     try {
-      const resp = await fetch(`${url}/agent/v1/devices/pair-init`, {
+      const resp = await httpFetch(`${url}/agent/v1/devices/pair-init`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -113,7 +112,7 @@ export function PairVaultModal({
       await new Promise((r) => setTimeout(r, 2000));
       if (cancelRef.current.canceled) return;
       try {
-        const resp = await fetch(`${baseUrl}/agent/v1/devices/pair-poll`, {
+        const resp = await httpFetch(`${baseUrl}/agent/v1/devices/pair-poll`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ client_nonce: clientNonce }),
