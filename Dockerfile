@@ -24,7 +24,7 @@
 # Run on plain docker (terminate TLS in front with caddy/traefik):
 #   docker run --rm -p 8080:8080 -v foxy-vault-data:/workspace foxy-switcher
 
-ARG VERSION=v1.0.1
+ARG VERSION=v1.0.2
 
 # --- stage 1: fetch the released binary ------------------------------------
 FROM alpine:3 AS fetch
