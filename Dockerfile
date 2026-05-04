@@ -32,21 +32,34 @@ ARG VERSION
 RUN apk add --no-cache curl ca-certificates
 # Resolve "latest" lazily so a `docker build` without --build-arg picks
 # up whatever tag is current. Pinned versions skip the API call.
-RUN if [ "$VERSION" = "latest" ]; then \
+# set -eux so a 404 / network failure aborts the layer instead of being
+# swallowed by the trailing `|| true`. The previous form chained every
+# step with && and ||, which let a failed fetch exit 0 and cache an
+# empty layer; downstream COPY then "succeeds" with a missing binary.
+#
+# The sha256 manifest references the asset by its release name
+# (foxy-switcher-linux-amd64), so download under that name, verify in
+# place, then rename to /foxy-switcher.
+RUN set -eux; \
+    if [ "$VERSION" = "latest" ]; then \
       url=$(curl -fsSL https://api.github.com/repos/hoveychen/foxy-switcher/releases/latest \
             | grep -oE '"browser_download_url": *"[^"]+foxy-switcher-linux-amd64"' \
             | head -1 | sed -E 's/.*"(https:[^"]+)"/\1/'); \
     else \
       url="https://github.com/hoveychen/foxy-switcher/releases/download/${VERSION}/foxy-switcher-linux-amd64"; \
-    fi \
- && echo "==> fetching $url" \
- && curl -fL --retry 3 --retry-delay 2 -o /foxy-switcher "$url" \
- && curl -fL -o /foxy-switcher.sha256 \
-      "https://github.com/hoveychen/foxy-switcher/releases/download/${VERSION}/foxy-switcher-linux-amd64.sha256" 2>/dev/null \
-   && (cd / && sha256sum -c foxy-switcher.sha256) \
-   || echo "==> sha256 file unavailable for $VERSION, skipping integrity check" \
- && chmod +x /foxy-switcher \
- && /foxy-switcher --help 2>/dev/null | head -1 || true
+    fi; \
+    echo "==> fetching $url"; \
+    cd /; \
+    curl -fL --retry 3 --retry-delay 2 -o foxy-switcher-linux-amd64 "$url"; \
+    if curl -fL -o foxy-switcher-linux-amd64.sha256 \
+         "https://github.com/hoveychen/foxy-switcher/releases/download/${VERSION}/foxy-switcher-linux-amd64.sha256" 2>/dev/null; then \
+      sha256sum -c foxy-switcher-linux-amd64.sha256; \
+    else \
+      echo "==> sha256 file unavailable for $VERSION, skipping integrity check"; \
+    fi; \
+    mv foxy-switcher-linux-amd64 /foxy-switcher; \
+    chmod +x /foxy-switcher; \
+    /foxy-switcher --help 2>/dev/null | head -1 || true
 
 # --- stage 2: distroless runtime -------------------------------------------
 FROM gcr.io/distroless/static:latest
