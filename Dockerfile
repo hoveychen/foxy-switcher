@@ -62,16 +62,18 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     cd server && go mod download
 
-COPY server ./server
+# Copy the entire repo (.git included) so `go build`'s automatic VCS
+# stamping (vcs.revision / vcs.modified / vcs.time, read by /api/about)
+# sees a tree that matches the committed git index. If we copied only
+# server/ here, every other tracked file (README.md, docs/, src-tauri/,
+# package.json, etc.) would look "deleted" to git status and the binary
+# would always be flagged dirty even on a clean release tag.
+COPY . .
+
 # Bake the React bundle into the //go:embed directory. server/vault/webapp/static
 # already exists in the tree (with .gitkeep); this overlay adds index.html +
 # assets/ so the vault binary serves /admin and /app from itself.
 COPY --from=webapp-builder /app/dist/ ./server/vault/webapp/static/
-
-# Bring .git so `go build` can stamp vcs.revision / vcs.modified / vcs.time
-# into the binary's debug.BuildInfo (read by /api/about's Settings card).
-# Without this, the about page renders an empty commit and "(devel)" version.
-COPY .git ./.git
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
