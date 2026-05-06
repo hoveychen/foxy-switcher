@@ -114,10 +114,22 @@ jobs:
           cat body.md
           echo "==================="
 
-          gh release create "$REF_NAME" \
-            --repo "$REPO" \
-            --title "$REF_NAME" \
-            --notes-file body.md
+          # Idempotent: if a release for this tag already exists (e.g. someone
+          # pre-created it via `gh release create` or the web UI before pushing
+          # the tag), edit its title/notes instead of failing with HTTP 422.
+          if gh release view "$REF_NAME" --repo "$REPO" >/dev/null 2>&1; then
+            echo "==> release $REF_NAME already exists; editing title and notes"
+            gh release edit "$REF_NAME" \
+              --repo "$REPO" \
+              --title "$REF_NAME" \
+              --notes-file body.md \
+              --draft=false
+          else
+            gh release create "$REF_NAME" \
+              --repo "$REPO" \
+              --title "$REF_NAME" \
+              --notes-file body.md
+          fi
 
   release:
     name: release (${{ matrix.label }})
