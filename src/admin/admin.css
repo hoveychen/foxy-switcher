@@ -1,0 +1,226 @@
+/* Cloud vault admin SPA styles. Reuses LURA tokens from
+   src/styles/tokens.css + typography.css. Layout is a centered
+   column with a top nav (when signed in) — no sidebar, since the
+   admin surface only has 4 pages and they're all flat. */
+
+.admin-shell {
+  min-height: 100vh;
+  background: var(--bg-window);
+  color: var(--text-primary);
+  font: var(--font-body);
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  padding: var(--space-8) var(--space-16);
+  background: var(--bg-topbar);
+  backdrop-filter: saturate(140%) blur(14px);
+  -webkit-backdrop-filter: saturate(140%) blur(14px);
+  border-bottom: 1px solid var(--separator);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.admin-topbar__brand {
+  font: var(--font-h3);
+  letter-spacing: -0.01em;
+  color: var(--accent);
+  margin-right: auto;
+}
+
+.admin-topbar__nav {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.admin-nav-link {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-3) var(--space-8);
+  border-radius: var(--radius-button);
+  font: var(--font-body-strong);
+  color: var(--text-secondary);
+  text-decoration: none;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: background var(--motion-quick), color var(--motion-quick);
+}
+.admin-nav-link:hover {
+  background: var(--bg-overlay);
+  color: var(--text-primary);
+}
+.admin-nav-link[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+}
+
+.admin-content {
+  flex: 1;
+  padding: var(--space-16);
+  display: flex;
+  justify-content: center;
+}
+
+.admin-page {
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.admin-page__title {
+  font: var(--font-h1);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.admin-page__subtitle {
+  font: var(--font-body);
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.admin-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.admin-form {
+  display: grid;
+  gap: var(--space-10);
+}
+
+.admin-form__field {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.admin-form__label {
+  font: var(--font-caption);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.admin-input {
+  width: 100%;
+  padding: var(--space-6) var(--space-8);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-input);
+  font: var(--font-body);
+  outline: none;
+  transition: border-color var(--motion-quick), box-shadow var(--motion-quick);
+}
+.admin-input:focus {
+  border-color: var(--border-focus);
+  box-shadow: var(--shadow-focus);
+}
+
+.admin-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-10);
+  border-radius: var(--radius-button);
+  font: var(--font-body-strong);
+  border: 1px solid transparent;
+  cursor: pointer;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+  transition: background var(--motion-quick), color var(--motion-quick),
+    border-color var(--motion-quick), opacity var(--motion-quick);
+}
+.admin-button:hover { background: var(--bg-card-hover); }
+.admin-button[disabled],
+.admin-button[aria-busy="true"] { opacity: 0.55; cursor: not-allowed; }
+
+.admin-button--primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+}
+.admin-button--primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.admin-button--primary[disabled],
+.admin-button--primary[aria-busy="true"] { background: var(--accent); color: var(--text-on-accent); }
+
+.admin-button--danger {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  border-color: transparent;
+}
+.admin-button--danger:hover { background: var(--danger); color: var(--text-on-accent); }
+
+.admin-actions {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.admin-alert {
+  padding: var(--space-8) var(--space-10);
+  border-radius: var(--radius-button);
+  font: var(--font-body);
+}
+.admin-alert--error { background: var(--danger-soft); color: var(--danger-text); }
+.admin-alert--success { background: var(--ok-soft); color: var(--ok); }
+.admin-alert--info { background: var(--info-soft); color: var(--info); }
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--font-body);
+}
+.admin-table th,
+.admin-table td {
+  text-align: left;
+  padding: var(--space-6) var(--space-8);
+  border-bottom: 1px solid var(--separator);
+  vertical-align: top;
+}
+.admin-table th {
+  font: var(--font-caption);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--bg-overlay);
+}
+.admin-table td:last-child {
+  text-align: right;
+  white-space: nowrap;
+}
+.admin-table__sub {
+  display: block;
+  color: var(--text-tertiary);
+  font: var(--font-caption);
+}
+.admin-table__empty {
+  padding: var(--space-24) var(--space-16);
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.admin-loading {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  color: var(--text-secondary);
+  font: var(--font-body);
+}

@@ -386,6 +386,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	//   - /agent/v1/*           — agent surface (Bearer-auth'd vault.Service)
 	//   - /setup, /login, /pair,
 	//     /devices, /password   — admin Web UI (cookie sessions)
+	//   - /admin/api/*          — admin SPA JSON surface (cookie sessions)
 	//   - /app, /app/, /assets/*— embedded React account panel (cookie or Bearer)
 	//   - /api/*, /healthz      — existing frontend httpapi (catch-all)
 	// More specific patterns win over the catch-all "/" mount.
@@ -393,10 +394,13 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	vaultHTTP := httpserver.New(vaultSvc, st)
 	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
 	vaultHTTP.RegisterWebRoutes(rootMux)
+	vaultHTTP.RegisterAPIRoutes(rootMux)
 	if webapp.Available() {
 		appHandler := webapp.Handler()
 		rootMux.Handle("/app", appHandler)
 		rootMux.Handle("/app/", appHandler)
+		rootMux.Handle("/admin", appHandler)
+		rootMux.Handle("/admin/", appHandler)
 		rootMux.Handle("/assets/", appHandler)
 		vaultHTTP.HasWebApp = true
 		// Other top-level static files vite emits (favicon, etc.) get

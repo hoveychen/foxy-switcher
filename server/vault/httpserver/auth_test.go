@@ -36,6 +36,7 @@ func newAuthFixture(t *testing.T) *authFixture {
 	srv := New(svc, st)
 	mux.Handle("/agent/v1/", srv.Handler())
 	srv.RegisterWebRoutes(mux)
+	srv.RegisterAPIRoutes(mux)
 	tsrv := httptest.NewServer(mux)
 	t.Cleanup(tsrv.Close)
 	return &authFixture{st: st, server: tsrv}
@@ -89,13 +90,15 @@ func TestPairFlow_HappyPath(t *testing.T) {
 		t.Fatalf("pre-approve status: got %q want pending", pollOut.Status)
 	}
 
-	// 3. Web UI: log in, approve.
+	// 3. Admin SPA: log in via JSON API, approve via JSON API.
 	jar := newCookieJar(t)
-	loginResp := postForm(t, f.server.URL+"/login", jar, map[string]string{"password": "hunter2"})
-	if loginResp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("login status: got %s want 303", loginResp.Status)
+	loginResp := postJSON(t, f.server.URL+"/admin/api/login", jar,
+		map[string]string{"password": "hunter2"})
+	loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login status: got %s want 200", loginResp.Status)
 	}
-	approve := postForm(t, f.server.URL+"/pair", jar, map[string]string{
+	approve := postJSON(t, f.server.URL+"/admin/api/pair", jar, map[string]string{
 		"code":   initOut.UserCode,
 		"action": "approve",
 	})
@@ -157,8 +160,10 @@ func TestPairFlow_DeniedShortCircuits(t *testing.T) {
 	resp.Body.Close()
 
 	jar := newCookieJar(t)
-	postForm(t, f.server.URL+"/login", jar, map[string]string{"password": "pw"}).Body.Close()
-	postForm(t, f.server.URL+"/pair", jar, map[string]string{"code": init.UserCode, "action": "deny"}).Body.Close()
+	postJSON(t, f.server.URL+"/admin/api/login", jar, map[string]string{"password": "pw"}).Body.Close()
+	postJSON(t, f.server.URL+"/admin/api/pair", jar, map[string]string{
+		"code": init.UserCode, "action": "deny",
+	}).Body.Close()
 
 	pollBody, _ := json.Marshal(map[string]string{"client_nonce": nonce})
 	resp, _ = http.Post(f.server.URL+"/agent/v1/devices/pair-poll",
@@ -178,7 +183,8 @@ func TestPairFlow_DeniedShortCircuits(t *testing.T) {
 
 func TestSetup_FirstRunGate(t *testing.T) {
 	f := newAuthFixture(t)
-	// Without a password set, GET / must redirect to /setup, NOT /login.
+	// Without a password set, GET / must redirect to the SPA setup
+	// route, NOT /admin/login.
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := c.Get(f.server.URL + "/")
 	if err != nil {
@@ -188,8 +194,8 @@ func TestSetup_FirstRunGate(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("status: got %s want 303", resp.Status)
 	}
-	if !strings.HasSuffix(resp.Header.Get("Location"), "/setup") {
-		t.Errorf("redirect target: got %q want /setup", resp.Header.Get("Location"))
+	if !strings.HasSuffix(resp.Header.Get("Location"), "/admin/setup") {
+		t.Errorf("redirect target: got %q want /admin/setup", resp.Header.Get("Location"))
 	}
 }
 
@@ -309,25 +315,6 @@ func (j *cookieJar) attach(req *http.Request) {
 	for _, c := range j.cookies {
 		req.AddCookie(c)
 	}
-}
-
-func postForm(t *testing.T, url string, jar *cookieJar, fields map[string]string) *http.Response {
-	t.Helper()
-	values := make([]string, 0, len(fields))
-	for k, v := range fields {
-		values = append(values, k+"="+v)
-	}
-	body := strings.Join(values, "&")
-	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	jar.attach(req)
-	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := c.Do(req)
-	if err != nil {
-		t.Fatalf("POST %s: %v", url, err)
-	}
-	jar.update(resp)
-	return resp
 }
 
 // time.Sleep is intentionally avoided in these tests; the polling tests

@@ -1,0 +1,352 @@
+package httpserver
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+
+	"github.com/hoveychen/foxy-switcher/server/store"
+	vaultauth "github.com/hoveychen/foxy-switcher/server/vault/auth"
+)
+
+// RegisterAPIRoutes mounts the JSON surface that the SPA admin web UI
+// (mounted at /admin/* by the embedded React bundle) talks to. The
+// shape mirrors the form handlers in web.go but returns JSON and uses
+// 401 status (instead of a 302 redirect) when auth is missing — that
+// way fetch() in the browser can detect "not signed in" without
+// following a redirect into HTML.
+//
+// Routes live under /admin/api/* (NOT /api/*) so they never collide
+// with the frontend httpapi surface that the desktop daemon mounts on
+// /api/* in combined mode. ServeMux's "more specific wins" rule would
+// otherwise let an /api/devices registered here silently shadow the
+// httpapi.Server.handleListDevices the desktop expects to reach.
+func (s *Server) RegisterAPIRoutes(mux *http.ServeMux) {
+	// Public — no session required.
+	mux.HandleFunc("POST /admin/api/login", s.handleAPILogin)
+	mux.HandleFunc("POST /admin/api/setup", s.handleAPISetup)
+	mux.HandleFunc("GET /admin/api/me", s.handleAPIMe)
+
+	// Protected — session cookie required.
+	mux.HandleFunc("POST /admin/api/logout", s.requireSessionJSON(s.handleAPILogout))
+	mux.HandleFunc("GET /admin/api/devices", s.requireSessionJSON(s.handleAPIDevicesList))
+	mux.HandleFunc("POST /admin/api/devices/revoke", s.requireSessionJSON(s.handleAPIDevicesRevoke))
+	mux.HandleFunc("GET /admin/api/pair", s.requireSessionJSON(s.handleAPIPairLookup))
+	mux.HandleFunc("POST /admin/api/pair", s.requireSessionJSON(s.handleAPIPairResolve))
+	mux.HandleFunc("POST /admin/api/password", s.requireSessionJSON(s.handleAPIPassword))
+}
+
+// requireSessionJSON is the JSON-flavoured sibling of requireSession.
+// Distinct from BearerAuth because admin /api/* is cookie-only — agent
+// bearer tokens aren't admins and shouldn't be able to revoke peers or
+// change the password by holding a device token. On miss: 401 JSON. On
+// fresh-vault no-password-yet: 409 JSON `{"error":"setup_required"}` so
+// the SPA knows to route to the setup screen.
+func (s *Server) requireSessionJSON(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ok, err := s.st.HasPassword(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusConflict, errors.New("setup_required"))
+			return
+		}
+		if !s.hasSession(r) {
+			writeError(w, http.StatusUnauthorized, errors.New("unauthorized"))
+			return
+		}
+		next(w, r)
+	}
+}
+
+// --- /api/me -------------------------------------------------------------
+
+type apiMeResp struct {
+	HasPassword bool `json:"has_password"`
+	SignedIn    bool `json:"signed_in"`
+}
+
+func (s *Server) handleAPIMe(w http.ResponseWriter, r *http.Request) {
+	hasPw, err := s.st.HasPassword(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apiMeResp{
+		HasPassword: hasPw,
+		SignedIn:    hasPw && s.hasSession(r),
+	})
+}
+
+// --- /api/login ----------------------------------------------------------
+
+type apiLoginReq struct {
+	Password string `json:"password"`
+}
+
+func (s *Server) handleAPILogin(w http.ResponseWriter, r *http.Request) {
+	var req apiLoginReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+	if req.Password == "" {
+		writeError(w, http.StatusBadRequest, errors.New("password required"))
+		return
+	}
+	hasPw, err := s.st.HasPassword(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !hasPw {
+		writeError(w, http.StatusConflict, errors.New("setup_required"))
+		return
+	}
+	hash, err := s.st.PasswordHash(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !vaultauth.VerifyPassword(hash, req.Password) {
+		writeError(w, http.StatusUnauthorized, errors.New("wrong password"))
+		return
+	}
+	if err := s.startSession(r.Context(), w, r); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// --- /api/setup ----------------------------------------------------------
+
+type apiSetupReq struct {
+	Password string `json:"password"`
+	Confirm  string `json:"confirm"`
+}
+
+func (s *Server) handleAPISetup(w http.ResponseWriter, r *http.Request) {
+	hasPw, err := s.st.HasPassword(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if hasPw {
+		writeError(w, http.StatusConflict, errors.New("already_set_up"))
+		return
+	}
+	var req apiSetupReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+	if req.Password == "" || req.Password != req.Confirm {
+		writeError(w, http.StatusBadRequest, errors.New("passwords must match and be non-empty"))
+		return
+	}
+	hash, err := vaultauth.HashPassword(req.Password)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.st.SetPasswordHash(r.Context(), hash); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.startSession(r.Context(), w, r); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// --- /api/logout ---------------------------------------------------------
+
+func (s *Server) handleAPILogout(w http.ResponseWriter, r *http.Request) {
+	s.endSession(r.Context(), w, r)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- /api/devices --------------------------------------------------------
+
+type apiDeviceRow struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Hostname   string `json:"hostname,omitempty"`
+	OS         string `json:"os,omitempty"`
+	OSVersion  string `json:"os_version,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	Model      string `json:"model,omitempty"`
+	AppVersion string `json:"app_version,omitempty"`
+	ClientType string `json:"client_type,omitempty"`
+	CreatedAt  int64  `json:"created_at"`
+	LastSeenAt int64  `json:"last_seen_at"`
+}
+
+type apiDevicesResp struct {
+	Devices []apiDeviceRow `json:"devices"`
+}
+
+func (s *Server) handleAPIDevicesList(w http.ResponseWriter, r *http.Request) {
+	devs, err := s.st.ListDevices(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := make([]apiDeviceRow, 0, len(devs))
+	for _, d := range devs {
+		out = append(out, apiDeviceRow{
+			ID:         d.ID,
+			Name:       d.Name,
+			Hostname:   d.Hostname,
+			OS:         d.OS,
+			OSVersion:  d.OSVersion,
+			Arch:       d.Arch,
+			Model:      d.Model,
+			AppVersion: d.AppVersion,
+			ClientType: d.ClientType,
+			CreatedAt:  d.CreatedAt,
+			LastSeenAt: d.LastSeenAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, apiDevicesResp{Devices: out})
+}
+
+type apiRevokeReq struct {
+	ID string `json:"id"`
+}
+
+func (s *Server) handleAPIDevicesRevoke(w http.ResponseWriter, r *http.Request) {
+	var req apiRevokeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("id required"))
+		return
+	}
+	if err := s.st.DeleteDevice(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- /api/pair -----------------------------------------------------------
+
+type apiPairLookupResp struct {
+	Code       string `json:"code"`
+	DeviceName string `json:"device_name"`
+	Status     string `json:"status"`
+}
+
+func (s *Server) handleAPIPairLookup(w http.ResponseWriter, r *http.Request) {
+	rawCode := r.URL.Query().Get("code")
+	if rawCode == "" {
+		writeError(w, http.StatusBadRequest, errors.New("code required"))
+		return
+	}
+	code := vaultauth.NormaliseUserCode(rawCode)
+	p, err := s.st.FindPairingByCode(r.Context(), code)
+	if err != nil {
+		if notFoundIs(err) {
+			writeError(w, http.StatusNotFound, errors.New("code expired or unknown"))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apiPairLookupResp{
+		Code:       p.UserCode,
+		DeviceName: p.DeviceName,
+		Status:     p.Status,
+	})
+}
+
+type apiPairResolveReq struct {
+	Code   string `json:"code"`
+	Action string `json:"action"` // "approve" | "deny"
+}
+
+type apiPairResolveResp struct {
+	Result string `json:"result"`
+}
+
+func (s *Server) handleAPIPairResolve(w http.ResponseWriter, r *http.Request) {
+	var req apiPairResolveReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+	code := vaultauth.NormaliseUserCode(req.Code)
+	if code == "" {
+		writeError(w, http.StatusBadRequest, errors.New("code required"))
+		return
+	}
+	switch req.Action {
+	case "deny":
+		if err := s.st.DenyPairing(r.Context(), code); err != nil && !notFoundIs(err) {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, apiPairResolveResp{Result: store.PairingDenied})
+	case "approve":
+		token := vaultauth.NewToken()
+		deviceID := vaultauth.NewID()
+		if err := s.st.ApprovePairing(r.Context(), code, deviceID, token); err != nil {
+			if notFoundIs(err) {
+				writeError(w, http.StatusNotFound, errors.New("code expired or already used"))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, apiPairResolveResp{Result: store.PairingApproved})
+	default:
+		writeError(w, http.StatusBadRequest, errors.New("action must be approve or deny"))
+	}
+}
+
+// --- /api/password -------------------------------------------------------
+
+type apiPasswordReq struct {
+	Current string `json:"current"`
+	Next    string `json:"next"`
+	Confirm string `json:"confirm"`
+}
+
+func (s *Server) handleAPIPassword(w http.ResponseWriter, r *http.Request) {
+	var req apiPasswordReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+	if req.Next == "" || req.Next != req.Confirm {
+		writeError(w, http.StatusBadRequest, errors.New("new passwords must match and be non-empty"))
+		return
+	}
+	hash, err := s.st.PasswordHash(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !vaultauth.VerifyPassword(hash, req.Current) {
+		writeError(w, http.StatusUnauthorized, errors.New("current password is wrong"))
+		return
+	}
+	newHash, err := vaultauth.HashPassword(req.Next)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.st.SetPasswordHash(r.Context(), newHash); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}

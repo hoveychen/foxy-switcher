@@ -36,16 +36,21 @@ func Available() bool {
 	return err == nil
 }
 
-// Handler returns an http.Handler that serves the React build. The
-// public app path (/app and /app/*) returns index.html — the React
-// app uses internal state-based navigation, so any URL under /app/
-// resolves to the same entry point. /assets/* serves hashed bundles
-// straight from the embed.
+// Handler returns an http.Handler that serves the React build. Two
+// path prefixes resolve to the SPA entry (index.html):
+//   - /app, /app/*    — the desktop-app-in-browser surface (legacy)
+//   - /admin, /admin/* — the cloud-vault admin SPA (login/devices/pair/password)
+//
+// Both prefixes share the same React bundle; the bundle's main.tsx
+// dispatches to the appropriate root component based on
+// window.location.pathname. /assets/* serves hashed asset bundles.
 //
 // Mount with main.go:
 //
 //	rootMux.Handle("/app", appHandler)
 //	rootMux.Handle("/app/", appHandler)
+//	rootMux.Handle("/admin", appHandler)
+//	rootMux.Handle("/admin/", appHandler)
 //	rootMux.Handle("/assets/", appHandler)
 //
 // Anything outside those prefixes falls through to the existing
@@ -63,9 +68,9 @@ func Handler() http.Handler {
 	}
 	indexBytes, _ := fs.ReadFile(sub, "index.html")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// /app or /app/<anything> → serve index.html; React routes
-		// internally so we don't try to map the URL to a file.
-		if r.URL.Path == "/app" || r.URL.Path == "/app/" || strings.HasPrefix(r.URL.Path, "/app/") {
+		// /app, /admin, or any descendant → serve index.html; React
+		// routes internally so we don't try to map the URL to a file.
+		if isSPARoute(r.URL.Path) {
 			if len(indexBytes) == 0 {
 				http.Error(w, "Web UI not bundled into this build (run `pnpm build` first)",
 					http.StatusNotFound)
@@ -105,3 +110,15 @@ func Handler() http.Handler {
 // Last-Modified header when the value is zero, which matches what we
 // want (the embed loses the original mtimes anyway).
 var emptyTime time.Time
+
+// isSPARoute reports whether the URL path should resolve to the SPA
+// entry (index.html). Both /app/* and /admin/* share the same bundle —
+// the React app's entry decides which root component to render based
+// on the path.
+func isSPARoute(p string) bool {
+	switch p {
+	case "/app", "/app/", "/admin", "/admin/":
+		return true
+	}
+	return strings.HasPrefix(p, "/app/") || strings.HasPrefix(p, "/admin/")
+}
