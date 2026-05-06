@@ -237,6 +237,19 @@ type PairInitOut struct {
 	ExpiresInMs     int64  `json:"expires_in_ms"`
 }
 
+// PairMeta is the optional device-meta payload for pair-init. Mirrors the
+// wire format vault/httpclient publishes; defined locally so the TUI
+// doesn't take a dependency on the agent-side httpclient package.
+type PairMeta struct {
+	Hostname   string `json:"hostname,omitempty"`
+	OS         string `json:"os,omitempty"`
+	OSVersion  string `json:"os_version,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	Model      string `json:"model,omitempty"`
+	AppVersion string `json:"app_version,omitempty"`
+	ClientType string `json:"client_type,omitempty"`
+}
+
 // PairPollOut mirrors the daemon's POST /api/pair/poll response.
 // Status is one of "pending" | "approved" | "denied" | "expired".
 // device_id / device_token are only populated for "approved".
@@ -251,11 +264,14 @@ type PairPollOut struct {
 // combined-mode daemons are perfectly happy to forward the request to
 // the cloud vault during onboarding, before any agent-config.json
 // exists.
-func (c *Client) PairInit(ctx context.Context, vaultURL, deviceName, clientNonce string) (PairInitOut, error) {
-	body := map[string]string{
+func (c *Client) PairInit(ctx context.Context, vaultURL, deviceName, clientNonce string, meta *PairMeta) (PairInitOut, error) {
+	body := map[string]any{
 		"vault_url":    vaultURL,
 		"device_name":  deviceName,
 		"client_nonce": clientNonce,
+	}
+	if meta != nil {
+		body["device_meta"] = meta
 	}
 	var out PairInitOut
 	if err := c.do(ctx, http.MethodPost, "/api/pair/init", body, &out); err != nil {

@@ -20,6 +20,20 @@ type PairInitResponse struct {
 	ExpiresInMillis int64  `json:"expires_in_ms"`
 }
 
+// PairMetadata describes the device asking to pair. All fields are
+// optional — old agents that don't send any are still accepted, in which
+// case the corresponding columns on the devices row stay empty. Mirrors
+// the seven columns the device-meta migration added to devices/pairings.
+type PairMetadata struct {
+	Hostname   string `json:"hostname,omitempty"`
+	OS         string `json:"os,omitempty"`
+	OSVersion  string `json:"os_version,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	Model      string `json:"model,omitempty"`
+	AppVersion string `json:"app_version,omitempty"`
+	ClientType string `json:"client_type,omitempty"`
+}
+
 // PairResult holds the device credentials the vault hands back after
 // approval. The agent persists DeviceToken (typically into
 // ~/.foxy-switcher/agent-config.json) and uses it for every subsequent
@@ -39,11 +53,17 @@ var (
 // PairInit kicks off the device flow. The agent supplies a deviceName
 // (shown to the human approving the pairing) and a clientNonce (any
 // random string — the agent's own random id is fine; nothing trusts it
-// for security, it only correlates init↔poll on the vault side).
-func (c *Client) PairInit(ctx context.Context, deviceName, clientNonce string) (*PairInitResponse, error) {
+// for security, it only correlates init↔poll on the vault side). Pass a
+// non-nil meta to publish device facts (hostname, OS, model, …) the
+// vault stores alongside the device row; nil is accepted for backwards
+// compatibility with pre-meta agents.
+func (c *Client) PairInit(ctx context.Context, deviceName, clientNonce string, meta *PairMetadata) (*PairInitResponse, error) {
 	body := map[string]any{
 		"client_nonce": clientNonce,
 		"device_name":  deviceName,
+	}
+	if meta != nil {
+		body["device_meta"] = meta
 	}
 	buf, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,

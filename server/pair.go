@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/deviceinfo"
 	vaultauth "github.com/hoveychen/foxy-switcher/server/vault/auth"
 	"github.com/hoveychen/foxy-switcher/server/vault/httpclient"
 )
@@ -71,7 +72,17 @@ func runPair(args []string) {
 	client := httpclient.New(*vaultURL)
 	nonce := vaultauth.NewID()
 
-	init, err := client.PairInit(ctx, name, nonce)
+	info := deviceinfo.Collect()
+	meta := &httpclient.PairMetadata{
+		Hostname:   info.Hostname,
+		OS:         info.OS,
+		OSVersion:  info.OSVersion,
+		Arch:       info.Arch,
+		Model:      info.Model,
+		AppVersion: info.AppVersion,
+		ClientType: "cli",
+	}
+	init, err := client.PairInit(ctx, name, nonce, meta)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "pair-init:", err)
 		os.Exit(1)

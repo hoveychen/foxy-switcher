@@ -21,9 +21,10 @@ import (
 // the same httpclient, so both surfaces share one implementation.
 
 type pairInitRequest struct {
-	VaultURL    string `json:"vault_url"`
-	DeviceName  string `json:"device_name"`
-	ClientNonce string `json:"client_nonce"`
+	VaultURL    string                  `json:"vault_url"`
+	DeviceName  string                  `json:"device_name"`
+	ClientNonce string                  `json:"client_nonce"`
+	DeviceMeta  *httpclient.PairMetadata `json:"device_meta,omitempty"`
 }
 
 type pairPollRequest struct {
@@ -61,7 +62,7 @@ func (s *Server) handlePairInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := httpclient.New(url)
-	out, err := client.PairInit(r.Context(), req.DeviceName, req.ClientNonce)
+	out, err := client.PairInit(r.Context(), req.DeviceName, req.ClientNonce, req.DeviceMeta)
 	if err != nil {
 		http.Error(w, "pair-init: "+err.Error(), http.StatusBadGateway)
 		return

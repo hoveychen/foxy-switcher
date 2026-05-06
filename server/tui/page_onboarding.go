@@ -13,6 +13,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/hoveychen/foxy-switcher/server/deviceinfo"
 )
 
 // Onboarding mirrors the desktop OnboardingOverlay's state machine on
@@ -121,11 +123,11 @@ type pairPollMsg struct {
 	err error
 }
 
-func pairInitCmd(c *Client, vaultURL, deviceName, nonce string) tea.Cmd {
+func pairInitCmd(c *Client, vaultURL, deviceName, nonce string, meta *PairMeta) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		out, err := c.PairInit(ctx, vaultURL, deviceName, nonce)
+		out, err := c.PairInit(ctx, vaultURL, deviceName, nonce, meta)
 		return pairInitMsg{out: out, err: err}
 	}
 }
@@ -258,7 +260,17 @@ func (a *App) handleOnboardingCloudInputKey(msg tea.KeyMsg) tea.Cmd {
 		a.onboarding.userCode = ""
 		a.onboarding.verifURL = ""
 		a.onboarding.errMsg = "Reaching vault…"
-		return pairInitCmd(a.accounts.client, url, deviceName, a.onboarding.nonce)
+		info := deviceinfo.Collect()
+		meta := &PairMeta{
+			Hostname:   info.Hostname,
+			OS:         info.OS,
+			OSVersion:  info.OSVersion,
+			Arch:       info.Arch,
+			Model:      info.Model,
+			AppVersion: info.AppVersion,
+			ClientType: "tui",
+		}
+		return pairInitCmd(a.accounts.client, url, deviceName, a.onboarding.nonce, meta)
 	}
 	var cmd tea.Cmd
 	a.onboarding.urlInput, cmd = a.onboarding.urlInput.Update(msg)

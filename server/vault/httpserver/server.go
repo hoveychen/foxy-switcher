@@ -112,9 +112,24 @@ func handleOK(w http.ResponseWriter, _ *http.Request) {
 
 // --- pairing -------------------------------------------------------------
 
+// deviceMetaReq mirrors httpclient.PairMetadata on the wire. Defined here
+// (instead of imported) so the vault doesn't take a dependency on the
+// agent-side httpclient package. All fields optional — old agents that
+// omit the device_meta object still pair successfully.
+type deviceMetaReq struct {
+	Hostname   string `json:"hostname,omitempty"`
+	OS         string `json:"os,omitempty"`
+	OSVersion  string `json:"os_version,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	Model      string `json:"model,omitempty"`
+	AppVersion string `json:"app_version,omitempty"`
+	ClientType string `json:"client_type,omitempty"`
+}
+
 type pairInitReq struct {
-	ClientNonce string `json:"client_nonce"`
-	DeviceName  string `json:"device_name"`
+	ClientNonce string         `json:"client_nonce"`
+	DeviceName  string         `json:"device_name"`
+	DeviceMeta  *deviceMetaReq `json:"device_meta,omitempty"`
 }
 
 type pairInitResp struct {
@@ -143,12 +158,22 @@ func (s *Server) handlePairInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expiresAt := time.Now().Add(PairingTTL).UnixMilli()
-	if err := s.st.InsertPairing(r.Context(), store.Pairing{
+	pair := store.Pairing{
 		ClientNonce: req.ClientNonce,
 		UserCode:    code,
 		DeviceName:  req.DeviceName,
 		ExpiresAt:   expiresAt,
-	}); err != nil {
+	}
+	if m := req.DeviceMeta; m != nil {
+		pair.Hostname = m.Hostname
+		pair.OS = m.OS
+		pair.OSVersion = m.OSVersion
+		pair.Arch = m.Arch
+		pair.Model = m.Model
+		pair.AppVersion = m.AppVersion
+		pair.ClientType = m.ClientType
+	}
+	if err := s.st.InsertPairing(r.Context(), pair); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -207,9 +232,16 @@ func (s *Server) handlePairPoll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.st.InsertDevice(r.Context(), store.Device{
-			ID:        deviceID,
-			Name:      p.DeviceName,
-			TokenHash: vaultauth.HashToken(token),
+			ID:         deviceID,
+			Name:       p.DeviceName,
+			TokenHash:  vaultauth.HashToken(token),
+			Hostname:   p.Hostname,
+			OS:         p.OS,
+			OSVersion:  p.OSVersion,
+			Arch:       p.Arch,
+			Model:      p.Model,
+			AppVersion: p.AppVersion,
+			ClientType: p.ClientType,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
