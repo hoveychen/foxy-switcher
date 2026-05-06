@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,6 +30,63 @@ const betaHeader = "oauth-2025-04-20"
 // requestTimeout caps each individual call. Both endpoints are cheap; if they
 // hang past this we'd rather show stale data than block the UI.
 const requestTimeout = 5 * time.Second
+
+// retryAfterFallback is what we return when Anthropic 429s without a
+// Retry-After header. One minute matches the default poll interval, so the
+// account simply skips one tick before retrying.
+const retryAfterFallback = 60 * time.Second
+
+// retryAfterCap bounds whatever Anthropic asks us to wait. Past 30 minutes
+// we'd rather poll and risk another 429 than hide the account from the UI
+// for an unbounded stretch.
+const retryAfterCap = 30 * time.Minute
+
+// RateLimitError is returned by getJSON (and therefore FetchUsage /
+// FetchProfile) when the upstream responds 429. Callers use errors.As to
+// detect it and read RetryAfter to schedule per-account backoff.
+type RateLimitError struct {
+	Path       string
+	StatusCode int
+	RetryAfter time.Duration
+	Body       string
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("%s: %d rate limited (retry after %s): %s",
+		e.Path, e.StatusCode, e.RetryAfter, e.Body)
+}
+
+// parseRetryAfter handles both forms RFC 9110 allows for the Retry-After
+// header: a non-negative integer number of seconds, or an HTTP-date. Anything
+// else (empty, malformed, in the past) returns the fallback so callers always
+// get a usable duration.
+func parseRetryAfter(v string, fallback time.Duration) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return clampRetryAfter(fallback)
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+		return clampRetryAfter(time.Duration(secs) * time.Second)
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		d := time.Until(t)
+		if d <= 0 {
+			return clampRetryAfter(fallback)
+		}
+		return clampRetryAfter(d)
+	}
+	return clampRetryAfter(fallback)
+}
+
+func clampRetryAfter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return retryAfterFallback
+	}
+	if d > retryAfterCap {
+		return retryAfterCap
+	}
+	return d
+}
 
 // Profile is the subset of /api/oauth/profile we surface to the UI. The full
 // response contains more (capabilities, feature flags, etc.) but those drift
@@ -158,8 +216,10 @@ func FetchProfile(ctx context.Context, accessToken string) (*Profile, error) {
 	}, nil
 }
 
-// FetchUsage calls GET /api/oauth/usage. Called every 5 minutes by the usage
-// scheduler and on the "Refresh now" button click.
+// FetchUsage calls GET /api/oauth/usage. Driven by UsagePoller on the cadence
+// configured by Settings.UsagePollIntervalSec (default 60s) and ad-hoc on the
+// "Refresh now" button click. Returns *RateLimitError on 429 so the poller
+// can honor Retry-After per-account instead of hammering the endpoint.
 func FetchUsage(ctx context.Context, accessToken string) (*Usage, error) {
 	body, err := getJSON(ctx, "/api/oauth/usage", accessToken)
 	if err != nil {
@@ -208,6 +268,14 @@ func getJSON(ctx context.Context, path, accessToken string) (map[string]any, err
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%s: read body: %w", path, err)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, &RateLimitError{
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), retryAfterFallback),
+			Body:       strings.TrimSpace(string(raw)),
+		}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s: %d %s", path, resp.StatusCode, strings.TrimSpace(string(raw)))

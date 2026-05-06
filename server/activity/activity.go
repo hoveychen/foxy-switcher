@@ -54,6 +54,7 @@ const (
 	TypeCredFailed      = "cred.failed"
 	TypeTokenRefreshed  = "token.refreshed"
 	TypeUsagePolled    = "usage.polled"
+	TypeUsageBackoff   = "usage.backoff"
 	TypeDaemonStarted  = "daemon.started"
 	TypeDaemonStopped   = "daemon.stopped"
 	TypeErrorRefresh    = "error.refresh"

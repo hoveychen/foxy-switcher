@@ -2,8 +2,10 @@ package refresh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/activity"
@@ -43,6 +45,52 @@ type UsagePoller struct {
 	// per tick (not per account, to avoid log spam) and per-account
 	// error.usage events on failure.
 	Bus *activity.Bus
+
+	// mu guards nextAllowedAt. Held only for the duration of map ops; the
+	// HTTP fetch happens outside the lock so concurrent tick goroutines
+	// (there shouldn't be any today, but the field is per-account anyway)
+	// would not serialise on each other.
+	mu            sync.Mutex
+	nextAllowedAt map[int64]time.Time
+}
+
+// canPoll reports whether `id` is currently outside any 429 backoff window.
+// Expired entries are GC'd here so the map can't grow without bound.
+func (p *UsagePoller) canPoll(id int64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	until, ok := p.nextAllowedAt[id]
+	if !ok {
+		return true
+	}
+	if time.Now().Before(until) {
+		return false
+	}
+	delete(p.nextAllowedAt, id)
+	return true
+}
+
+// markBackoff records a per-account "do not poll until" timestamp. Called
+// from tick when /api/oauth/usage returns 429; d comes from
+// (*anthropic.RateLimitError).RetryAfter, which is already clamped.
+func (p *UsagePoller) markBackoff(id int64, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.nextAllowedAt == nil {
+		p.nextAllowedAt = make(map[int64]time.Time)
+	}
+	p.nextAllowedAt[id] = time.Now().Add(d)
+}
+
+// clearBackoff drops any pending backoff for `id`. Called on a successful
+// poll (window naturally rolled over) and exposed for tests.
+func (p *UsagePoller) clearBackoff(id int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.nextAllowedAt, id)
 }
 
 func NewUsagePoller(st *store.Store, logger *log.Logger) *UsagePoller {
@@ -115,6 +163,12 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		if a.ExpiresAt > 0 && a.ExpiresAt < time.Now().UnixMilli() {
 			continue
 		}
+		// Honor any active 429 backoff window. We log nothing here so the
+		// activity bus stays quiet on subsequent ticks — the original 429
+		// already produced an error.usage event the user can see.
+		if !p.canPoll(a.ID) {
+			continue
+		}
 		// Backfill profile for accounts that predate the profile-fetching
 		// feature, or that predate rate_limit_tier. Plan / AccountUUID /
 		// RateLimitTier all get backfilled together since they come from
@@ -143,11 +197,28 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		}
 		u, err := anthropic.FetchUsage(ctx, a.AccessToken)
 		if err != nil {
+			var rl *anthropic.RateLimitError
+			if errors.As(err, &rl) {
+				// 429 is a known degraded state, not a failure: the
+				// canPoll guard above will skip this account on every
+				// subsequent tick until the window passes, so this info
+				// event fires exactly once per backoff period.
+				p.markBackoff(a.ID, rl.RetryAfter)
+				p.logger.Printf("[usage] account %d (%s): rate limited, paused for %s",
+					a.ID, a.Name, rl.RetryAfter)
+				p.Bus.EmitInfo(activity.TypeUsageBackoff, a.ID,
+					fmt.Sprintf("Usage poll for %s paused for %s (rate limited)",
+						a.Name, rl.RetryAfter))
+				continue
+			}
 			p.logger.Printf("[usage] account %d (%s): %v", a.ID, a.Name, err)
 			p.Bus.EmitError(activity.TypeErrorUsage, a.ID,
 				fmt.Sprintf("Usage poll for %s failed: %v", a.Name, err))
 			continue
 		}
+		// Successful poll — drop any stale backoff so a recovered account
+		// resumes its normal cadence immediately.
+		p.clearBackoff(a.ID)
 		fhU, sdU, ssU := flattenUsage(u)
 		if err := writeUsage(ctx, p.st, a.ID, u); err != nil {
 			p.logger.Printf("[usage] account %d store: %v", a.ID, err)

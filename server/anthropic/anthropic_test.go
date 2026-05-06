@@ -2,9 +2,11 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestFetchProfile_MaxAccount(t *testing.T) {
@@ -211,6 +213,61 @@ func TestFetchUsage_AllWindows(t *testing.T) {
 	}
 	if u.SevenDaySonnet == nil || u.SevenDaySonnet.Utilization != 33.3 {
 		t.Errorf("seven_day_sonnet = %+v", u.SevenDaySonnet)
+	}
+}
+
+// TestFetchUsage_RateLimitWithRetryAfter guards the 429 contract: the caller
+// must be able to errors.As the result into *RateLimitError and read the
+// Retry-After header (in seconds) off it. The poller relies on this to
+// schedule per-account backoff instead of hammering /api/oauth/usage on every
+// tick.
+func TestFetchUsage_RateLimitWithRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}`))
+	}))
+	defer srv.Close()
+	old := BaseURL
+	BaseURL = srv.URL
+	defer func() { BaseURL = old }()
+
+	_, err := FetchUsage(context.Background(), "tok")
+	if err == nil {
+		t.Fatal("expected error on 429, got nil")
+	}
+	var rl *RateLimitError
+	if !errors.As(err, &rl) {
+		t.Fatalf("expected *RateLimitError, got %T: %v", err, err)
+	}
+	if rl.RetryAfter != 120*time.Second {
+		t.Errorf("RetryAfter = %v, want 120s", rl.RetryAfter)
+	}
+	if rl.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("StatusCode = %d, want 429", rl.StatusCode)
+	}
+}
+
+// TestFetchUsage_RateLimitFallback covers the case where Anthropic returns 429
+// without a Retry-After header — the helper falls back to a sensible default
+// so the poller still has a non-zero window to honor.
+func TestFetchUsage_RateLimitFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	old := BaseURL
+	BaseURL = srv.URL
+	defer func() { BaseURL = old }()
+
+	_, err := FetchUsage(context.Background(), "tok")
+	var rl *RateLimitError
+	if !errors.As(err, &rl) {
+		t.Fatalf("expected *RateLimitError, got %T: %v", err, err)
+	}
+	if rl.RetryAfter <= 0 {
+		t.Errorf("fallback RetryAfter must be > 0, got %v", rl.RetryAfter)
 	}
 }
 
