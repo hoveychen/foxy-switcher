@@ -62,12 +62,16 @@ function UsageBar({
   nowMs,
   threshold,
   onCommitThreshold,
+  readOnly = false,
 }: {
   label: string;
   win: UsageWindow | undefined;
   nowMs: number;
   threshold: number;
   onCommitThreshold: (pct: number) => void;
+  // Agent mode: render the threshold marker but disable dragging — the
+  // value comes from the vault and admins set it on the vault web UI.
+  readOnly?: boolean;
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
@@ -132,13 +136,13 @@ function UsageBar({
           <div className="usage-fill" style={{ width: `${pct}%` }} />
         </div>
         <div
-          className={`usage-threshold ${draft !== null ? "dragging" : ""}`}
+          className={`usage-threshold ${draft !== null ? "dragging" : ""} ${readOnly ? "readonly" : ""}`}
           style={{ left: `${markerPct}%` }}
           title={tf("drawer.usage.threshold_title", { pct: Math.round(markerPct) })}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={finishDrag}
-          onPointerCancel={finishDrag}
+          onPointerDown={readOnly ? undefined : onPointerDown}
+          onPointerMove={readOnly ? undefined : onPointerMove}
+          onPointerUp={readOnly ? undefined : finishDrag}
+          onPointerCancel={readOnly ? undefined : finishDrag}
           role="slider"
           aria-valuemin={0}
           aria-valuemax={100}
@@ -157,6 +161,7 @@ export function AccountDrawer({
   nowMs,
   isInUse,
   busy,
+  disableAdminActions = false,
   onClose,
   onSelect,
   onRefresh,
@@ -168,6 +173,10 @@ export function AccountDrawer({
   nowMs: number;
   isInUse: boolean;
   busy: boolean;
+  // Agent mode hides Pause/Resume/Delete + threshold sliders; the
+  // vault is the source of truth for those in agent topology and the
+  // agent-side proxy 405s the corresponding /api/* routes.
+  disableAdminActions?: boolean;
   onClose: () => void;
   onSelect: () => void;
   onRefresh: () => void;
@@ -233,22 +242,26 @@ export function AccountDrawer({
           >
             {t("drawer.actions.refresh")}
           </button>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={onTogglePause}
-            disabled={busy}
-          >
-            {paused ? t("drawer.actions.resume") : t("drawer.actions.pause")}
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-danger"
-            onClick={onDelete}
-            disabled={busy}
-          >
-            {t("drawer.actions.delete")}
-          </button>
+          {!disableAdminActions && (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={onTogglePause}
+                disabled={busy}
+              >
+                {paused ? t("drawer.actions.resume") : t("drawer.actions.pause")}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-danger"
+                onClick={onDelete}
+                disabled={busy}
+              >
+                {t("drawer.actions.delete")}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -261,6 +274,7 @@ export function AccountDrawer({
             nowMs={nowMs}
             threshold={account.five_hour_threshold}
             onCommitThreshold={(pct) => commit("five_hour", pct)}
+            readOnly={disableAdminActions}
           />
           <UsageBar
             label={t("drawer.usage.7d_opus")}
@@ -268,6 +282,7 @@ export function AccountDrawer({
             nowMs={nowMs}
             threshold={account.seven_day_threshold}
             onCommitThreshold={(pct) => commit("seven_day", pct)}
+            readOnly={disableAdminActions}
           />
           <UsageBar
             label={t("drawer.usage.7d_sonnet")}
@@ -275,6 +290,7 @@ export function AccountDrawer({
             nowMs={nowMs}
             threshold={account.seven_day_sonnet_threshold}
             onCommitThreshold={(pct) => commit("seven_day_sonnet", pct)}
+            readOnly={disableAdminActions}
           />
         </div>
       </div>

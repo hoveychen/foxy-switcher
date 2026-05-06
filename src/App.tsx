@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   Account,
   ActivityEvent,
+  AboutResponse,
   AutoSwitchSettings,
   DaemonMode,
   Settings,
@@ -35,6 +36,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [daemonOk, setDaemonOk] = useState<boolean>(true);
   const [daemonMode, setDaemonMode] = useState<DaemonMode | null>(null);
+  // about is fetched once on mount and on every restart, so the
+  // Accounts/Settings pages can branch on vaultMode without refetching
+  // per page. The agent-mode guard hides admin-write UI elements that
+  // would 405 against the agent's local proxy anyway.
+  const [about, setAbout] = useState<AboutResponse | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(
     null,
@@ -138,6 +144,10 @@ export default function App() {
     getDaemonMode()
       .then(setDaemonMode)
       .catch(() => {});
+    apiClient
+      .getAbout()
+      .then(setAbout)
+      .catch(() => {});
   }, []);
 
   // Auto-dismiss the onboarding overlay for users who already have a
@@ -147,20 +157,26 @@ export default function App() {
   // through "choose local or cloud" even though their setup is fine.
   // Fresh installs (mode=combined, zero accounts, no localStorage flag)
   // still walk the wizard.
+  //
+  // Agent-mode dismissal must NOT depend on listAccounts succeeding —
+  // a paired vault behind an SSO that gates /api/* (whitelisting only
+  // /agent/v1/*) makes listAccounts throw, and a Promise.all that
+  // bundled the two would reject on that throw, leave the overlay
+  // open, and trap the user behind the intro video on every restart.
   useEffect(() => {
     if (!showOnboarding) return;
     let canceled = false;
     (async () => {
       try {
-        const [about, list] = await Promise.all([
-          apiClient.getAbout(),
-          apiClient.listAccounts(),
-        ]);
+        const about = await apiClient.getAbout();
         if (canceled) return;
-        const configured =
-          (about.mode === "agent" && Boolean(about.vault_url)) ||
-          (about.mode !== "agent" && list.length > 0);
-        if (configured) dismissOnboarding();
+        if (about.mode === "agent" && about.vault_url) {
+          dismissOnboarding();
+          return;
+        }
+        const list = await apiClient.listAccounts();
+        if (canceled) return;
+        if (list.length > 0) dismissOnboarding();
       } catch {
         // daemon not ready yet — leave overlay open; the next mount or
         // refresh tick will re-evaluate.
@@ -180,12 +196,25 @@ export default function App() {
       // 5s tick if this still races.
       await new Promise((r) => setTimeout(r, 400));
       await refresh();
+      // Mode can flip across a restart (pair / unpair); re-pull about so
+      // agent-mode UI guards stay aligned with the new daemon.
+      apiClient
+        .getAbout()
+        .then(setAbout)
+        .catch(() => {});
     } catch (e) {
       setError(tf("app.error.restart_failed", { error: String(e) }));
     } finally {
       setRestarting(false);
     }
   }, [refresh]);
+
+  // disableAdminActions reflects "this daemon is an agent talking to a
+  // remote vault". Account CRUD belongs to the vault admin web UI in
+  // that topology — see TASKS.md plan agent-lease-only — so the desktop
+  // hides Add / Pause / Resume / Delete / Threshold UI to avoid leading
+  // the user to operations the agent will 405.
+  const disableAdminActions = about?.mode === "agent";
 
   // Apply theme to <html data-theme>. CSS tokens.css already keys its
   // dark-mode block off both `prefers-color-scheme: dark` (system) and
@@ -352,6 +381,7 @@ export default function App() {
             nowMs={now}
             isInUse={selectedAccount.id === managedAccountId}
             busy={busyAccountId === selectedAccount.id}
+            disableAdminActions={disableAdminActions}
             onClose={() => setSelectedAccountId(null)}
             onSelect={() => onUseNow(selectedAccount.id)}
             onRefresh={() => onRefreshAccount(selectedAccount.id)}
@@ -435,6 +465,7 @@ export default function App() {
           onRefresh={refresh}
           onError={setError}
           stale={!daemonOk}
+          disableAdminActions={disableAdminActions}
         />
       )}
       {route === "activity" && (

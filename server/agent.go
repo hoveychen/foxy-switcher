@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/activity"
@@ -55,10 +58,11 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	// without the bus the activity routes 500 instead of behaving like
 	// an empty timeline, which is more confusing than crashing loudly.
 	dbPath := filepath.Join(opts.DataDir, "agent-activity.db")
-	bus, err := openAgentBus(dbPath, logger)
+	agentStore, bus, err := openAgentBus(dbPath, logger)
 	if err != nil {
 		return fmt.Errorf("agent activity bus: %w", err)
 	}
+	defer agentStore.Close()
 
 	client := httpclient.New(cfg.VaultURL)
 	client.SetToken(cfg.DeviceToken)
@@ -123,10 +127,63 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
-	// Everything else proxies to the vault. ReverseProxy preserves request
-	// bodies, query strings and SSE streaming out of the box.
-	proxy := newVaultProxy(target, cfg.DeviceToken)
-	mux.Handle("/", proxy)
+
+	// Lease-friendly routes proxy through to the vault's /agent/v1/api/*
+	// surface (the bearer-only path the deployment whitelists past any
+	// outer SSO). agentAPIWhitelist on the vault side enforces the same
+	// allow-list — defense in depth, so a buggy / compromised agent
+	// can't reach admin writes by hitting a different proxy path.
+	proxy := newVaultAPIProxy(target, cfg.DeviceToken)
+	// Vault has no credinject so its /api/dashboard returns
+	// kpis.in_use_account_id = 0. Agent has the local Cred — patch the
+	// response on its way back so the desktop's "in use" highlight
+	// renders correctly.
+	proxy.ModifyResponse = patchDashboardInUseAccount(cc)
+	for _, path := range []string{
+		"GET /api/accounts",
+		"GET /api/dashboard",
+		"GET /api/activity",
+		"GET /api/activity/stream",
+		"GET /api/devices",
+		"POST /api/accounts/{id}/refresh",
+		"POST /api/accounts/{id}/select",
+	} {
+		mux.Handle(path, proxy)
+	}
+
+	// Admin write routes are 405'd in agent mode — the vault is the
+	// single source of truth for account CRUD, and a remote agent is
+	// "use only". Frontend in agent mode hides these buttons (P4); the
+	// 405 is the safety net for anyone bypassing the UI. Same JSON shape
+	// as agentAPIWhitelist on the vault so error rendering is uniform.
+	denyAdmin := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "agent mode is read-only; use the vault admin web UI at " + cfg.VaultURL,
+		})
+	})
+	for _, path := range []string{
+		"POST /api/accounts/login",
+		"POST /api/accounts/callback",
+		"DELETE /api/accounts/{id}",
+		"POST /api/accounts/{id}/pause",
+		"POST /api/accounts/{id}/resume",
+		"POST /api/accounts/{id}/thresholds",
+		"POST /api/reset",
+		"POST /api/pair/init",
+		"POST /api/pair/poll",
+	} {
+		mux.Handle(path, denyAdmin)
+	}
+
+	// settings / auto-switch are per-agent local prefs (theme, poll
+	// interval, restore-on-quit, switch policy). The agent's own store
+	// (backed by agent-activity.db) already exposes Get/Set helpers, so
+	// we wire those directly here — no need to reach the vault.
+	registerLocalPrefRoutes(mux, agentStore)
+	// Anything else (typo, unmapped path) falls through to ServeMux's
+	// default 404 — agent mode shouldn't be a generic vault proxy.
 
 	httpSrv := &http.Server{
 		Handler:           mux,
@@ -156,13 +213,20 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 
 // openAgentBus is a thin convenience around activity.NewBus. The agent's
 // bus persists into its own SQLite file so events survive an agent
-// restart even though the vault state lives elsewhere.
-func openAgentBus(path string, logger *log.Logger) (*activity.Bus, error) {
+// restart even though the vault state lives elsewhere. Returns the store
+// alongside the bus so the agent can also use it for per-agent prefs
+// (settings + auto-switch) — same DB, separate kv rows.
+func openAgentBus(path string, logger *log.Logger) (*store.Store, *activity.Bus, error) {
 	st, err := store.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return activity.NewBus(st.DB(), logger)
+	bus, err := activity.NewBus(st.DB(), logger)
+	if err != nil {
+		st.Close()
+		return nil, nil, err
+	}
+	return st, bus, nil
 }
 
 // readAgentConfig loads ~/.foxy-switcher/agent-config.json (or the override
@@ -181,28 +245,33 @@ func readAgentConfig(dataDir string) (*AgentConfig, error) {
 	return &cfg, nil
 }
 
-// newVaultProxy wraps httputil.ReverseProxy with a Director that injects
-// the agent's bearer token on every forwarded request. The token's
-// lifecycle is tied to the device row on the vault — revoking the device
-// makes every proxied call 401.
-func newVaultProxy(target *url.URL, token string) *httputil.ReverseProxy {
+// newVaultAPIProxy wraps httputil.ReverseProxy with a Director that:
+//  1. Rewrites incoming /api/* paths to /agent/v1/api/* so the request
+//     hits the bearer-only agent surface on the vault (which deployments
+//     whitelist past their outer SSO). agentAPIWhitelist on the vault
+//     enforces lease/admin boundary.
+//  2. Injects the agent's bearer token. Token lifecycle is tied to the
+//     device row on the vault — revoking the device 401s every call.
+//  3. Forces Host to the vault target so virtual-host vaults (caddy /
+//     traefik) match the right route.
+//
+// Paths already prefixed with /agent/v1/ pass through verbatim — the
+// agent's lease-flow callers (httpclient) hit that surface directly and
+// shouldn't be double-prefixed.
+func newVaultAPIProxy(target *url.URL, token string) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	origDirector := proxy.Director
 	proxy.Director = func(r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/agent/v1/") {
+			r.URL.Path = "/agent/v1" + r.URL.Path
+			r.URL.RawPath = "" // let net/http re-encode from Path
+		}
 		origDirector(r)
-		// Override Host so virtual-host vaults (caddy / traefik routing
-		// on Host header) match the right route.
 		r.Host = target.Host
-		// Inject Bearer. Header is set even on calls that vault doesn't
-		// require auth for — vault ignores extra Authorization on those
-		// routes, so this stays simple.
 		if token != "" {
 			r.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
-	// Surface upstream connectivity errors as 502 with a JSON body so the
-	// frontend can render "vault unreachable" instead of getting a blank
-	// stream.
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusBadGateway)
@@ -211,6 +280,128 @@ func newVaultProxy(target *url.URL, token string) *httputil.ReverseProxy {
 		})
 	}
 	return proxy
+}
+
+// patchDashboardInUseAccount returns a ReverseProxy.ModifyResponse hook
+// that rewrites kpis.in_use_account_id on /api/dashboard responses to
+// the agent-local Cred coordinator's view. The vault-side handler
+// returns 0 because vault mode has no credinject; only the agent knows
+// which account is currently injected on this machine. Other paths
+// pass through verbatim.
+func patchDashboardInUseAccount(cc *credinject.Coordinator) func(*http.Response) error {
+	return func(resp *http.Response) error {
+		if resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		// Match against the original request path the agent's mux saw,
+		// which still bears the /api/* prefix the desktop frontend uses.
+		// Using the (post-rewrite) URL.Path would force us to track the
+		// /agent/v1 prefix here too, which is a layering smell.
+		if resp.Request == nil || !strings.HasSuffix(resp.Request.URL.Path, "/api/dashboard") {
+			return nil
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		_ = resp.Body.Close()
+		var doc map[string]any
+		if err := json.Unmarshal(body, &doc); err != nil {
+			// Couldn't decode — pass through verbatim. ContentLength has
+			// already been computed by the upstream; we just need to
+			// reset the body so the proxy can copy it through.
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.ContentLength = int64(len(body))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			return nil
+		}
+		if kpis, ok := doc["kpis"].(map[string]any); ok {
+			kpis["in_use_account_id"] = cc.Status().ManagedAccountID
+		}
+		out, err := json.Marshal(doc)
+		if err != nil {
+			// Fallback to original body on marshal failure (shouldn't
+			// happen for any reachable doc shape, but defensive).
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.ContentLength = int64(len(body))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			return nil
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(out))
+		resp.ContentLength = int64(len(out))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
+		return nil
+	}
+}
+
+// registerLocalPrefRoutes wires GET/SET handlers for per-agent prefs —
+// settings (theme, poll interval, restore-on-quit, threshold default,
+// sidebar mode) and auto-switch (enabled + policy). These are agent-
+// local: each desktop / TUI may pick a different theme without forcing
+// every other paired device on the same vault to follow. The store is
+// the agent's own agent-activity.db (kv rows) so survival across
+// restarts is free.
+//
+// Wire format mirrors httpapi.Server's /api/settings + /api/auto-switch
+// exactly so the desktop frontend doesn't need to special-case agent
+// mode — same JSON shape, same paths.
+func registerLocalPrefRoutes(mux *http.ServeMux, st *store.Store) {
+	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		v, err := st.GetSettings(r.Context())
+		if err != nil {
+			writeJSONResponse(w, http.StatusInternalServerError,
+				map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONResponse(w, http.StatusOK, v)
+	})
+	mux.HandleFunc("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		// Decode into a partial-patch shape: missing fields preserve the
+		// current value. Mirrors the desktop's optimistic-update flow,
+		// which sends only the changed key.
+		current, err := st.GetSettings(r.Context())
+		if err != nil {
+			writeJSONResponse(w, http.StatusInternalServerError,
+				map[string]string{"error": err.Error()})
+			return
+		}
+		patch := current
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			writeJSONResponse(w, http.StatusBadRequest,
+				map[string]string{"error": "decode body: " + err.Error()})
+			return
+		}
+		out, err := st.SetSettings(r.Context(), patch)
+		if err != nil {
+			writeJSONResponse(w, http.StatusInternalServerError,
+				map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONResponse(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("GET /api/auto-switch", func(w http.ResponseWriter, r *http.Request) {
+		v, err := st.GetAutoSwitch(r.Context())
+		if err != nil {
+			writeJSONResponse(w, http.StatusInternalServerError,
+				map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONResponse(w, http.StatusOK, v)
+	})
+	mux.HandleFunc("POST /api/auto-switch", func(w http.ResponseWriter, r *http.Request) {
+		var req store.AutoSwitch
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONResponse(w, http.StatusBadRequest,
+				map[string]string{"error": "decode body: " + err.Error()})
+			return
+		}
+		if err := st.SetAutoSwitch(r.Context(), req); err != nil {
+			writeJSONResponse(w, http.StatusInternalServerError,
+				map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONResponse(w, http.StatusOK, req)
+	})
 }
 
 // agentAbout is the trimmed shape /api/about returns in agent mode.

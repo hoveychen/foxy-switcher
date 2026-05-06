@@ -393,6 +393,16 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	rootMux := http.NewServeMux()
 	vaultHTTP := httpserver.New(vaultSvc, st)
 	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
+	// Re-expose the frontend httpapi under /agent/v1/api/ so a remote
+	// agent can drive the same view + lease routes via the bearer-auth'd
+	// agent surface — useful for vault deployments that hide /api/*
+	// behind an outer SSO. agentAPIWhitelist enforces the lease/admin
+	// boundary on top of the BearerAuth middleware that server.Handler()
+	// already applies in vault mode, so a compromised agent can't reach
+	// admin writes through this mount even with a valid device token.
+	// More-specific prefix wins over /agent/v1/, so this catches the
+	// /agent/v1/api/* subset before vaultHTTP.Handler() sees it.
+	rootMux.Handle("/agent/v1/api/", http.StripPrefix("/agent/v1", agentAPIWhitelist(server.Handler())))
 	vaultHTTP.RegisterWebRoutes(rootMux)
 	vaultHTTP.RegisterAPIRoutes(rootMux)
 	if webapp.Available() {

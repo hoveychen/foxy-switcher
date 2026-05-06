@@ -221,6 +221,7 @@
   "settings.vault.pair.copy": "复制",
   "settings.vault.pair.copied": "已复制",
   "settings.vault.pair.start": "在这里配对…",
+  "settings.vault.manage.btn": "去 vault 管理…",
   "settings.vault.local.label": "仅本机",
   "settings.vault.local.sub": "Vault 和 agent 一同跑在这台机器上。要把别的设备加入，先在某处部署一个 vault，然后在该设备上跑配对命令。",
   "settings.vault.unpair.label": "取消配对",

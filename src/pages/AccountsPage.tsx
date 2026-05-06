@@ -211,6 +211,7 @@ function AccountCard({
   onDelete,
   onTogglePause,
   busy,
+  disableAdminActions,
 }: {
   a: Account;
   nowMs: number;
@@ -222,6 +223,7 @@ function AccountCard({
   onDelete: () => void;
   onTogglePause: () => void;
   busy: boolean;
+  disableAdminActions: boolean;
 }) {
   const paused = a.status !== "active";
   const status = rowStatus(a, nowMs);
@@ -274,17 +276,23 @@ function AccountCard({
               disabled: isInUse || !isSelectable(a),
             },
             { label: t("accounts.kebab.refresh"), onClick: onRefresh },
-            {
-              label: paused
-                ? t("accounts.kebab.resume")
-                : t("accounts.kebab.pause"),
-              onClick: onTogglePause,
-            },
-            {
-              label: t("accounts.kebab.delete"),
-              onClick: onDelete,
-              danger: true,
-            },
+            // Pause/Resume + Delete write to vault state, hidden in
+            // agent mode (admin lives on the vault web UI).
+            ...(disableAdminActions
+              ? []
+              : [
+                  {
+                    label: paused
+                      ? t("accounts.kebab.resume")
+                      : t("accounts.kebab.pause"),
+                    onClick: onTogglePause,
+                  },
+                  {
+                    label: t("accounts.kebab.delete"),
+                    onClick: onDelete,
+                    danger: true,
+                  },
+                ]),
           ]}
         />
       </div>
@@ -349,6 +357,7 @@ export function AccountsPage({
   onRefresh,
   onError,
   stale,
+  disableAdminActions = false,
 }: {
   accounts: Account[];
   managedAccountId: number;
@@ -367,6 +376,10 @@ export function AccountsPage({
   onRefresh: () => Promise<void>;
   onError: (msg: string) => void;
   stale: boolean;
+  // Agent mode → vault owns account CRUD; hide Add/Pause/Resume/Delete
+  // UI on this page so the user isn't led to operations the agent will
+  // 405. Currently driven by `about.mode === "agent"` from /api/about.
+  disableAdminActions?: boolean;
 }) {
   const [loginState, setLoginState] = useState<LoginState>({ phase: "idle" });
   const [pasted, setPasted] = useState("");
@@ -469,14 +482,16 @@ export function AccountsPage({
         autoSwitch={autoSwitch}
         onAutoSwitchToggle={onAutoSwitchToggle}
         actions={
-          <button
-            className="btn btn-primary"
-            onClick={startLogin}
-            disabled={modalOpen}
-          >
-            <Icon d={ICON_PLUS} />
-            {t("accounts.add_button")}
-          </button>
+          disableAdminActions ? null : (
+            <button
+              className="btn btn-primary"
+              onClick={startLogin}
+              disabled={modalOpen}
+            >
+              <Icon d={ICON_PLUS} />
+              {t("accounts.add_button")}
+            </button>
+          )
         }
       />
       <div className="page">
@@ -609,6 +624,7 @@ export function AccountsPage({
                   onDelete={() => onDelete(a.id)}
                   onTogglePause={() => onTogglePause(a)}
                   busy={busyAccountId === a.id}
+                  disableAdminActions={disableAdminActions}
                 />
               ))}
             </div>

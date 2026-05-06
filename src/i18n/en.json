@@ -221,6 +221,7 @@
   "settings.vault.pair.copy": "Copy",
   "settings.vault.pair.copied": "Copied",
   "settings.vault.pair.start": "Pair from here…",
+  "settings.vault.manage.btn": "Manage on vault…",
   "settings.vault.local.label": "Local-only",
   "settings.vault.local.sub": "Vault and agent run together on this machine. Pair another device by deploying a vault somewhere reachable, then running the pair command on that device.",
   "settings.vault.unpair.label": "Unpair from this vault",

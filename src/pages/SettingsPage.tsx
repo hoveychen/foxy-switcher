@@ -483,26 +483,32 @@ export function SettingsPage({
               />
             </div>
 
-            <div className="settings-row">
-              <div className="settings-row-text">
-                <div className="settings-row-label">
-                  {t("settings.threshold_default.label")}
+            {/* threshold_default writes to vault state in agent mode;
+                hide so the user isn't led to a 405 path. The vault
+                admin web UI is the right place for cross-agent
+                threshold defaults. */}
+            {vaultMode !== "agent" && (
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <div className="settings-row-label">
+                    {t("settings.threshold_default.label")}
+                  </div>
+                  <div className="settings-row-sub text-meta">
+                    {t("settings.threshold_default.sub")}
+                  </div>
                 </div>
-                <div className="settings-row-sub text-meta">
-                  {t("settings.threshold_default.sub")}
-                </div>
+                <NumberStepper
+                  value={settings.default_threshold_percent}
+                  min={50}
+                  max={100}
+                  step={5}
+                  suffix="%"
+                  onChange={(v) =>
+                    onSettingsChange({ default_threshold_percent: v })
+                  }
+                />
               </div>
-              <NumberStepper
-                value={settings.default_threshold_percent}
-                min={50}
-                max={100}
-                step={5}
-                suffix="%"
-                onChange={(v) =>
-                  onSettingsChange({ default_threshold_percent: v })
-                }
-              />
-            </div>
+            )}
           </div>
         </section>
 
@@ -541,6 +547,16 @@ export function SettingsPage({
                       )}
                     </div>
                   </div>
+                  {about?.vault_url && (
+                    <a
+                      href={`${about.vault_url}/admin`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn"
+                    >
+                      {t("settings.vault.manage.btn")}
+                    </a>
+                  )}
                 </div>
                 {about?.device_id && (
                   <div className="settings-row">
