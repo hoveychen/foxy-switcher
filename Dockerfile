@@ -1,29 +1,28 @@
 # syntax=docker/dockerfile:1.7
 #
-# Foxy-switcher cloud vault — release-driven build.
+# Foxy-switcher cloud vault — source build.
 #
-# Stage 1 (fetch):   alpine + curl downloads the per-architecture binary
-#                    from the configured GitHub Release. The Release CI
-#                    (release.yml::release-linux) bakes the React panel
-#                    into //go:embed and ships static binaries for both
-#                    amd64 and arm64, so nothing is built at image-build
-#                    time. The fetch stage runs on $BUILDPLATFORM (no
-#                    qemu emulation) and selects the asset to download
-#                    based on $TARGETPLATFORM, so a single buildx
-#                    invocation can produce a multi-arch manifest.
-# Stage 2 (runtime): distroless/static carries the binary, mounts
-#                    /workspace for state, exposes 8080.
+# Stage 1 (webapp-builder): node + pnpm builds the React panel into dist/.
+# Stage 2 (go-builder):     golang cross-compiles foxy-switcher for the
+#                           target arch. The webapp dist is copied into
+#                           server/vault/webapp/static/ first so //go:embed
+#                           bakes it into the binary. Pinned to
+#                           $BUILDPLATFORM with GOARCH=$TARGETARCH so the
+#                           Go toolchain runs natively (no qemu).
+# Stage 3 (runtime):        distroless/static carries the binary, mounts
+#                           /workspace for state, exposes 8080.
 #
-# State (SQLite, leases, sessions, agent-config, password hash) lives
-# in /workspace, matching muvee's auto-mounted persistent storage path.
-# Outside muvee, mount any volume at /workspace; without persistence
-# every redeploy wipes the admin password and every device pairing.
+# State (SQLite, leases, sessions, agent-config, password hash) lives in
+# /workspace, matching muvee's auto-mounted persistent storage path.
+# Outside muvee, mount any volume at /workspace; without persistence every
+# redeploy wipes the admin password and every device pairing.
 #
 # Build:
-#   docker build -t foxy-switcher .                      # latest tag
+#   docker build -t foxy-switcher .
 #   docker build --build-arg VERSION=v1.0.1 -t foxy-switcher:1.0.1 .
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     --build-arg VERSION=v1.0.2 -t ghcr.io/hoveychen/foxy-switcher:v1.0.2 --push .
+#     --build-arg VERSION=v1.0.2 \
+#     -t ghcr.io/hoveychen/foxy-switcher:v1.0.2 --push .
 #
 # Run on muvee: workspace is auto-mounted, no -v needed.
 #
@@ -31,66 +30,61 @@
 #   docker run --rm -p 8080:8080 -v foxy-vault-data:/workspace \
 #     ghcr.io/hoveychen/foxy-switcher:latest
 
-ARG VERSION=latest
+ARG VERSION=dev
+ARG NODE_VERSION=22
+ARG GO_VERSION=1.26
+ARG PNPM_VERSION=10
 
-# --- stage 1: fetch the released binary ------------------------------------
-# Pin fetch to $BUILDPLATFORM so curl runs natively on the builder, not
-# under qemu emulation when buildx targets a foreign arch. The asset URL
-# is selected from $TARGETPLATFORM instead.
-FROM --platform=$BUILDPLATFORM alpine:3 AS fetch
+# --- stage 1: build the React webapp ----------------------------------------
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS webapp-builder
+ARG PNPM_VERSION
+RUN npm install -g pnpm@${PNPM_VERSION}
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml ./
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
+
+COPY tsconfig.json tsconfig.node.json vite.config.ts index.html ./
+COPY src ./src
+RUN pnpm build
+
+# --- stage 2: build the Go binary -------------------------------------------
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS go-builder
+ARG TARGETARCH
 ARG VERSION
-ARG TARGETPLATFORM
-RUN apk add --no-cache curl ca-certificates
-# Resolve "latest" lazily so a `docker build` without --build-arg picks
-# up whatever tag is current. Pinned versions skip the API call.
-# set -eux so a 404 / network failure aborts the layer instead of being
-# swallowed by the trailing `|| true`. The previous form chained every
-# step with && and ||, which let a failed fetch exit 0 and cache an
-# empty layer; downstream COPY then "succeeds" with a missing binary.
-#
-# The sha256 manifest references the asset by its release name
-# (foxy-switcher-linux-<arch>), so download under that name, verify in
-# place, then rename to /foxy-switcher.
-RUN set -eux; \
-    case "$TARGETPLATFORM" in \
-      linux/amd64) ARCH=amd64 ;; \
-      linux/arm64) ARCH=arm64 ;; \
-      "") ARCH=amd64 ;; \
-      *) echo "unsupported TARGETPLATFORM=$TARGETPLATFORM" >&2; exit 1 ;; \
-    esac; \
-    asset="foxy-switcher-linux-${ARCH}"; \
-    # Resolve "latest" to a concrete tag once, then use it for both the
-    # binary and its sha256 sidecar. Otherwise the sha256 URL would
-    # literally say `.../releases/download/latest/...` (404), and the
-    # integrity check would silently fall through.
-    if [ "$VERSION" = "latest" ]; then \
-      VERSION=$(curl -fsSL https://api.github.com/repos/hoveychen/foxy-switcher/releases/latest \
-                | grep -oE '"tag_name": *"[^"]+"' \
-                | head -1 | sed -E 's/.*"([^"]+)"$/\1/'); \
-      [ -n "$VERSION" ] || { echo "could not resolve latest release tag" >&2; exit 1; }; \
-      echo "==> resolved latest -> $VERSION"; \
-    fi; \
-    base="https://github.com/hoveychen/foxy-switcher/releases/download/${VERSION}"; \
-    echo "==> fetching ${base}/${asset}"; \
-    cd /; \
-    curl -fL --retry 3 --retry-delay 2 -o "$asset" "${base}/${asset}"; \
-    if curl -fL -o "${asset}.sha256" "${base}/${asset}.sha256" 2>/dev/null; then \
-      sha256sum -c "${asset}.sha256"; \
-    else \
-      echo "==> sha256 file unavailable for $VERSION/$ARCH, skipping integrity check"; \
-    fi; \
-    mv "$asset" /foxy-switcher; \
-    chmod +x /foxy-switcher
+WORKDIR /src
 
-# --- stage 2: distroless runtime -------------------------------------------
+# Warm the module cache before copying the rest of the tree so unrelated
+# source edits don't invalidate `go mod download`.
+COPY server/go.mod server/go.sum ./server/
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    cd server && go mod download
+
+COPY server ./server
+# Bake the React bundle into the //go:embed directory. server/vault/webapp/static
+# already exists in the tree (with .gitkeep); this overlay adds index.html +
+# assets/ so the vault binary serves /admin and /app from itself.
+COPY --from=webapp-builder /app/dist/ ./server/vault/webapp/static/
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    set -eux; \
+    cd server; \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+      go build -trimpath \
+        -ldflags="-s -w -X github.com/hoveychen/foxy-switcher/server/deviceinfo.Version=${VERSION}" \
+        -o /out/foxy-switcher .
+
+# --- stage 3: distroless runtime --------------------------------------------
 FROM gcr.io/distroless/static:latest
-COPY --from=fetch /foxy-switcher /usr/local/bin/foxy-switcher
+COPY --from=go-builder /out/foxy-switcher /usr/local/bin/foxy-switcher
 
 # /workspace is the SQLite + agent-config home. muvee auto-mounts a
-# persistent volume here; outside muvee, supply -v
-# foxy-vault-data:/workspace. Declared as a VOLUME so a `docker run`
-# without -v gets an anonymous volume rather than silently writing
-# into the image layer (which redeploys throw away).
+# persistent volume here; outside muvee, supply -v foxy-vault-data:/workspace.
+# Declared as a VOLUME so a `docker run` without -v gets an anonymous volume
+# rather than silently writing into the image layer (which redeploys throw away).
 VOLUME ["/workspace"]
 EXPOSE 8080
 

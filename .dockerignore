@@ -1,0 +1,38 @@
+# Keep the build context tight — Docker COPY only needs server/, src/, the
+# pnpm/tsconfig/vite/index.html files. Excluding the rest avoids shipping
+# hundreds of MB of node_modules + Rust target dirs to the daemon.
+
+.git
+.github
+.claude
+.vscode
+.idea
+.DS_Store
+
+# Node + Vite outputs (rebuilt inside the webapp-builder stage)
+node_modules
+dist
+dist-ssr
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# Tauri (desktop-app, not used by the cloud-vault image)
+src-tauri
+video
+site
+
+# Server local build artifacts (rebuilt inside the go-builder stage)
+build
+dist-server
+dist-bin
+
+# Editor / OS junk
+*.log
+*.swp
+*.swo
+
+# Local-only scratchpads
+TASKS.md
+README.md
+docs

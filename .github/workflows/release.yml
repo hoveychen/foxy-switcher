@@ -417,14 +417,15 @@ jobs:
           draft: false
           fail_on_unmatched_files: true
 
-  # Build and push the cloud-vault image to GHCR. The Dockerfile fetches
-  # the per-arch binary from the GitHub Release the previous jobs just
-  # published, so we need release-linux (both arches) to finish first.
-  # buildx targets linux/amd64,linux/arm64; the Dockerfile's fetch stage
-  # is pinned to $BUILDPLATFORM to avoid running curl under qemu.
+  # Build and push the cloud-vault image to GHCR. The Dockerfile builds
+  # everything from source (React → //go:embed → static Go binary), so
+  # this job is independent of release-linux and runs in parallel.
+  # buildx targets linux/amd64,linux/arm64; the webapp + go-builder stages
+  # are pinned to $BUILDPLATFORM with GOARCH=$TARGETARCH so the Go
+  # toolchain runs natively (no qemu emulation).
   docker-publish:
     name: docker-publish (ghcr)
-    needs: [release-linux]
+    needs: [create-release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -464,9 +465,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Pass the tag through so the Dockerfile fetch stage downloads
-          # the matching release asset (e.g. v1.2.3) instead of falling
-          # back to the hard-coded default.
+          # Pass the tag through so the Go build's -ldflags bakes the
+          # release version into deviceinfo.Version (instead of "dev").
           build-args: |
             VERSION=${{ github.ref_name }}
           provenance: false
