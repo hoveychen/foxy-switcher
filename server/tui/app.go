@@ -26,6 +26,12 @@ type App struct {
 	activity  *activityPage
 	settings  *settingsPage
 
+	// First-launch vault wizard. Inactive after onboardingDecisionMsg
+	// confirms the user already has a working vault (paired agent or
+	// combined-mode user with accounts), or once the user has picked
+	// local / approved a cloud pairing during this session.
+	onboarding onboardingState
+
 	// Outer terminal dimensions (full screen, including chrome).
 	width, height int
 }
@@ -43,12 +49,13 @@ func newApp(c *Client, dataDir, daemonMode string) *App {
 	inner.daemonMode = daemonMode
 
 	app := &App{
-		dataDir:   dataDir,
-		screen:    screenDashboard,
-		accounts:  inner,
-		dashboard: newDashboardPage(),
-		activity:  newActivityPage(),
-		settings:  newSettingsPage(),
+		dataDir:    dataDir,
+		screen:     screenDashboard,
+		accounts:   inner,
+		dashboard:  newDashboardPage(),
+		activity:   newActivityPage(),
+		settings:   newSettingsPage(),
+		onboarding: newOnboardingState(),
 	}
 	app.settings.setDaemonMode(daemonMode)
 	return app
@@ -62,11 +69,25 @@ func (a *App) Init() tea.Cmd {
 		activityLoadCmd(a.accounts.client, a.activity.filter),
 		activityTickCmd(),
 		settingsLoadCmd(a.accounts.client),
+		decideOnboardingCmd(a.accounts.client),
 	)
 }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case onboardingDecisionMsg:
+		// Only the first decision flips the wizard on. Later refreshes
+		// (if anyone ever schedules one) won't yank the user back into
+		// onboarding mid-session.
+		if !a.onboarding.decided && msg.needOnboarding {
+			a.onboarding.phase = onboardingChoose
+		}
+		a.onboarding.decided = true
+		return a, nil
+	case pairInitMsg:
+		return a, a.onPairInitMsg(msg)
+	case pairPollMsg:
+		return a, a.onPairPollMsg(msg)
 	case dashboardLoadedMsg:
 		a.dashboard.onLoaded(msg)
 		return a, nil
@@ -108,6 +129,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case tea.KeyMsg:
+		// Onboarding wizard captures all keys while active — the user
+		// must finish the vault choice before the rest of the TUI is
+		// reachable. ctrl+c quits regardless.
+		if a.onboarding.phase != onboardingInactive {
+			return a, a.handleOnboardingKey(msg)
+		}
 		// Global shortcuts win unless an accounts modal is open (textinput etc.
 		// must capture every keystroke). The other pages have no modals in
 		// Phase 1, so we always honor globals when the active page isn't
@@ -252,6 +279,9 @@ func (a *App) pageHeight() int {
 func (a *App) View() string {
 	if a.width <= 0 || a.height <= 0 {
 		return "Loading…"
+	}
+	if a.onboarding.phase != onboardingInactive {
+		return a.viewOnboarding()
 	}
 
 	mode := pickSidebarMode(a.width)

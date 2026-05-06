@@ -221,6 +221,60 @@ type About struct {
 	SQLiteSizeB   int64  `json:"sqlite_size_b"`
 	StartedAtMS   int64  `json:"started_at_ms"`
 	UptimeSeconds int64  `json:"uptime_seconds"`
+	// Mode + VaultURL + DeviceID let the onboarding decision know
+	// whether the daemon is already paired ("agent" with a vault_url)
+	// or running combined. The desktop already consumes these fields;
+	// the TUI mirrors them here to drive the same auto-dismiss rule.
+	Mode     string `json:"mode"`
+	VaultURL string `json:"vault_url"`
+	DeviceID string `json:"device_id"`
+}
+
+// PairInitOut mirrors the daemon's POST /api/pair/init response.
+type PairInitOut struct {
+	UserCode        string `json:"user_code"`
+	VerificationURL string `json:"verification_url"`
+	ExpiresInMs     int64  `json:"expires_in_ms"`
+}
+
+// PairPollOut mirrors the daemon's POST /api/pair/poll response.
+// Status is one of "pending" | "approved" | "denied" | "expired".
+// device_id / device_token are only populated for "approved".
+type PairPollOut struct {
+	Status      string `json:"status"`
+	DeviceID    string `json:"device_id,omitempty"`
+	DeviceToken string `json:"device_token,omitempty"`
+}
+
+// PairInit starts the device-flow handshake against vaultURL via the
+// daemon's loopback proxy. The proxy is unaffected by daemon mode —
+// combined-mode daemons are perfectly happy to forward the request to
+// the cloud vault during onboarding, before any agent-config.json
+// exists.
+func (c *Client) PairInit(ctx context.Context, vaultURL, deviceName, clientNonce string) (PairInitOut, error) {
+	body := map[string]string{
+		"vault_url":    vaultURL,
+		"device_name":  deviceName,
+		"client_nonce": clientNonce,
+	}
+	var out PairInitOut
+	if err := c.do(ctx, http.MethodPost, "/api/pair/init", body, &out); err != nil {
+		return PairInitOut{}, err
+	}
+	return out, nil
+}
+
+// PairPoll asks the daemon for the current pairing state.
+func (c *Client) PairPoll(ctx context.Context, vaultURL, clientNonce string) (PairPollOut, error) {
+	body := map[string]string{
+		"vault_url":    vaultURL,
+		"client_nonce": clientNonce,
+	}
+	var out PairPollOut
+	if err := c.do(ctx, http.MethodPost, "/api/pair/poll", body, &out); err != nil {
+		return PairPollOut{}, err
+	}
+	return out, nil
 }
 
 func (c *Client) GetAbout(ctx context.Context) (About, error) {
