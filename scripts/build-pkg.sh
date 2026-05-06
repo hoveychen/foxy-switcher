@@ -41,8 +41,30 @@ if [ ! -d "$APP_PATH" ]; then
 fi
 
 echo "==> wrapping $APP_PATH"
+
+# Build via --root + a hand-edited component plist so we can override two
+# pkgbuild defaults that quietly break local dev installs:
+#   - BundleIsRelocatable=true: PackageKit looks the bundle id up in the
+#     LaunchServices database and rewrites --install-location to wherever
+#     a copy of the .app is already registered (e.g. a stale build sitting
+#     in target/release/bundle/macos/), so /Applications is silently
+#     ignored and the install appears to succeed without changing anything.
+#   - BundleOverwriteAction=upgrade: emits the bundle into <upgrade-bundle>
+#     in PackageInfo, which makes PackageKit skip the component when an
+#     equal-or-newer version is already installed. Switching to "update"
+#     moves it to <update-bundle> and overwrites unconditionally.
+PKG_STAGING="$(mktemp -d)"
+trap 'rm -rf "$PKG_STAGING"' EXIT
+cp -R "$APP_PATH" "$PKG_STAGING/"
+
+COMPONENT_PLIST="$PKG_STAGING/component.plist"
+pkgbuild --analyze --root "$PKG_STAGING" "$COMPONENT_PLIST" >/dev/null
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false"  "$COMPONENT_PLIST"
+/usr/libexec/PlistBuddy -c "Set :0:BundleOverwriteAction update" "$COMPONENT_PLIST"
+
 pkgbuild \
-  --component "$APP_PATH" \
+  --root "$PKG_STAGING" \
+  --component-plist "$COMPONENT_PLIST" \
   --install-location /Applications \
   --identifier "$IDENT" \
   --version "$VERSION" \
