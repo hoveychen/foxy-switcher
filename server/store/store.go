@@ -259,6 +259,12 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply auth schema: %w", err)
 	}
+	for _, stmt := range authColumnMigrations {
+		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
+			db.Close()
+			return nil, fmt.Errorf("migrate %q: %w", stmt, err)
+		}
+	}
 	return &Store{db: db}, nil
 }
 

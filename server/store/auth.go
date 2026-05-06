@@ -24,7 +24,14 @@ CREATE TABLE IF NOT EXISTS devices (
   name          TEXT    NOT NULL,
   token_hash    TEXT    NOT NULL,
   created_at    INTEGER NOT NULL,
-  last_seen_at  INTEGER NOT NULL DEFAULT 0
+  last_seen_at  INTEGER NOT NULL DEFAULT 0,
+  hostname      TEXT    NOT NULL DEFAULT '',
+  os            TEXT    NOT NULL DEFAULT '',
+  os_version    TEXT    NOT NULL DEFAULT '',
+  arch          TEXT    NOT NULL DEFAULT '',
+  model         TEXT    NOT NULL DEFAULT '',
+  app_version   TEXT    NOT NULL DEFAULT '',
+  client_type   TEXT    NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS devices_token_hash ON devices (token_hash);
 
@@ -36,7 +43,14 @@ CREATE TABLE IF NOT EXISTS pairings (
   device_id     TEXT    NOT NULL DEFAULT '',
   device_token  TEXT    NOT NULL DEFAULT '',
   expires_at    INTEGER NOT NULL,
-  created_at    INTEGER NOT NULL
+  created_at    INTEGER NOT NULL,
+  hostname      TEXT    NOT NULL DEFAULT '',
+  os            TEXT    NOT NULL DEFAULT '',
+  os_version    TEXT    NOT NULL DEFAULT '',
+  arch          TEXT    NOT NULL DEFAULT '',
+  model         TEXT    NOT NULL DEFAULT '',
+  app_version   TEXT    NOT NULL DEFAULT '',
+  client_type   TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS pairings_user_code ON pairings (user_code);
 CREATE INDEX IF NOT EXISTS pairings_expires_at ON pairings (expires_at);
@@ -59,6 +73,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS leases_account_id_uniq ON leases (account_id);
 CREATE INDEX IF NOT EXISTS leases_device_id ON leases (device_id);
 CREATE INDEX IF NOT EXISTS leases_expires_at ON leases (expires_at);
 `
+
+// authColumnMigrations adds device-meta columns to existing databases. The
+// devices table started with five columns (id/name/token_hash/created_at/
+// last_seen_at); these ALTERs bring older installs in line with the
+// expanded authSchema above. Idempotent — duplicate-column errors are
+// swallowed in store.Open, so running on a fresh DB is a no-op.
+var authColumnMigrations = []string{
+	`ALTER TABLE devices ADD COLUMN hostname TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE devices ADD COLUMN os TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE devices ADD COLUMN os_version TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE devices ADD COLUMN arch TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE devices ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE devices ADD COLUMN app_version TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE devices ADD COLUMN client_type TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE pairings ADD COLUMN hostname TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE pairings ADD COLUMN os TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE pairings ADD COLUMN os_version TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE pairings ADD COLUMN arch TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE pairings ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE pairings ADD COLUMN app_version TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE pairings ADD COLUMN client_type TEXT NOT NULL DEFAULT ''`,
+}
 
 const passwordHashKey = "auth.password_hash"
 
@@ -102,13 +138,23 @@ func (s *Store) PasswordHash(ctx context.Context) (string, error) {
 }
 
 // Device is a paired agent. The token is never persisted in plaintext;
-// only its sha256 lives in the row.
+// only its sha256 lives in the row. The Hostname/OS/Model/etc. fields are
+// captured at pair time from the agent's machine and copied here when the
+// pairing row is promoted; they're empty for devices paired before the
+// device-meta migration.
 type Device struct {
 	ID         string
 	Name       string
 	TokenHash  string
 	CreatedAt  int64
 	LastSeenAt int64
+	Hostname   string
+	OS         string
+	OSVersion  string
+	Arch       string
+	Model      string
+	AppVersion string
+	ClientType string
 }
 
 // InsertDevice records a paired device. The caller has already produced
@@ -121,9 +167,12 @@ func (s *Store) InsertDevice(ctx context.Context, d Device) error {
 		d.CreatedAt = time.Now().UnixMilli()
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO devices (id, name, token_hash, created_at, last_seen_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		d.ID, d.Name, d.TokenHash, d.CreatedAt, d.LastSeenAt)
+		`INSERT INTO devices
+		   (id, name, token_hash, created_at, last_seen_at,
+		    hostname, os, os_version, arch, model, app_version, client_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.ID, d.Name, d.TokenHash, d.CreatedAt, d.LastSeenAt,
+		d.Hostname, d.OS, d.OSVersion, d.Arch, d.Model, d.AppVersion, d.ClientType)
 	return err
 }
 
@@ -132,9 +181,11 @@ func (s *Store) InsertDevice(ctx context.Context, d Device) error {
 func (s *Store) FindDeviceByTokenHash(ctx context.Context, hash string) (*Device, error) {
 	var d Device
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, token_hash, created_at, last_seen_at
+		`SELECT id, name, token_hash, created_at, last_seen_at,
+		        hostname, os, os_version, arch, model, app_version, client_type
 		   FROM devices WHERE token_hash = ?`, hash).
-		Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt)
+		Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt,
+			&d.Hostname, &d.OS, &d.OSVersion, &d.Arch, &d.Model, &d.AppVersion, &d.ClientType)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -156,7 +207,8 @@ func (s *Store) TouchDevice(ctx context.Context, id string) error {
 // ListDevices returns every paired device, newest first.
 func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, token_hash, created_at, last_seen_at
+		`SELECT id, name, token_hash, created_at, last_seen_at,
+		        hostname, os, os_version, arch, model, app_version, client_type
 		   FROM devices ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -165,7 +217,8 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	var out []Device
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt,
+			&d.Hostname, &d.OS, &d.OSVersion, &d.Arch, &d.Model, &d.AppVersion, &d.ClientType); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -190,6 +243,8 @@ const (
 )
 
 // Pairing is a row in the pairings table — used by the device-flow handshake.
+// The Hostname/OS/Model/etc. fields are sent up by the agent in pair-init
+// and copied to devices when ApprovePairing succeeds.
 type Pairing struct {
 	ClientNonce string
 	UserCode    string
@@ -199,6 +254,13 @@ type Pairing struct {
 	DeviceToken string
 	ExpiresAt   int64
 	CreatedAt   int64
+	Hostname    string
+	OS          string
+	OSVersion   string
+	Arch        string
+	Model       string
+	AppVersion  string
+	ClientType  string
 }
 
 // InsertPairing records a pair-init request. The caller has already
@@ -215,10 +277,12 @@ func (s *Store) InsertPairing(ctx context.Context, p Pairing) error {
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO pairings
-		 (client_nonce, user_code, device_name, status, device_id, device_token, expires_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (client_nonce, user_code, device_name, status, device_id, device_token, expires_at, created_at,
+		  hostname, os, os_version, arch, model, app_version, client_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ClientNonce, p.UserCode, p.DeviceName, p.Status,
-		p.DeviceID, p.DeviceToken, p.ExpiresAt, p.CreatedAt)
+		p.DeviceID, p.DeviceToken, p.ExpiresAt, p.CreatedAt,
+		p.Hostname, p.OS, p.OSVersion, p.Arch, p.Model, p.AppVersion, p.ClientType)
 	return err
 }
 
@@ -237,11 +301,13 @@ func (s *Store) FindPairingByCode(ctx context.Context, code string) (*Pairing, e
 func (s *Store) findPairing(ctx context.Context, where, val string) (*Pairing, error) {
 	var p Pairing
 	err := s.db.QueryRowContext(ctx,
-		`SELECT client_nonce, user_code, device_name, status, device_id, device_token, expires_at, created_at
+		`SELECT client_nonce, user_code, device_name, status, device_id, device_token, expires_at, created_at,
+		        hostname, os, os_version, arch, model, app_version, client_type
 		   FROM pairings WHERE `+where+` AND expires_at > ?`,
 		val, time.Now().UnixMilli()).
 		Scan(&p.ClientNonce, &p.UserCode, &p.DeviceName, &p.Status,
-			&p.DeviceID, &p.DeviceToken, &p.ExpiresAt, &p.CreatedAt)
+			&p.DeviceID, &p.DeviceToken, &p.ExpiresAt, &p.CreatedAt,
+			&p.Hostname, &p.OS, &p.OSVersion, &p.Arch, &p.Model, &p.AppVersion, &p.ClientType)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
