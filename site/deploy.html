@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Deploy Foxy Vault — self-hosted account pool for Claude Code</title>
+    <meta
+      name="description"
+      content="How to self-host the Foxy Vault server: Docker, docker compose with Caddy TLS, or a bare-metal binary under supervisord."
+    />
+    <meta name="theme-color" content="#ff7a1a" />
+    <link rel="icon" type="image/png" href="assets/foxy-icon.png" />
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      /* Page-local styles for the deployment guide. Long-form prose
+         and code blocks aren't needed on the landing page, so they
+         live here instead of polluting the shared stylesheet. */
+      .deploy-main {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 24px 24px 80px;
+      }
+      .deploy-main h1 {
+        font-size: clamp(28px, 4vw, 38px);
+        letter-spacing: -0.02em;
+        margin: 24px 0 12px;
+      }
+      .deploy-main h2 {
+        font-size: clamp(22px, 2.6vw, 26px);
+        letter-spacing: -0.01em;
+        margin: 40px 0 12px;
+      }
+      .deploy-main h3 {
+        font-size: 17px;
+        font-weight: 600;
+        margin: 20px 0 8px;
+      }
+      .deploy-main p,
+      .deploy-main li {
+        font-size: 16px;
+        line-height: 1.65;
+        color: var(--text-secondary);
+      }
+      .deploy-main a {
+        color: inherit;
+      }
+      .deploy-main code {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.92em;
+        background: rgba(128, 128, 128, 0.18);
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+      .deploy-main pre {
+        background: var(--bg-card);
+        border-radius: var(--radius-card);
+        padding: 16px 18px;
+        overflow-x: auto;
+        box-shadow: var(--shadow-card);
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13.5px;
+        line-height: 1.55;
+        margin: 12px 0 16px;
+      }
+      .deploy-main pre code {
+        background: transparent;
+        padding: 0;
+        font-size: inherit;
+      }
+      .callout {
+        border-left: 3px solid var(--accent, #ff7a1a);
+        background: var(--bg-card);
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin: 16px 0;
+        font-size: 15px;
+        line-height: 1.6;
+      }
+      .deploy-toc ol {
+        margin: 8px 0 0;
+        padding-left: 20px;
+      }
+      .deploy-toc li {
+        margin: 4px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Foxy Switcher home">
+        <img src="assets/foxy-icon.png" alt="" width="28" height="28" />
+        <span>Foxy Switcher</span>
+      </a>
+      <nav class="topnav" aria-label="Primary">
+        <a href="./#features">Features</a>
+        <a href="./#how">How it works</a>
+        <a href="./#faq">FAQ</a>
+        <a
+          class="ghost"
+          href="https://github.com/hoveychen/foxy-switcher"
+          target="_blank"
+          rel="noopener"
+          >GitHub</a
+        >
+      </nav>
+    </header>
+
+    <main class="deploy-main" id="top">
+      <h1>Deploy Foxy Vault</h1>
+      <p>
+        The <strong>vault</strong> is the server half of Foxy Switcher: it
+        holds your Claude account tokens, refreshes them, polls usage, and
+        hands the right one to whichever device asks. The desktop and TUI
+        clients are <em>agents</em> that pair with a vault and reverse-proxy
+        their UI through it.
+      </p>
+      <p>
+        Local mode (the default) runs vault and agent in the same process on
+        your laptop. Cloud mode means the vault lives on a server you own and
+        every device you pair shares the same account pool. This page covers
+        the cloud path — pick the recipe that fits your hosting.
+      </p>
+
+      <nav class="deploy-toc" aria-label="On this page">
+        <strong>Recipes</strong>
+        <ol>
+          <li><a href="#docker">Docker (one liner)</a></li>
+          <li><a href="#compose">docker compose + Caddy (production)</a></li>
+          <li><a href="#supervisord">Bare metal under supervisord</a></li>
+          <li><a href="#first-run">First-run setup &amp; pairing</a></li>
+          <li><a href="#upgrade">Upgrades &amp; backup</a></li>
+        </ol>
+      </nav>
+
+      <h2 id="docker">1. Docker (one liner)</h2>
+      <p>
+        The official image is published from each
+        <a
+          href="https://github.com/hoveychen/foxy-switcher/releases"
+          target="_blank"
+          rel="noopener"
+          >GitHub Release</a
+        >. State (SQLite, sessions, paired devices) lives in
+        <code>/workspace</code>; mount a named volume to keep it across
+        redeploys.
+      </p>
+      <pre><code>docker run -d --name foxy-vault \
+  -p 8080:8080 \
+  -v foxy-vault-data:/workspace \
+  --restart unless-stopped \
+  ghcr.io/hoveychen/foxy-switcher:latest</code></pre>
+      <p>
+        That binds vault on <code>http://localhost:8080</code>. <strong
+          >Don't expose 8080 directly to the public internet</strong
+        > — the vault talks plain HTTP and assumes you terminate TLS in front
+        of it. The compose recipe below pairs it with Caddy.
+      </p>
+
+      <h2 id="compose">2. docker compose + Caddy (production)</h2>
+      <p>
+        Two services on one host: vault on the loopback, Caddy in front
+        terminating TLS and forwarding to it. Caddy auto-provisions a Let's
+        Encrypt cert as long as DNS for <code>vault.example.com</code> points
+        at the host.
+      </p>
+      <h3><code>compose.yml</code></h3>
+      <pre><code>services:
+  vault:
+    image: ghcr.io/hoveychen/foxy-switcher:latest
+    restart: unless-stopped
+    volumes:
+      - foxy-vault-data:/workspace
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  foxy-vault-data:
+  caddy-data:
+  caddy-config:</code></pre>
+      <h3><code>Caddyfile</code></h3>
+      <pre><code>vault.example.com {
+  reverse_proxy vault:8080
+}</code></pre>
+      <p>
+        <code>docker compose up -d</code> brings both up. The first request
+        triggers cert provisioning (a few seconds); after that the vault is
+        reachable at <code>https://vault.example.com</code>.
+      </p>
+      <div class="callout">
+        Behind nginx or Traefik instead? Anything that forwards plain HTTP to
+        <code>vault:8080</code> works — the vault doesn't read
+        <code>X-Forwarded-*</code> for routing decisions, so a vanilla
+        reverse-proxy block is enough.
+      </div>
+
+      <h2 id="supervisord">3. Bare metal under supervisord</h2>
+      <p>
+        On a host where Docker isn't an option, drop the linux/amd64 binary
+        from the latest Release and run it under supervisord. State goes
+        anywhere you like; the example uses
+        <code>/var/lib/foxy-switcher</code>.
+      </p>
+      <h3>Install</h3>
+      <pre><code>sudo useradd --system --home /var/lib/foxy-switcher foxy
+sudo mkdir -p /var/lib/foxy-switcher
+sudo chown foxy:foxy /var/lib/foxy-switcher
+
+curl -fsSL -o /tmp/foxy-switcher \
+  https://github.com/hoveychen/foxy-switcher/releases/latest/download/foxy-switcher-linux-amd64
+sudo install -m 0755 /tmp/foxy-switcher /usr/local/bin/foxy-switcher</code></pre>
+      <h3><code>/etc/supervisor/conf.d/foxy-switcher.conf</code></h3>
+      <pre><code>[program:foxy-switcher]
+command=/usr/local/bin/foxy-switcher --server --mode=vault \
+  --bind-host=0.0.0.0 --port=8080 \
+  --data-dir=/var/lib/foxy-switcher
+user=foxy
+directory=/var/lib/foxy-switcher
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/foxy-switcher.log
+stderr_logfile=/var/log/foxy-switcher.err.log
+environment=HOME="/var/lib/foxy-switcher"</code></pre>
+      <p>
+        <code>sudo supervisorctl reread &amp;&amp; sudo supervisorctl update</code
+        > picks the program up. Front it with the same Caddy / nginx /
+        Traefik config as the docker recipe — vault still wants TLS
+        terminated upstream.
+      </p>
+
+      <h2 id="first-run">4. First-run setup &amp; pairing</h2>
+      <ol>
+        <li>
+          Open <code>https://vault.example.com</code> in a browser. The vault's
+          first-run page asks you to set an admin password. This account is
+          what you'll log into when the desktop client asks you to approve a
+          pairing.
+        </li>
+        <li>
+          On the desktop client, the onboarding offers
+          <strong>Local</strong> or <strong>Cloud vault</strong>. Pick Cloud
+          and enter <code>https://vault.example.com</code>.
+        </li>
+        <li>
+          The desktop shows a short <em>user code</em> and a verification URL.
+          Open the URL in a browser, sign in to the vault, and approve the
+          device. The desktop unlocks the moment the vault marks the pairing
+          approved.
+        </li>
+        <li>
+          From there, every Claude account you add through the desktop lives
+          on the vault. Pair more devices and they all share the same pool.
+        </li>
+      </ol>
+
+      <h2 id="upgrade">5. Upgrades &amp; backup</h2>
+      <p>
+        <strong>Docker:</strong>
+        <code>docker compose pull &amp;&amp; docker compose up -d</code>.
+        State survives because <code>/workspace</code> is on a named volume.
+      </p>
+      <p>
+        <strong>supervisord:</strong> drop the new binary at
+        <code>/usr/local/bin/foxy-switcher</code> (use
+        <code>install -m 0755</code> so the running process keeps its open
+        file handle), then
+        <code>sudo supervisorctl restart foxy-switcher</code>.
+      </p>
+      <p>
+        <strong>Backup:</strong> stop the vault and copy
+        <code>/workspace</code> (or
+        <code>/var/lib/foxy-switcher</code>) wholesale. Inside it,
+        <code>state.db</code> holds accounts, sessions, and the paired-devices
+        table; everything else is regenerable.
+      </p>
+      <div class="callout">
+        Need help, or hit something this page didn't cover?
+        <a
+          href="https://github.com/hoveychen/foxy-switcher/issues"
+          target="_blank"
+          rel="noopener"
+          >Open an issue</a
+        >.
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <img src="assets/foxy-icon.png" alt="" width="24" height="24" />
+          <span>Foxy Switcher</span>
+        </div>
+        <nav class="footer-links" aria-label="Footer">
+          <a
+            href="https://github.com/hoveychen/foxy-switcher"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+          >
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/releases"
+            target="_blank"
+            rel="noopener"
+            >Releases</a
+          >
+          <a href="./">Home</a>
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/issues"
+            target="_blank"
+            rel="noopener"
+            >Issues</a
+          >
+        </nav>
+        <p class="footer-meta">
+          Open source · Single-user · macOS-first ·
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/blob/main/LICENSE"
+            target="_blank"
+            rel="noopener"
+            >License</a
+          >
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

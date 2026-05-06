@@ -9,10 +9,12 @@ import {
   apiClient,
   autostartIsEnabled,
   autostartSet,
+  clearAgentConfig,
   dataDirPath,
   getDaemonMode,
   getServerPort,
   isTauriHost,
+  restartDaemon,
   revealDataDir,
 } from "../api";
 import { Locale, getLocaleOverride, setLocaleOverride, t, tf } from "../i18n";
@@ -96,6 +98,9 @@ export function SettingsPage({
   const [resetError, setResetError] = useState<string | null>(null);
   const [pairCmdCopied, setPairCmdCopied] = useState(false);
   const [pairOpen, setPairOpen] = useState(false);
+  const [confirmUnpair, setConfirmUnpair] = useState(false);
+  const [unpairBusy, setUnpairBusy] = useState(false);
+  const [unpairError, setUnpairError] = useState<string | null>(null);
   const localeOverride = getLocaleOverride();
   // tauriHost is computed once at mount — the host never changes
   // mid-session. Settings rows that depend on Tauri-side bridges
@@ -136,6 +141,25 @@ export function SettingsPage({
     dataDirPath().then(setDataDir).catch(() => {});
     apiClient.getAbout().then(setAbout).catch(() => {});
   }, []);
+
+  const onUnpair = async () => {
+    if (unpairBusy) return;
+    setUnpairBusy(true);
+    setUnpairError(null);
+    try {
+      await clearAgentConfig();
+      // restart so detectModeFromConfig picks up the now-missing
+      // agent-config.json on the next launch and boots in combined.
+      await restartDaemon();
+      // Bounce the window so cached port + about state re-hydrate from
+      // the newly-spawned sidecar (mirrors onResetData's reload).
+      setTimeout(() => window.location.reload(), 800);
+    } catch (e) {
+      setUnpairError(e instanceof Error ? e.message : String(e));
+      setUnpairBusy(false);
+      setConfirmUnpair(false);
+    }
+  };
 
   const onResetData = async () => {
     if (resetBusy) return;
@@ -467,7 +491,17 @@ export function SettingsPage({
                       {t("settings.vault.upstream.label")}
                     </div>
                     <div className="settings-row-sub text-meta">
-                      {about?.vault_url || ""}
+                      {about?.vault_url ? (
+                        <a
+                          href={about.vault_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {about.vault_url}
+                        </a>
+                      ) : (
+                        ""
+                      )}
                     </div>
                   </div>
                 </div>
@@ -481,6 +515,55 @@ export function SettingsPage({
                         {about.device_id}
                       </div>
                     </div>
+                  </div>
+                )}
+                {tauriHost && (
+                  <div className="settings-row">
+                    <div className="settings-row-text">
+                      <div className="settings-row-label">
+                        {t("settings.vault.unpair.label")}
+                      </div>
+                      <div className="settings-row-sub text-meta">
+                        {t("settings.vault.unpair.sub")}
+                      </div>
+                      {unpairError && (
+                        <div className="text-meta" style={{ color: "#c33" }}>
+                          {tf("settings.vault.unpair.failed", {
+                            message: unpairError,
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    {confirmUnpair ? (
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => setConfirmUnpair(false)}
+                          disabled={unpairBusy}
+                        >
+                          {t("settings.vault.unpair.cancel")}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-danger"
+                          onClick={onUnpair}
+                          disabled={unpairBusy}
+                        >
+                          {unpairBusy
+                            ? t("settings.vault.unpair.busy")
+                            : t("settings.vault.unpair.confirm")}
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => setConfirmUnpair(true)}
+                      >
+                        {t("settings.vault.unpair.btn")}
+                      </button>
+                    )}
                   </div>
                 )}
               </>

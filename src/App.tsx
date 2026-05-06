@@ -140,6 +140,37 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // Auto-dismiss the onboarding overlay for users who already have a
+  // working vault: paired agents (mode="agent" with a vault_url) and
+  // combined-mode users with accounts in the pool. Without this hook a
+  // user upgrading from a pre-onboarding-wizard build would be forced
+  // through "choose local or cloud" even though their setup is fine.
+  // Fresh installs (mode=combined, zero accounts, no localStorage flag)
+  // still walk the wizard.
+  useEffect(() => {
+    if (!showOnboarding) return;
+    let canceled = false;
+    (async () => {
+      try {
+        const [about, list] = await Promise.all([
+          apiClient.getAbout(),
+          apiClient.listAccounts(),
+        ]);
+        if (canceled) return;
+        const configured =
+          (about.mode === "agent" && Boolean(about.vault_url)) ||
+          (about.mode !== "agent" && list.length > 0);
+        if (configured) dismissOnboarding();
+      } catch {
+        // daemon not ready yet — leave overlay open; the next mount or
+        // refresh tick will re-evaluate.
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, [showOnboarding, dismissOnboarding]);
+
   const onRestartDaemon = useCallback(async () => {
     setRestarting(true);
     try {
