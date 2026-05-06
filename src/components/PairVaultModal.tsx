@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
-import { httpFetch, saveAgentConfig } from "../api";
+import { apiClient, saveAgentConfig } from "../api";
 import { t } from "../i18n";
 
 // PairVaultModal walks the user through the device-flow handshake against
-// a remote vault: enter URL → POST /agent/v1/devices/pair-init → show the
-// user_code while polling /agent/v1/devices/pair-poll → on approve, save
-// the bearer token to ~/.foxy-switcher/agent-config.json via Tauri.
+// a remote vault: enter URL → POST /api/pair/init on the local daemon
+// (which forwards to the vault's /agent/v1/devices/pair-init) → show the
+// user_code while polling /api/pair/poll → on approve, save the bearer
+// token to ~/.foxy-switcher/agent-config.json via Tauri.
 //
-// Cross-origin: vault's pair-init / pair-poll routes carry permissive
-// CORS headers (vault.httpserver.pairCORS); Bearer-protected routes
-// intentionally don't, so a malicious origin can't trick a logged-in
-// browser into exfiltrating accounts. The Tauri webview uses
-// @tauri-apps/plugin-http, which is also CORS-policy-respecting.
+// Why through the local daemon instead of fetching the vault directly:
+// Tauri's http-plugin scope only allows http://127.0.0.1:* and
+// http://localhost:*. The daemon (already in scope) forwards to the
+// user-supplied vault host, which has no scope restrictions on the Go
+// side. This also reuses httpclient.PairInit / PairPoll, which the TUI
+// `foxy-switcher pair` command already exercises.
 //
 // State machine:
 //   form     — user is entering vault URL.
@@ -20,17 +22,6 @@ import { t } from "../i18n";
 //   approved — token persisted; nudge the user to restart the daemon.
 //   error    — terminal failure; show message + Retry.
 type Phase = "form" | "polling" | "approved" | "error";
-
-interface PairInitResponse {
-  user_code: string;
-  verification_url: string;
-  expires_in_ms: number;
-}
-interface PairPollResponse {
-  status: "pending" | "approved" | "denied" | "expired";
-  device_id?: string;
-  device_token?: string;
-}
 
 export function PairVaultModal({
   open,
@@ -80,18 +71,7 @@ export function PairVaultModal({
         : "Foxy device";
 
     try {
-      const resp = await httpFetch(`${url}/agent/v1/devices/pair-init`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_nonce: clientNonce,
-          device_name: deviceName,
-        }),
-      });
-      if (!resp.ok) {
-        throw new Error(`vault ${resp.status}: ${await resp.text()}`);
-      }
-      const init = (await resp.json()) as PairInitResponse;
+      const init = await apiClient.pairInit(url, deviceName, clientNonce);
       setUserCode(init.user_code);
       setVerificationUrl(init.verification_url);
       setPhase("polling");
@@ -112,15 +92,7 @@ export function PairVaultModal({
       await new Promise((r) => setTimeout(r, 2000));
       if (cancelRef.current.canceled) return;
       try {
-        const resp = await httpFetch(`${baseUrl}/agent/v1/devices/pair-poll`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ client_nonce: clientNonce }),
-        });
-        if (!resp.ok) {
-          continue; // transient — keep polling until deadline
-        }
-        const out = (await resp.json()) as PairPollResponse;
+        const out = await apiClient.pairPoll(baseUrl, clientNonce);
         if (out.status === "approved" && out.device_token && out.device_id) {
           try {
             const path = await saveAgentConfig({

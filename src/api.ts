@@ -495,6 +495,31 @@ export const apiClient = {
 
   getAbout: () => api<AboutResponse>("/api/about"),
 
+  // Vault pairing goes through the local daemon so the Tauri http-plugin
+  // scope (which only allows http://127.0.0.1:* + localhost) doesn't have
+  // to be widened to every possible vault host. The daemon's handler at
+  // /api/pair/init / /api/pair/poll forwards to vault and returns the
+  // device-flow envelope verbatim.
+  pairInit: (vault_url: string, device_name: string, client_nonce: string) =>
+    api<{
+      user_code: string;
+      verification_url: string;
+      expires_in_ms: number;
+    }>("/api/pair/init", {
+      method: "POST",
+      json: { vault_url, device_name, client_nonce },
+    }),
+
+  pairPoll: (vault_url: string, client_nonce: string) =>
+    api<{
+      status: "pending" | "approved" | "denied" | "expired";
+      device_id?: string;
+      device_token?: string;
+    }>("/api/pair/poll", {
+      method: "POST",
+      json: { vault_url, client_nonce },
+    }),
+
   // Wipes state.db and exits the daemon. The Tauri shell respawns the
   // sidecar; in attached mode the caller must restart their own daemon.
   // The cached port is invalidated so the next api() call rediscovers the

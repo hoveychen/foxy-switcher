@@ -81,6 +81,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/activity/stream", s.handleActivityStream)
 	mux.HandleFunc("GET /api/dashboard", s.handleGetDashboard)
 	mux.HandleFunc("GET /api/about", s.handleGetAbout)
+	mux.HandleFunc("POST /api/pair/init", s.handlePairInit)
+	mux.HandleFunc("POST /api/pair/poll", s.handlePairPoll)
 	mux.HandleFunc("POST /api/reset", s.handleResetData)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
