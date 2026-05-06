@@ -68,6 +68,11 @@ COPY server ./server
 # assets/ so the vault binary serves /admin and /app from itself.
 COPY --from=webapp-builder /app/dist/ ./server/vault/webapp/static/
 
+# Bring .git so `go build` can stamp vcs.revision / vcs.modified / vcs.time
+# into the binary's debug.BuildInfo (read by /api/about's Settings card).
+# Without this, the about page renders an empty commit and "(devel)" version.
+COPY .git ./.git
+
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     set -eux; \

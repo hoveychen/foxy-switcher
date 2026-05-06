@@ -2,7 +2,6 @@
 # pnpm/tsconfig/vite/index.html files. Excluding the rest avoids shipping
 # hundreds of MB of node_modules + Rust target dirs to the daemon.
 
-.git
 .github
 .claude
 .vscode
