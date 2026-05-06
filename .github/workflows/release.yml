@@ -36,6 +36,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   release:
@@ -233,7 +234,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact_glob }}
-          draft: true
+          draft: false
           generate_release_notes: true
           fail_on_unmatched_files: true
 
@@ -243,9 +244,17 @@ jobs:
   # the React account panel into the binary via //go:embed so a Linux user
   # running `--mode=vault` gets the embedded /app surface without a separate
   # frontend deployment.
+  #
+  # We ship both amd64 and arm64 binaries: the Dockerfile downstream selects
+  # one per TARGETPLATFORM during multi-arch image builds, and ARM Linux
+  # users (rPi / arm64 VPS) get a native install without rebuilding from src.
   release-linux:
-    name: release (linux-amd64)
+    name: release (linux-${{ matrix.goarch }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
 
@@ -279,33 +288,89 @@ jobs:
           : > server/vault/webapp/static/.gitkeep
           ls server/vault/webapp/static | head -5
 
-      - name: Build foxy-switcher (linux/amd64)
+      - name: Build foxy-switcher (linux/${{ matrix.goarch }})
         shell: bash
         env:
           CGO_ENABLED: "0"
           GOOS: linux
-          GOARCH: amd64
+          GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
           mkdir -p dist-bin
           ( cd server && go build -trimpath -ldflags="-s -w" \
-              -o ../dist-bin/foxy-switcher-linux-amd64 . )
-          chmod +x dist-bin/foxy-switcher-linux-amd64
-          stat -c '%n %s bytes' dist-bin/foxy-switcher-linux-amd64
+              -o "../dist-bin/foxy-switcher-linux-${GOARCH}" . )
+          chmod +x "dist-bin/foxy-switcher-linux-${GOARCH}"
+          stat -c '%n %s bytes' "dist-bin/foxy-switcher-linux-${GOARCH}"
 
       - name: Generate sha256
         shell: bash
+        env:
+          GOARCH: ${{ matrix.goarch }}
         run: |
           cd dist-bin
-          sha256sum foxy-switcher-linux-amd64 > foxy-switcher-linux-amd64.sha256
-          cat foxy-switcher-linux-amd64.sha256
+          sha256sum "foxy-switcher-linux-${GOARCH}" > "foxy-switcher-linux-${GOARCH}.sha256"
+          cat "foxy-switcher-linux-${GOARCH}.sha256"
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist-bin/foxy-switcher-linux-amd64
-            dist-bin/foxy-switcher-linux-amd64.sha256
-          draft: true
+            dist-bin/foxy-switcher-linux-${{ matrix.goarch }}
+            dist-bin/foxy-switcher-linux-${{ matrix.goarch }}.sha256
+          draft: false
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  # Build and push the cloud-vault image to GHCR. The Dockerfile fetches
+  # the per-arch binary from the GitHub Release the previous jobs just
+  # published, so we need release-linux (both arches) to finish first.
+  # buildx targets linux/amd64,linux/arm64; the Dockerfile's fetch stage
+  # is pinned to $BUILDPLATFORM to avoid running curl under qemu.
+  docker-publish:
+    name: docker-publish (ghcr)
+    needs: [release-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/foxy-switcher
+          # On a tag like `v1.2.3`, semver patterns produce `1.2.3` and
+          # `1.2`; `latest` is added explicitly so a plain `docker pull`
+          # always lands on the most recent published tag.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Pass the tag through so the Dockerfile fetch stage downloads
+          # the matching release asset (e.g. v1.2.3) instead of falling
+          # back to the hard-coded default.
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          provenance: false
