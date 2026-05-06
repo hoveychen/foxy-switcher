@@ -39,8 +39,89 @@ permissions:
   packages: write
 
 jobs:
+  # Create the GitHub Release once, with a hand-written install template
+  # followed by GitHub's auto-generated commit list. All build jobs depend on
+  # this job and only upload assets — they never regenerate notes, which is
+  # what previously produced N copies of "Full Changelog: ..." (one per
+  # matrix leg of `release` + `release-linux`).
+  create-release:
+    name: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compose body & create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "ERROR: ref '$REF_NAME' is not vX.Y.Z" >&2
+            exit 1
+          fi
+          VERSION="${REF_NAME#v}"
+
+          # Pull GitHub's auto-generated changelog (## What's Changed +
+          # Full Changelog compare link) so we can place it after the
+          # install template instead of letting it float on its own.
+          AUTO=$(gh api --method POST "repos/$REPO/releases/generate-notes" \
+            -f tag_name="$REF_NAME" --jq .body)
+
+          # Heredoc backticks are escaped (\`) so bash doesn't treat code
+          # fences as command substitution. $VAR expansions are intentional.
+          cat > body.md <<EOF
+          ## 📦 Install
+
+          ### macOS — Universal .pkg (signed & notarized, Apple Silicon + Intel)
+          \`\`\`
+          curl -LO https://github.com/$REPO/releases/download/$REF_NAME/FoxySwitcher_${VERSION}_universal.pkg
+          open FoxySwitcher_${VERSION}_universal.pkg
+          \`\`\`
+
+          ### Windows — Signed .msi
+          \`\`\`
+          curl -LO https://github.com/$REPO/releases/download/$REF_NAME/FoxySwitcher_${VERSION}_x64_en-US.msi
+          \`\`\`
+
+          ### Linux — Static binary (TUI + embedded vault webapp)
+          \`\`\`
+          curl -LO https://github.com/$REPO/releases/download/$REF_NAME/foxy-switcher-linux-amd64
+          chmod +x foxy-switcher-linux-amd64
+          ./foxy-switcher-linux-amd64
+          \`\`\`
+          (linux-arm64 also available — swap \`amd64\` → \`arm64\`)
+
+          ### Docker — Multi-arch image on GHCR
+          \`\`\`
+          docker pull ghcr.io/$OWNER/foxy-switcher:$VERSION
+          docker pull ghcr.io/$OWNER/foxy-switcher:latest
+          \`\`\`
+
+          ## 🔐 Verify
+          Linux binaries publish \`.sha256\` sidecars next to them:
+          \`\`\`
+          sha256sum -c foxy-switcher-linux-amd64.sha256
+          \`\`\`
+
+          ---
+
+          $AUTO
+          EOF
+
+          echo "===== body.md ====="
+          cat body.md
+          echo "==================="
+
+          gh release create "$REF_NAME" \
+            --repo "$REPO" \
+            --title "$REF_NAME" \
+            --notes-file body.md
+
   release:
     name: release (${{ matrix.label }})
+    needs: [create-release]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -235,7 +316,6 @@ jobs:
         with:
           files: ${{ matrix.artifact_glob }}
           draft: false
-          generate_release_notes: true
           fail_on_unmatched_files: true
 
   # Linux ships the standalone Go binary instead of a Tauri bundle. The same
@@ -250,6 +330,7 @@ jobs:
   # users (rPi / arm64 VPS) get a native install without rebuilding from src.
   release-linux:
     name: release (linux-${{ matrix.goarch }})
+    needs: [create-release]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -318,7 +399,6 @@ jobs:
             dist-bin/foxy-switcher-linux-${{ matrix.goarch }}
             dist-bin/foxy-switcher-linux-${{ matrix.goarch }}.sha256
           draft: false
-          generate_release_notes: true
           fail_on_unmatched_files: true
 
   # Build and push the cloud-vault image to GHCR. The Dockerfile fetches
