@@ -256,6 +256,13 @@ func (s *Server) handleDevicesList(w http.ResponseWriter, r *http.Request) {
 	type row struct {
 		ID         string
 		Name       string
+		Hostname   string
+		OS         string
+		OSVersion  string
+		Arch       string
+		Model      string
+		AppVersion string
+		ClientType string
 		CreatedAt  string
 		LastSeenAt string
 	}
@@ -265,6 +272,13 @@ func (s *Server) handleDevicesList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row{
 			ID:         d.ID,
 			Name:       d.Name,
+			Hostname:   d.Hostname,
+			OS:         d.OS,
+			OSVersion:  d.OSVersion,
+			Arch:       d.Arch,
+			Model:      d.Model,
+			AppVersion: d.AppVersion,
+			ClientType: d.ClientType,
 			CreatedAt:  formatRelative(now, d.CreatedAt),
 			LastSeenAt: formatRelative(now, d.LastSeenAt),
 		})
@@ -487,11 +501,27 @@ const devicesTemplate = `
 {{define "content"}}
 {{if .Devices}}
 <table>
-  <thead><tr><th>Name</th><th>Paired</th><th>Last seen</th><th></th></tr></thead>
+  <thead><tr>
+    <th>Name</th>
+    <th>OS</th>
+    <th>Arch</th>
+    <th>Model</th>
+    <th>App</th>
+    <th>Paired</th>
+    <th>Last seen</th>
+    <th></th>
+  </tr></thead>
   <tbody>
   {{range .Devices}}
     <tr>
-      <td>{{.Name}}</td>
+      <td>
+        {{.Name}}
+        {{if and .Hostname (ne .Hostname .Name)}}<br><small style="color:#888">{{.Hostname}}</small>{{end}}
+      </td>
+      <td>{{if .OS}}{{.OS}}{{if .OSVersion}} {{.OSVersion}}{{end}}{{else}}&mdash;{{end}}</td>
+      <td>{{if .Arch}}{{.Arch}}{{else}}&mdash;{{end}}</td>
+      <td>{{if .Model}}{{.Model}}{{else}}&mdash;{{end}}</td>
+      <td>{{if .AppVersion}}{{.AppVersion}}{{if .ClientType}} ({{.ClientType}}){{end}}{{else}}{{if .ClientType}}({{.ClientType}}){{else}}&mdash;{{end}}{{end}}</td>
       <td>{{.CreatedAt}}</td>
       <td>{{.LastSeenAt}}</td>
       <td class="row-actions">

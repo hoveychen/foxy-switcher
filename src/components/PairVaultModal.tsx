@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
-import { apiClient, saveAgentConfig } from "../api";
+import { apiClient, getDeviceInfo, saveAgentConfig } from "../api";
 import { t } from "../i18n";
 
 // PairVaultModal walks the user through the device-flow handshake against
@@ -65,13 +65,15 @@ export function PairVaultModal({
     }
     setErrorMsg("");
     const clientNonce = `nonce-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+    const meta = await getDeviceInfo();
     const deviceName =
-      typeof navigator !== "undefined" && navigator.platform
+      meta?.hostname ||
+      (typeof navigator !== "undefined" && navigator.platform
         ? `Foxy ${navigator.platform}`
-        : "Foxy device";
+        : "Foxy device");
 
     try {
-      const init = await apiClient.pairInit(url, deviceName, clientNonce);
+      const init = await apiClient.pairInit(url, deviceName, clientNonce, meta);
       setUserCode(init.user_code);
       setVerificationUrl(init.verification_url);
       setPhase("polling");

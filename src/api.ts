@@ -449,6 +449,51 @@ export const clearAgentConfig = async (): Promise<void> => {
   return invoke<void>("clear_agent_config");
 };
 
+// VaultDevice is the wire shape /api/devices returns. Mirrors deviceView
+// in server/httpapi/routes.go. Hostname/OS/Model/etc. are empty for
+// devices paired before the device-meta migration shipped.
+export interface VaultDevice {
+  id: string;
+  name: string;
+  hostname: string;
+  os: string;
+  os_version: string;
+  arch: string;
+  model: string;
+  app_version: string;
+  client_type: string;
+  created_at: number;
+  last_seen_at: number;
+}
+
+// PairMeta is the optional device-meta payload published during pair-init
+// so the vault's /devices admin page can show real hostname / OS / model
+// instead of just a self-chosen device_name. Mirrors the shape Go side
+// (deviceinfo.Info → httpclient.PairMetadata) sends.
+export interface PairMeta {
+  hostname?: string;
+  os?: string;
+  os_version?: string;
+  arch?: string;
+  model?: string;
+  app_version?: string;
+  client_type?: string;
+}
+
+// getDeviceInfo invokes the Tauri-side get_device_info command. Browser
+// builds have no equivalent (navigator.platform is too coarse), so we
+// return undefined there — pairInit accepts a missing meta and the
+// vault treats the columns as empty. Failures are swallowed for the
+// same reason: a partial fingerprint is preferable to a refused pair.
+export const getDeviceInfo = async (): Promise<PairMeta | undefined> => {
+  if (!inTauri) return undefined;
+  try {
+    return await invoke<PairMeta>("get_device_info");
+  } catch {
+    return undefined;
+  }
+};
+
 export const apiClient = {
   listAccounts: () =>
     api<{ accounts: Account[] }>("/api/accounts").then((r) => r.accounts),
@@ -509,14 +554,21 @@ export const apiClient = {
   // to be widened to every possible vault host. The daemon's handler at
   // /api/pair/init / /api/pair/poll forwards to vault and returns the
   // device-flow envelope verbatim.
-  pairInit: (vault_url: string, device_name: string, client_nonce: string) =>
+  pairInit: (
+    vault_url: string,
+    device_name: string,
+    client_nonce: string,
+    device_meta?: PairMeta,
+  ) =>
     api<{
       user_code: string;
       verification_url: string;
       expires_in_ms: number;
     }>("/api/pair/init", {
       method: "POST",
-      json: { vault_url, device_name, client_nonce },
+      json: device_meta
+        ? { vault_url, device_name, client_nonce, device_meta }
+        : { vault_url, device_name, client_nonce },
     }),
 
   pairPoll: (vault_url: string, client_nonce: string) =>
@@ -528,6 +580,9 @@ export const apiClient = {
       method: "POST",
       json: { vault_url, client_nonce },
     }),
+
+  listDevices: () =>
+    api<{ devices: VaultDevice[] }>("/api/devices").then((r) => r.devices),
 
   // Wipes state.db and exits the daemon. The Tauri shell respawns the
   // sidecar; in attached mode the caller must restart their own daemon.

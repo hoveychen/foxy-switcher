@@ -6,6 +6,7 @@ import {
   DaemonMode,
   Settings,
   Theme,
+  VaultDevice,
   apiClient,
   autostartIsEnabled,
   autostartSet,
@@ -73,6 +74,18 @@ function formatDate(rfc: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+// fmtDeviceTime renders a unix-millis timestamp as YYYY-MM-DD HH:mm in
+// the user's local zone. Used for /api/devices' created_at /
+// last_seen_at columns. Returns "—" for the zero value so callers can
+// show e.g. "Last seen: never" via a separate i18n key.
+function fmtDeviceTime(ms: number): string {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "—";
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function SettingsPage({
   autoSwitch,
   onAutoSwitchToggle,
@@ -101,6 +114,8 @@ export function SettingsPage({
   const [confirmUnpair, setConfirmUnpair] = useState(false);
   const [unpairBusy, setUnpairBusy] = useState(false);
   const [unpairError, setUnpairError] = useState<string | null>(null);
+  const [devices, setDevices] = useState<VaultDevice[] | null>(null);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
   const localeOverride = getLocaleOverride();
   // tauriHost is computed once at mount — the host never changes
   // mid-session. Settings rows that depend on Tauri-side bridges
@@ -141,6 +156,28 @@ export function SettingsPage({
     dataDirPath().then(setDataDir).catch(() => {});
     apiClient.getAbout().then(setAbout).catch(() => {});
   }, []);
+
+  // Devices load only kicks in once we know the mode is "agent" — combined
+  // mode is single-machine by definition and the section stays hidden.
+  // Reload whenever vaultMode flips (e.g. after pair/unpair restarts the
+  // daemon and the new about response arrives).
+  useEffect(() => {
+    if (vaultMode !== "agent") {
+      setDevices(null);
+      setDevicesError(null);
+      return;
+    }
+    apiClient
+      .listDevices()
+      .then((d) => {
+        setDevices(d);
+        setDevicesError(null);
+      })
+      .catch((e) => {
+        setDevices([]);
+        setDevicesError(e instanceof Error ? e.message : String(e));
+      });
+  }, [vaultMode]);
 
   const onUnpair = async () => {
     if (unpairBusy) return;
@@ -632,6 +669,91 @@ export function SettingsPage({
             defaultUrl={about?.vault_url}
           />
         </section>
+
+        {vaultMode === "agent" && (
+          <section className="settings-group">
+            <h3 className="settings-group-title">
+              {t("settings.group.devices")}
+            </h3>
+            <div className="settings-card">
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <div className="settings-row-sub text-meta">
+                    {t("settings.devices.sub")}
+                  </div>
+                  {devicesError && (
+                    <div className="text-meta" style={{ color: "#c33" }}>
+                      {tf("settings.devices.error", { message: devicesError })}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {devices === null ? (
+                <div className="settings-row">
+                  <div className="settings-row-sub text-meta">
+                    {t("settings.devices.loading")}
+                  </div>
+                </div>
+              ) : devices.length === 0 ? (
+                <div className="settings-row">
+                  <div className="settings-row-sub text-meta">
+                    {t("settings.devices.empty")}
+                  </div>
+                </div>
+              ) : (
+                devices.map((d) => {
+                  const isThis = about?.device_id && d.id === about.device_id;
+                  return (
+                    <div className="settings-row" key={d.id}>
+                      <div className="settings-row-text">
+                        <div className="settings-row-label">
+                          {d.name || d.hostname || d.id.slice(0, 8)}
+                          {d.hostname && d.hostname !== d.name && (
+                            <span
+                              className="text-meta"
+                              style={{ marginLeft: 8, fontWeight: "normal" }}
+                            >
+                              {d.hostname}
+                            </span>
+                          )}
+                        </div>
+                        <div className="settings-row-sub text-meta">
+                          {[
+                            (d.os || d.os_version) &&
+                              `${t("settings.devices.os")}: ${[d.os, d.os_version].filter(Boolean).join(" ")}`,
+                            d.arch &&
+                              `${t("settings.devices.arch")}: ${d.arch}`,
+                            d.model &&
+                              `${t("settings.devices.model")}: ${d.model}`,
+                            d.app_version &&
+                              `${t("settings.devices.app")}: ${d.app_version}`,
+                            d.client_type &&
+                              `${t("settings.devices.client_type")}: ${d.client_type}`,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </div>
+                        <div className="settings-row-sub text-meta">
+                          {t("settings.devices.paired_at")}:{" "}
+                          {fmtDeviceTime(d.created_at)} ·{" "}
+                          {t("settings.devices.last_seen")}:{" "}
+                          {d.last_seen_at
+                            ? fmtDeviceTime(d.last_seen_at)
+                            : t("settings.devices.never")}
+                        </div>
+                      </div>
+                      {isThis && (
+                        <span className="pill active-pill">
+                          {t("settings.devices.this_device")}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        )}
 
         <section className="settings-group">
           <h3 className="settings-group-title">{t("settings.group.about")}</h3>

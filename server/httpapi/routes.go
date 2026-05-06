@@ -83,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/about", s.handleGetAbout)
 	mux.HandleFunc("POST /api/pair/init", s.handlePairInit)
 	mux.HandleFunc("POST /api/pair/poll", s.handlePairPoll)
+	mux.HandleFunc("GET /api/devices", s.handleListDevices)
 	mux.HandleFunc("POST /api/reset", s.handleResetData)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -206,6 +207,52 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		out[i] = toView(a)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+}
+
+// deviceView is the JSON shape /api/devices returns. Mirrors the columns
+// the device-meta migration added to store.Device, minus token_hash —
+// the hash never leaves the vault, even to authenticated callers.
+type deviceView struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Hostname   string `json:"hostname"`
+	OS         string `json:"os"`
+	OSVersion  string `json:"os_version"`
+	Arch       string `json:"arch"`
+	Model      string `json:"model"`
+	AppVersion string `json:"app_version"`
+	ClientType string `json:"client_type"`
+	CreatedAt  int64  `json:"created_at"`
+	LastSeenAt int64  `json:"last_seen_at"`
+}
+
+// handleListDevices powers Settings → "我的设备". In combined mode the
+// daemon reads the local store directly; in agent mode the local daemon
+// is a thin proxy and the request transparently lands here on the vault
+// process, which also runs httpapi.
+func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
+	devs, err := s.Store.ListDevices(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := make([]deviceView, len(devs))
+	for i, d := range devs {
+		out[i] = deviceView{
+			ID:         d.ID,
+			Name:       d.Name,
+			Hostname:   d.Hostname,
+			OS:         d.OS,
+			OSVersion:  d.OSVersion,
+			Arch:       d.Arch,
+			Model:      d.Model,
+			AppVersion: d.AppVersion,
+			ClientType: d.ClientType,
+			CreatedAt:  d.CreatedAt,
+			LastSeenAt: d.LastSeenAt,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
 }
 
 // --- PKCE login ------------------------------------------------------------

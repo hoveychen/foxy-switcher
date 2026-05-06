@@ -3,7 +3,12 @@ import { Icon } from "../components/Icon";
 import { ICON_X } from "../components/icons";
 import { t } from "../i18n";
 import { FoxyIntroPlayer } from "./FoxyIntroPlayer";
-import { apiClient, restartDaemon, saveAgentConfig } from "../api";
+import {
+  apiClient,
+  getDeviceInfo,
+  restartDaemon,
+  saveAgentConfig,
+} from "../api";
 
 // OnboardingOverlay walks new users through the vault choice before
 // letting them into the app. Phases:
@@ -52,13 +57,15 @@ export function OnboardingOverlay({ onDismiss }: { onDismiss: () => void }) {
     setErrorMsg("");
     cancelRef.current = { canceled: false };
     const clientNonce = `nonce-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+    const meta = await getDeviceInfo();
     const deviceName =
-      typeof navigator !== "undefined" && navigator.platform
+      meta?.hostname ||
+      (typeof navigator !== "undefined" && navigator.platform
         ? `Foxy ${navigator.platform}`
-        : "Foxy device";
+        : "Foxy device");
     let init;
     try {
-      init = await apiClient.pairInit(url, deviceName, clientNonce);
+      init = await apiClient.pairInit(url, deviceName, clientNonce, meta);
     } catch (e) {
       setErrorMsg(
         `${t("onboarding.cloud.pair.failure")} (${e instanceof Error ? e.message : String(e)})`,
