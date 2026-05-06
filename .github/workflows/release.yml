@@ -216,6 +216,8 @@ jobs:
 
       - name: Build Go sidecar
         shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
         run: scripts/build-server.sh ${{ matrix.sidecar_mode }}
 
       # ---- macOS: import signing certs into a temp keychain -----------------
@@ -375,10 +377,12 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           mkdir -p dist-bin
-          ( cd server && go build -trimpath -ldflags="-s -w" \
+          ( cd server && go build -trimpath \
+              -ldflags="-s -w -X github.com/hoveychen/foxy-switcher/server/deviceinfo.Version=${REF_NAME}" \
               -o "../dist-bin/foxy-switcher-linux-${GOARCH}" . )
           chmod +x "dist-bin/foxy-switcher-linux-${GOARCH}"
           stat -c '%n %s bytes' "dist-bin/foxy-switcher-linux-${GOARCH}"

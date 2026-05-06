@@ -24,7 +24,14 @@ mkdir -p "$OUT"
 
 # Strip symbol tables to slim the binary; the helper script already echoes
 # the token verbatim so debug info has no caller-side use.
-LDFLAGS="-s -w"
+#
+# VERSION is also baked into deviceinfo.Version so paired devices report
+# their app version to the vault. Honour an explicit VERSION env var
+# (release.yml passes REF_NAME); fall back to `git describe` for local
+# tagged builds; default to "dev" when even git can't help (shallow
+# clones, exported source tarballs).
+VERSION="${VERSION:-$(git -C "$ROOT" describe --tags --dirty 2>/dev/null || echo dev)}"
+LDFLAGS="-s -w -X github.com/hoveychen/foxy-switcher/server/deviceinfo.Version=${VERSION}"
 
 # bake_webapp populates the embed directory the vault binary's
 # `//go:embed all:static` directive picks up. We do this once before any
