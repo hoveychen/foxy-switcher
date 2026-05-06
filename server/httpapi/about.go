@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"runtime/debug"
 	"time"
+
+	"github.com/hoveychen/foxy-switcher/server/deviceinfo"
 )
 
 // AboutResponse powers the Settings § About card. Everything here is
@@ -63,6 +65,16 @@ func (s *Server) handleGetAbout(w http.ResponseWriter, _ *http.Request) {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		if info.Main.Version != "" {
 			resp.Version = info.Main.Version
+		}
+		// info.Main.Version is "(devel)" for any non-Go-proxy build,
+		// which covers every release we ship (the binary is built
+		// locally or in CI, not pulled via `go install`). Prefer the
+		// -ldflags-injected deviceinfo.Version when it carries a real
+		// release tag — that's what the desktop app already reports
+		// during pair, and it's what users expect to see on the
+		// Settings → About card.
+		if deviceinfo.Version != "" && deviceinfo.Version != "dev" {
+			resp.Version = deviceinfo.Version
 		}
 		for _, kv := range info.Settings {
 			switch kv.Key {

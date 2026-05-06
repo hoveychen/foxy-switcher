@@ -1,37 +1,44 @@
-# Keep the build context tight — Docker COPY only needs server/, src/, the
-# pnpm/tsconfig/vite/index.html files. Excluding the rest avoids shipping
-# hundreds of MB of node_modules + Rust target dirs to the daemon.
+# Mirror .gitignore — do NOT strip tracked files. Go's automatic VCS
+# stamping (vcs.modified) compares the build tree to git's index, so
+# excluding a tracked file via .dockerignore makes the binary report
+# (dirty) even on a clean commit.
 
-.github
-.claude
-.vscode
-.idea
-.DS_Store
+# Logs
+logs
+*.log
 
-# Node + Vite outputs (rebuilt inside the webapp-builder stage)
+# Node + Vite
 node_modules
 dist
 dist-ssr
+*.local
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
 
-# Tauri (desktop-app, not used by the cloud-vault image)
-src-tauri
-video
-site
-
-# Server local build artifacts (rebuilt inside the go-builder stage)
-build
-dist-server
-dist-bin
-
 # Editor / OS junk
-*.log
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea
 *.swp
 *.swo
 
-# Local-only scratchpads
-TASKS.md
-README.md
-docs
+# Tauri (Rust target + sidecar binaries — huge, not tracked)
+src-tauri/target
+src-tauri/binaries
+src-tauri/gen
+
+# Server build outputs
+/build
+/dist-server
+/dist-bin
+
+# Claude Code runtime state
+.claude/scheduled_tasks.lock
+
+# Plan scratchpad (local-only)
+/TASKS.md
+
+# Generated bundle under site/
+/site/intro
