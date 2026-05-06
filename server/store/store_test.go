@@ -26,6 +26,89 @@ func openTempStore(t *testing.T) *Store {
 // had UNIQUE(organization_uuid) and Upsert did ON CONFLICT(organization_uuid),
 // but the OAuth profile API doesn't surface organization_uuid — so every new
 // login landed with org="" and overwrote the previous "" row.
+// TestDeviceMetaRoundTrip exercises the device-meta migration end-to-end:
+// InsertDevice writes hostname / OS / model / arch / app_version /
+// client_type, and FindDeviceByTokenHash + ListDevices read every column
+// back. Guards against accidental column-list drift between Insert and
+// the two read paths.
+func TestDeviceMetaRoundTrip(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	dev := Device{
+		ID:         "dev-meta-1",
+		Name:       "harry-mbp",
+		TokenHash:  "hash-1",
+		Hostname:   "Harrys-MacBook-Pro.local",
+		OS:         "darwin",
+		OSVersion:  "26.3.1",
+		Arch:       "arm64",
+		Model:      "Mac16,1",
+		AppVersion: "v1.2.3",
+		ClientType: "cli",
+	}
+	if err := st.InsertDevice(ctx, dev); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+
+	got, err := st.FindDeviceByTokenHash(ctx, "hash-1")
+	if err != nil {
+		t.Fatalf("FindDeviceByTokenHash: %v", err)
+	}
+	if got.Hostname != dev.Hostname || got.OS != dev.OS ||
+		got.OSVersion != dev.OSVersion || got.Arch != dev.Arch ||
+		got.Model != dev.Model || got.AppVersion != dev.AppVersion ||
+		got.ClientType != dev.ClientType {
+		t.Fatalf("FindDeviceByTokenHash meta mismatch: got %+v want %+v", got, dev)
+	}
+
+	devs, err := st.ListDevices(ctx)
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(devs) != 1 {
+		t.Fatalf("ListDevices len: got %d want 1", len(devs))
+	}
+	if devs[0].Hostname != dev.Hostname || devs[0].Model != dev.Model ||
+		devs[0].ClientType != dev.ClientType {
+		t.Fatalf("ListDevices meta mismatch: got %+v want %+v", devs[0], dev)
+	}
+}
+
+// TestPairingMetaPropagates verifies that meta supplied at InsertPairing
+// time survives until FindPairingByNonce reads it back — the path
+// handlePairPoll uses to copy meta from pairings into devices when a
+// device is approved.
+func TestPairingMetaPropagates(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	p := Pairing{
+		ClientNonce: "nonce-x",
+		UserCode:    "ABCD1234",
+		DeviceName:  "harry-mbp",
+		ExpiresAt:   time.Now().Add(time.Hour).UnixMilli(),
+		Hostname:    "Harrys-MacBook-Pro.local",
+		OS:          "darwin",
+		OSVersion:   "26.3.1",
+		Arch:        "arm64",
+		Model:       "Mac16,1",
+		AppVersion:  "v1.2.3",
+		ClientType:  "desktop",
+	}
+	if err := st.InsertPairing(ctx, p); err != nil {
+		t.Fatalf("InsertPairing: %v", err)
+	}
+	got, err := st.FindPairingByNonce(ctx, "nonce-x")
+	if err != nil {
+		t.Fatalf("FindPairingByNonce: %v", err)
+	}
+	if got.Hostname != p.Hostname || got.Model != p.Model ||
+		got.ClientType != p.ClientType {
+		t.Fatalf("Pairing meta mismatch: got %+v want %+v", got, p)
+	}
+}
+
 func TestUpsertDistinctEmailsCoexist(t *testing.T) {
 	st := openTempStore(t)
 	ctx := context.Background()
