@@ -89,7 +89,7 @@ func runServer(args []string) {
 	port := fs.Int("port", 0, "TCP port to bind on 127.0.0.1; 0 = random")
 	parentPID := fs.Int("parent-pid", 0, "if non-zero, exit when this pid disappears (sidecar-mode safety net)")
 	noCredInject := fs.Bool("no-cred-inject", false, "don't manage Claude Code's credential storage (no inject, no reverse-sync, no restore) — useful when running side-by-side with a real native login for debugging")
-	mode := fs.String("mode", "combined", "deployment mode: combined (vault+agent in-process, default), vault (token store + refresh + frontend HTTP, no credinject), agent (Step 5 — not implemented yet)")
+	mode := fs.String("mode", "", "deployment mode: combined|vault|agent. Default: agent when ~/.foxy-switcher/agent-config.json exists, otherwise combined.")
 	bindHost := fs.String("bind-host", "127.0.0.1", "address to bind on; vault mode usually wants 0.0.0.0 behind a reverse proxy")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -102,10 +102,21 @@ func runServer(args []string) {
 		os.Exit(1)
 	}
 
-	dmode, err := parseMode(*mode)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+	// Empty --mode= means "infer from agent-config.json"; that's the
+	// path the desktop / TUI onboarding relies on so a freshly-paired
+	// user gets agent mode on the next daemon launch without anyone
+	// having to thread a flag through the Tauri sidecar args. An
+	// explicit --mode=combined still forces local mode even with a
+	// stale agent-config.json present.
+	var dmode daemonMode
+	if *mode == "" {
+		dmode = detectModeFromConfig(dir)
+	} else {
+		dmode, err = parseMode(*mode)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -158,6 +169,19 @@ func parseMode(s string) (daemonMode, error) {
 	default:
 		return 0, fmt.Errorf("--mode=%q: expected combined|vault|agent", s)
 	}
+}
+
+// detectModeFromConfig picks an implicit deployment mode based on
+// whether the user has paired with a remote vault: agent-config.json
+// present means the daemon should reverse-proxy to that vault
+// (modeAgent); absent means today's local-first default (modeCombined).
+// runServer / runTUI consult this only when the operator has not passed
+// an explicit --mode= flag, so power users keep an escape hatch.
+func detectModeFromConfig(dataDir string) daemonMode {
+	if _, err := os.Stat(filepath.Join(dataDir, AgentConfigName)); err == nil {
+		return modeAgent
+	}
+	return modeCombined
 }
 
 // modeName is the inverse of parseMode — used to surface the active mode
@@ -481,12 +505,24 @@ func runTUI(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Same implicit-mode rule as runServer: a paired user's TUI session
+	// embeds an agent-mode daemon so the TUI talks to their remote
+	// vault, not a fresh local store. Without this, opening the TUI on
+	// a paired install would silently reset the user's view to the
+	// combined-mode local sqlite.
+	embeddedMode := detectModeFromConfig(dir)
+	embeddedRun := runDaemon
+	if embeddedMode == modeAgent {
+		embeddedRun = runAgent
+	}
+
 	ready := make(chan struct{})
 	daemonErr := make(chan error, 1)
 	go func() {
-		daemonErr <- runDaemon(ctx, daemonOpts{
+		daemonErr <- embeddedRun(ctx, daemonOpts{
 			DataDir:      dir,
 			NoCredInject: *noCredInject,
+			Mode:         embeddedMode,
 			LogOutput:    logFile,
 		}, func(int) { close(ready) })
 	}()

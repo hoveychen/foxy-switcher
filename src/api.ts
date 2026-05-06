@@ -440,6 +440,15 @@ export const saveAgentConfig = async (params: {
   });
 };
 
+// clearAgentConfig deletes ~/.foxy-switcher/agent-config.json. The next
+// daemon launch (after restartDaemon) implicitly falls back to combined
+// mode via detectModeFromConfig. Used by Settings → Vault "Unpair".
+// Missing file is treated as success on the Rust side.
+export const clearAgentConfig = async (): Promise<void> => {
+  if (!inTauri) throw new NotInTauriError("clear agent config");
+  return invoke<void>("clear_agent_config");
+};
+
 export const apiClient = {
   listAccounts: () =>
     api<{ accounts: Account[] }>("/api/accounts").then((r) => r.accounts),

@@ -154,6 +154,23 @@ fn save_agent_config(
     Ok(final_path.to_string_lossy().to_string())
 }
 
+// clear_agent_config removes ~/.foxy-switcher/agent-config.json so the
+// next daemon launch (after restart_daemon) falls back to combined mode
+// per detectModeFromConfig in server/main.go. Used by the Settings →
+// Vault "Unpair" button. NotFound is treated as success — the user
+// asking to unpair when there's nothing to unpair is a no-op, not an
+// error worth bubbling up.
+#[tauri::command]
+fn clear_agent_config() -> Result<(), String> {
+    let dir = sidecar::data_dir().map_err(|e| e.to_string())?;
+    let path = dir.join("agent-config.json");
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove {}: {}", path.display(), e)),
+    }
+}
+
 // json_escape produces a JSON-quoted string without pulling serde_json into
 // the Rust dependency graph just for three fields. The agent's reader uses
 // encoding/json, which copes with the standard escapes this function emits.
@@ -480,7 +497,8 @@ pub fn run() {
             autostart_set,
             reveal_data_dir,
             data_dir_path,
-            save_agent_config
+            save_agent_config,
+            clear_agent_config
         ])
         .setup(|app| {
             let handle = app.handle().clone();
