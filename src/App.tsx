@@ -28,7 +28,7 @@ const ONBOARDING_SEEN_KEY = "foxy.onboarding.seen.v1";
 const ROUTE_KEYS: Route[] = ["dashboard", "accounts", "activity", "settings"];
 
 export default function App() {
-  const [route, setRoute] = useState<Route>("accounts");
+  const [route, setRoute] = useState<Route>("dashboard");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [managedAccountId, setManagedAccountId] = useState<number>(0);
   const [now, setNow] = useState<number>(Date.now());

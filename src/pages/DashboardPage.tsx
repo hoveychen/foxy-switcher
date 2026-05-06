@@ -34,6 +34,17 @@ function fmtRemaining(ms: number): string {
   return `${m}m`;
 }
 
+// fmtResetsAt mirrors the drawer's helper: parse the window's RFC3339
+// resets_at and render "resets in 2h 13m" / "rolling over" / em-dash.
+function fmtResetsAt(rfc3339: string, nowMs: number): string {
+  if (!rfc3339) return "—";
+  const ts = Date.parse(rfc3339);
+  if (Number.isNaN(ts)) return rfc3339;
+  const diff = ts - nowMs;
+  if (diff <= 0) return t("drawer.usage.rolling_over");
+  return tf("drawer.usage.resets_in", { time: fmtRemaining(diff) });
+}
+
 function fmtRelativeShort(ms: number, now: number): string {
   const diff = Math.max(0, now - ms);
   const s = Math.floor(diff / 1000);
@@ -397,11 +408,56 @@ function HeroCard({
             time: fmtRemaining(account.expires_at - nowMs),
           })}
         </div>
+        <div className="usage-list">
+          <HeroUsageBar label={t("drawer.usage.5h")} win={account.five_hour} nowMs={nowMs} />
+          <HeroUsageBar label={t("drawer.usage.7d_opus")} win={account.seven_day} nowMs={nowMs} />
+          <HeroUsageBar
+            label={t("drawer.usage.7d_sonnet")}
+            win={account.seven_day_sonnet}
+            nowMs={nowMs}
+          />
+        </div>
       </div>
       <button type="button" className="btn btn-secondary" onClick={onView}>
         {t("dashboard.hero.open")}
       </button>
     </section>
+  );
+}
+
+// HeroUsageBar is a read-only twin of AccountDrawer's UsageBar — same visual
+// (track + fill + pct + resets_at) but no threshold marker / drag affordance,
+// since the dashboard hero is for at-a-glance status, not editing.
+function HeroUsageBar({
+  label,
+  win,
+  nowMs,
+}: {
+  label: string;
+  win: UsageWindow | undefined;
+  nowMs: number;
+}) {
+  if (!win) {
+    return (
+      <div className="usage-row">
+        <span className="usage-label">{label}</span>
+        <span className="usage-empty">{t("drawer.usage.no_data")}</span>
+      </div>
+    );
+  }
+  const pct = Math.max(0, Math.min(100, win.utilization));
+  const tone = utilizationTone(pct);
+  return (
+    <div className="usage-row">
+      <span className="usage-label">{label}</span>
+      <div className="usage-track-wrap">
+        <div className={`usage-track ${tone}`}>
+          <div className="usage-fill" style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+      <span className="usage-pct">{pct.toFixed(0)}%</span>
+      <span className="usage-resets">{fmtResetsAt(win.resets_at, nowMs)}</span>
+    </div>
   );
 }
 
