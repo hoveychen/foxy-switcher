@@ -154,6 +154,102 @@ fn save_agent_config(
     Ok(final_path.to_string_lossy().to_string())
 }
 
+// get_device_info collects device facts the desktop frontend ships up to
+// the vault during pair-init. Mirrors the CLI/TUI's deviceinfo.Collect()
+// in Go so multi-device users see the same hostname/os/model wherever
+// they paired from. Field names match the wire format the Go side sends
+// (hostname, os, os_version, arch, model, app_version, client_type).
+//
+// OS and arch are normalized to Go's runtime.GOOS / runtime.GOARCH
+// style ("darwin" not "macos", "arm64" not "aarch64") so the vault sees
+// one canonical value space across all entry points.
+//
+// AppVersion comes from CARGO_PKG_VERSION (Cargo.toml). Local dev builds
+// surface "0.1.0"; CI bumps the version in release.yml before tauri
+// build runs, so released bundles report their actual tag.
+#[derive(serde::Serialize)]
+struct DeviceInfo {
+    hostname: String,
+    os: String,
+    os_version: String,
+    arch: String,
+    model: String,
+    app_version: String,
+    client_type: String,
+}
+
+#[tauri::command]
+fn get_device_info() -> DeviceInfo {
+    let hostname = sysinfo::System::host_name().unwrap_or_default();
+    let os_version = sysinfo::System::os_version().unwrap_or_default();
+    let os = match std::env::consts::OS {
+        "macos" => "darwin".to_string(),
+        other => other.to_string(),
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64".to_string(),
+        "x86_64" => "amd64".to_string(),
+        other => other.to_string(),
+    };
+    DeviceInfo {
+        hostname,
+        os,
+        os_version,
+        arch,
+        model: hardware_model(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_type: "desktop".to_string(),
+    }
+}
+
+// hardware_model shells out to the platform's native facility for the
+// hardware identifier. Failures fall back to "" — the vault accepts an
+// empty model, so a partial fingerprint is preferable to no pairing.
+#[cfg(target_os = "macos")]
+fn hardware_model() -> String {
+    std::process::Command::new("sysctl")
+        .args(["-n", "hw.model"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn hardware_model() -> String {
+    std::fs::read_to_string("/sys/class/dmi/id/product_name")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
+fn hardware_model() -> String {
+    let out = match std::process::Command::new("wmic")
+        .args(["csproduct", "get", "name"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return String::new(),
+    };
+    let text = match String::from_utf8(out.stdout) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    for line in text.lines().skip(1) {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("Name") {
+            return trimmed.to_string();
+        }
+    }
+    String::new()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn hardware_model() -> String {
+    String::new()
+}
+
 // clear_agent_config removes ~/.foxy-switcher/agent-config.json so the
 // next daemon launch (after restart_daemon) falls back to combined mode
 // per detectModeFromConfig in server/main.go. Used by the Settings →
@@ -498,7 +594,8 @@ pub fn run() {
             reveal_data_dir,
             data_dir_path,
             save_agent_config,
-            clear_agent_config
+            clear_agent_config,
+            get_device_info
         ])
         .setup(|app| {
             let handle = app.handle().clone();
