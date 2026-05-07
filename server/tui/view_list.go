@@ -415,18 +415,31 @@ type footerChipDef struct {
 	key, label, emit string
 }
 
+// footerChipDefs lists the Accounts-page-specific shortcuts. Global keys
+// (1-4 page switch, ? help, q quit) live in the bottom statusbar so every
+// tab shares them — including this Accounts page, where they used to be
+// duplicated as chips.
+//
+// Admin-write chips (add/pause-resume/delete) are filtered out in agent
+// mode where the vault enforces a lease-only API surface and those writes
+// would 405 anyway; better to hide the affordance than to dangle it.
 func (m *model) footerChipDefs() []footerChipDef {
-	return []footerChipDef{
+	defs := []footerChipDef{
 		{"↑↓", "move", ""},
 		{"u", "use now", "u"},
-		{"a", "add", "a"},
-		{"r", "refresh", "r"},
-		{"p", "pause/resume", "p"},
-		{"x", "delete", "x"},
-		{"R", "reload", "R"},
-		{"?", "help", "?"},
-		{"q", "quit", "q"},
 	}
+	if !m.disableAdminActions {
+		defs = append(defs, footerChipDef{"a", "add", "a"})
+	}
+	defs = append(defs, footerChipDef{"r", "refresh", "r"})
+	if !m.disableAdminActions {
+		defs = append(defs,
+			footerChipDef{"p", "pause/resume", "p"},
+			footerChipDef{"x", "delete", "x"},
+		)
+	}
+	defs = append(defs, footerChipDef{"R", "reload", "R"})
+	return defs
 }
 
 func (m *model) footerChipsRendered() []string {

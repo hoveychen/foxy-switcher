@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,9 +17,14 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/vault/httpclient"
 )
 
+// unpairFlags is the parsed flag set for `foxy-switcher unpair`.
+type unpairFlags struct {
+	dataDir string
+}
+
 // AgentConfigName is the file in dataDir that holds the device token a
-// successful pairing produced. Step 5's --mode=agent path will load this
-// at startup so credinject can authenticate to the remote vault.
+// successful pairing produced. The agent-mode daemon path loads this at
+// startup so credinject can authenticate to the remote vault.
 const AgentConfigName = "agent-config.json"
 
 // AgentConfig is the persisted shape. Fields are intentionally minimal —
@@ -32,32 +37,20 @@ type AgentConfig struct {
 
 // runPair is the `foxy-switcher pair` subcommand: it walks the device-
 // flow handshake against a remote vault and writes the resulting token
-// to dataDir/agent-config.json (mode 0600). Step 5 will read this on
-// `--mode=agent` startup.
-func runPair(args []string) {
-	fs := flag.NewFlagSet("pair", flag.ExitOnError)
-	vaultURL := fs.String("vault-url", "", "https://vault.example.com — the remote vault to pair with")
-	deviceName := fs.String("device-name", "", "human-readable name shown on the vault's approval page; defaults to hostname")
-	dataDir := fs.String("data-dir", "", "directory to write agent-config.json (default ~/.foxy-switcher)")
-	pollInterval := fs.Duration("poll-interval", 2*time.Second, "how often to ask the vault if the user has approved yet")
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+// to dataDir/agent-config.json (mode 0600). The agent-mode daemon path
+// reads this on startup to authenticate to the vault.
+func runPair(f pairFlags) error {
+	if f.vaultURL == "" {
+		return errors.New("--vault-url is required")
 	}
-	if *vaultURL == "" {
-		fmt.Fprintln(os.Stderr, "pair: --vault-url is required")
-		os.Exit(2)
-	}
-	dir, err := resolveDataDir(*dataDir)
+	dir, err := resolveDataDir(f.dataDir)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "resolve data dir:", err)
-		os.Exit(1)
+		return fmt.Errorf("resolve data dir: %w", err)
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintln(os.Stderr, "mkdir:", err)
-		os.Exit(1)
+		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	name := *deviceName
+	name := f.deviceName
 	if name == "" {
 		hn, err := os.Hostname()
 		if err != nil || hn == "" {
@@ -69,7 +62,7 @@ func runPair(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	client := httpclient.New(*vaultURL)
+	client := httpclient.New(f.vaultURL)
 	nonce := vaultauth.NewID()
 
 	info := deviceinfo.Collect()
@@ -84,38 +77,63 @@ func runPair(args []string) {
 	}
 	init, err := client.PairInit(ctx, name, nonce, meta)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "pair-init:", err)
-		os.Exit(1)
+		return fmt.Errorf("pair-init: %w", err)
 	}
 
 	fmt.Printf("Open %s and enter the code: %s\n", init.VerificationURL, init.UserCode)
 	fmt.Printf("Waiting for approval (timeout %s)\n", time.Duration(init.ExpiresInMillis)*time.Millisecond)
 
-	res, err := client.PairPoll(ctx, nonce, *pollInterval)
+	res, err := client.PairPoll(ctx, nonce, f.pollInterval)
 	if err != nil {
 		switch {
 		case errors.Is(err, httpclient.ErrPairingDenied):
-			fmt.Fprintln(os.Stderr, "Pairing denied by the vault.")
+			return errors.New("pairing denied by the vault")
 		case errors.Is(err, httpclient.ErrPairingExpired):
-			fmt.Fprintln(os.Stderr, "Pairing code expired before approval.")
+			return errors.New("pairing code expired before approval")
 		default:
-			fmt.Fprintln(os.Stderr, "pair-poll:", err)
+			return fmt.Errorf("pair-poll: %w", err)
 		}
-		os.Exit(1)
 	}
 
 	cfg := AgentConfig{
-		VaultURL:    *vaultURL,
+		VaultURL:    f.vaultURL,
 		DeviceID:    res.DeviceID,
 		DeviceToken: res.DeviceToken,
 	}
 	path := filepath.Join(dir, AgentConfigName)
 	if err := writeAgentConfig(path, cfg); err != nil {
-		fmt.Fprintln(os.Stderr, "write agent config:", err)
-		os.Exit(1)
+		return fmt.Errorf("write agent config: %w", err)
 	}
 	fmt.Printf("Pairing approved. Device id %s\n", res.DeviceID)
 	fmt.Printf("Token saved to %s (mode 0600).\n", path)
+	return nil
+}
+
+// runUnpair is the `foxy-switcher unpair` subcommand: it removes the
+// agent-config.json file written by `pair`, so the next daemon / TUI
+// launch falls back to local combined mode. Writes status messages to
+// out (os.Stdout in production, a buffer in tests) so callers can verify
+// the user-visible feedback without parsing stdio.
+func runUnpair(f unpairFlags, out io.Writer) error {
+	dir, err := resolveDataDir(f.dataDir)
+	if err != nil {
+		return fmt.Errorf("resolve data dir: %w", err)
+	}
+	path := filepath.Join(dir, AgentConfigName)
+	switch _, err := os.Stat(path); {
+	case err == nil:
+		// File exists; remove it.
+	case os.IsNotExist(err):
+		fmt.Fprintf(out, "Not paired (%s does not exist). Nothing to do.\n", path)
+		return nil
+	default:
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	fmt.Fprintf(out, "Unpaired (removed %s). Restart the daemon or TUI to fall back to local mode.\n", path)
+	return nil
 }
 
 // writeAgentConfig writes the file via tmp+rename so a crash mid-write

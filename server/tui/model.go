@@ -104,6 +104,13 @@ type model struct {
 	// "attached" (pre-existing) or "embedded" (started by this TUI). Empty
 	// hides the header chip.
 	daemonMode string
+
+	// disableAdminActions hides destructive vault writes (add / delete /
+	// pause / login flow) when the daemon is in agent mode and therefore
+	// only has lease access to the upstream vault. Mirrors the desktop's
+	// agent-lease-only UI rule. App.Update wires this on every
+	// onboardingDecisionMsg.
+	disableAdminActions bool
 }
 
 // accountsFilterKey identifies which Accounts chip is active. Filter is
@@ -354,6 +361,11 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "p":
+		// pause/resume is an admin write — vault-side state change. Suppressed
+		// in agent mode (lease consumers don't get to flip account status).
+		if m.disableAdminActions {
+			return m, nil
+		}
 		if a, ok := m.selected(); ok {
 			if a.Status == "paused" {
 				return m, m.startOp("Resuming "+a.Name+"…", "Resumed "+a.Name, func(ctx context.Context) error {
@@ -365,10 +377,19 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "x":
+		if m.disableAdminActions {
+			return m, nil
+		}
 		if _, ok := m.selected(); ok {
 			m.mode = modeConfirmDelete
 		}
 	case "a":
+		// Login (add account) is an admin write — agent-mode daemons forward
+		// to vault but the vault rejects with 405. Hide the entry point
+		// rather than letting users hit a wall.
+		if m.disableAdminActions {
+			return m, nil
+		}
 		// Kick off OAuth directly — the account name is derived from the
 		// profile fetched after the token exchange, so there's no alias prompt.
 		return m, m.loginStartCmd()

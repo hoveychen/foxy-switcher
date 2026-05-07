@@ -86,9 +86,13 @@ func (s *onboardingState) trimmedURL() string {
 // flip into onboardingChoose if the user has neither paired with a
 // vault nor accumulated any local accounts. Mirrors the auto-dismiss
 // rule in App.tsx so an upgrading user is never forced through the
-// wizard a second time.
+// wizard a second time. mode + vaultURL also feed the statusbar's
+// vault banner so the user can tell at a glance which vault they're
+// talking to.
 type onboardingDecisionMsg struct {
 	needOnboarding bool
+	mode           string
+	vaultURL       string
 }
 
 func decideOnboardingCmd(c *Client) tea.Cmd {
@@ -106,7 +110,11 @@ func decideOnboardingCmd(c *Client) tea.Cmd {
 		accs, _ := c.ListAccounts(ctx)
 		configured := (about.Mode == "agent" && about.VaultURL != "") ||
 			(about.Mode != "agent" && len(accs) > 0)
-		return onboardingDecisionMsg{needOnboarding: !configured}
+		return onboardingDecisionMsg{
+			needOnboarding: !configured,
+			mode:           about.Mode,
+			vaultURL:       about.VaultURL,
+		}
 	}
 }
 

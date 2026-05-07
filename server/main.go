@@ -3,16 +3,19 @@
 // to run as a Tauri sidecar (the GUI manages its lifecycle), but also runs
 // fine as a standalone binary for headless setups.
 //
-// CLI surface:
+// CLI surface (cobra-managed; `foxy-switcher --help` lists everything):
 //   foxy-switcher                    # default: TUI (embeds a daemon if none is running)
-//   foxy-switcher --server [flags]   # daemon for the desktop app / headless API consumers
-//   foxy-switcher tui   [flags]      # explicit TUI subcommand (same as default)
-//   foxy-switcher pair  [flags]      # device-flow pairing for --mode=agent
+//   foxy-switcher tui                # explicit TUI subcommand (same as default)
+//   foxy-switcher server [flags]     # daemon for the desktop app / headless API consumers
+//   foxy-switcher pair --vault-url=… # device-flow pairing for agent mode
+//   foxy-switcher unpair             # forget a paired vault, fall back to local mode
+//
+// Backwards compat: `foxy-switcher --server [flags]` (the form the Tauri
+// sidecar passes) is rewritten to `foxy-switcher server [flags]` at startup.
 package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -39,67 +42,21 @@ import (
 )
 
 func main() {
-	// Subcommand dispatch first. `tui` and `pair` keep working as named
-	// subcommands for backwards compat with prior docs / muscle memory.
-	if len(os.Args) > 1 && os.Args[1] == "tui" {
-		runTUI(os.Args[2:])
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "pair" {
-		runPair(os.Args[2:])
-		return
-	}
-
-	// New default: TUI. The daemon is opt-in via `--server` so a user who
-	// just types `foxy-switcher` lands in the interactive UI instead of a
-	// silent background process. The Tauri sidecar passes `--server` so
-	// the GUI keeps owning a daemon as before.
-	serverMode, rest := extractServerFlag(os.Args[1:])
-	if !serverMode {
-		runTUI(rest)
-		return
-	}
-
-	runServer(rest)
-}
-
-// extractServerFlag pulls `--server` / `-server` out of args. Returns true if
-// it was present and the remaining args (in order) for the next FlagSet to
-// parse. We do this before flag.Parse because the daemon and the TUI use
-// different FlagSets; `--server` is the one bit that picks between them.
-func extractServerFlag(args []string) (bool, []string) {
-	found := false
-	out := make([]string, 0, len(args))
-	for _, a := range args {
-		if a == "--server" || a == "-server" {
-			found = true
-			continue
-		}
-		out = append(out, a)
-	}
-	return found, out
-}
-
-// runServer parses the daemon's flags and dispatches to runDaemon or runAgent.
-// Split out of main so the `--server` gate can call it directly with the
-// already-stripped argument list.
-func runServer(args []string) {
-	fs := flag.NewFlagSet("foxy-switcher --server", flag.ExitOnError)
-	dataDir := fs.String("data-dir", "", "directory for state.db / port file (default ~/.foxy-switcher)")
-	port := fs.Int("port", 0, "TCP port to bind on 127.0.0.1; 0 = random")
-	parentPID := fs.Int("parent-pid", 0, "if non-zero, exit when this pid disappears (sidecar-mode safety net)")
-	noCredInject := fs.Bool("no-cred-inject", false, "don't manage Claude Code's credential storage (no inject, no reverse-sync, no restore) — useful when running side-by-side with a real native login for debugging")
-	mode := fs.String("mode", "", "deployment mode: combined|vault|agent. Default: agent when ~/.foxy-switcher/agent-config.json exists, otherwise combined.")
-	bindHost := fs.String("bind-host", "127.0.0.1", "address to bind on; vault mode usually wants 0.0.0.0 behind a reverse proxy")
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
-
-	dir, err := resolveDataDir(*dataDir)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "resolve data dir:", err)
+	rewriteLegacyServerFlag()
+	if err := newRootCmd().Execute(); err != nil {
+		// cobra has already printed the error message via SilenceUsage=true
+		// behaviour; just translate it to a non-zero exit.
 		os.Exit(1)
+	}
+}
+
+// runServer is the entry point for `foxy-switcher server` (and the legacy
+// `--server` argv). It dispatches to runDaemon or runAgent based on flags
+// and the agent-config.json detection rule.
+func runServer(f serverFlags) error {
+	dir, err := resolveDataDir(f.dataDir)
+	if err != nil {
+		return fmt.Errorf("resolve data dir: %w", err)
 	}
 
 	// Empty --mode= means "infer from agent-config.json"; that's the
@@ -109,13 +66,12 @@ func runServer(args []string) {
 	// explicit --mode=combined still forces local mode even with a
 	// stale agent-config.json present.
 	var dmode daemonMode
-	if *mode == "" {
+	if f.mode == "" {
 		dmode = detectModeFromConfig(dir)
 	} else {
-		dmode, err = parseMode(*mode)
+		dmode, err = parseMode(f.mode)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
+			return err
 		}
 	}
 
@@ -124,22 +80,16 @@ func runServer(args []string) {
 
 	opts := daemonOpts{
 		DataDir:      dir,
-		Port:         *port,
-		ParentPID:    *parentPID,
-		NoCredInject: *noCredInject,
+		Port:         f.port,
+		ParentPID:    f.parentPID,
+		NoCredInject: f.noCredInject,
 		Mode:         dmode,
-		BindHost:     *bindHost,
+		BindHost:     f.bindHost,
 	}
-	var runErr error
 	if dmode == modeAgent {
-		runErr = runAgent(ctx, opts, nil)
-	} else {
-		runErr = runDaemon(ctx, opts, nil)
+		return runAgent(ctx, opts, nil)
 	}
-	if runErr != nil {
-		fmt.Fprintln(os.Stderr, runErr)
-		os.Exit(1)
-	}
+	return runDaemon(ctx, opts, nil)
 }
 
 // daemonMode is the deployment topology selected by --mode.
@@ -403,8 +353,8 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// More-specific prefix wins over /agent/v1/, so this catches the
 	// /agent/v1/api/* subset before vaultHTTP.Handler() sees it.
 	rootMux.Handle("/agent/v1/api/", http.StripPrefix("/agent/v1", agentAPIWhitelist(server.Handler())))
-	vaultHTTP.RegisterWebRoutes(rootMux)
-	vaultHTTP.RegisterAPIRoutes(rootMux)
+	// Wire the SPA bundle first so RegisterWebRoutes (gateAppRoute on
+	// /, /devices, /pair, /password) can hand off to it.
 	if webapp.Available() {
 		appHandler := webapp.Handler()
 		rootMux.Handle("/app", appHandler)
@@ -413,10 +363,13 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 		rootMux.Handle("/admin/", appHandler)
 		rootMux.Handle("/assets/", appHandler)
 		vaultHTTP.HasWebApp = true
+		vaultHTTP.AppHandler = appHandler
 		// Other top-level static files vite emits (favicon, etc.) get
 		// captured by the catch-all "/" below — they 404 today and that's
 		// fine; they're decorative.
 	}
+	vaultHTTP.RegisterWebRoutes(rootMux)
+	vaultHTTP.RegisterAPIRoutes(rootMux)
 	// /healthz must remain reachable without credentials so a load
 	// balancer / uptime probe can monitor a public vault. Register it
 	// on the root mux above the catch-all so the vault-mode Bearer
@@ -479,31 +432,18 @@ func writePortFile(path string, port int) error {
 // etc.) it transparently attaches; otherwise it embeds a daemon for the
 // session and shuts it down on exit. Either way the user never has to start
 // the daemon by hand.
-func runTUI(args []string) {
-	fs := flag.NewFlagSet("tui", flag.ExitOnError)
-	dataDir := fs.String("data-dir", "", "directory containing the daemon's port/state files (default ~/.foxy-switcher)")
-	noCredInject := fs.Bool("no-cred-inject", false, "embedded daemon: don't manage Claude Code's credential storage")
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
-	dir, err := resolveDataDir(*dataDir)
+func runTUI(f tuiFlags) error {
+	dir, err := resolveDataDir(f.dataDir)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "resolve data dir:", err)
-		os.Exit(1)
+		return fmt.Errorf("resolve data dir: %w", err)
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintln(os.Stderr, "mkdir:", err)
-		os.Exit(1)
+		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 
 	if pingDaemon(dir) {
 		// Already serving — attach as a plain HTTP client.
-		if err := tui.Run(dir, "attached"); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
+		return tui.Run(dir, "attached")
 	}
 
 	// No daemon found: embed one. Daemon logs go to a file so they don't
@@ -511,8 +451,7 @@ func runTUI(args []string) {
 	logPath := filepath.Join(dir, "tui-daemon.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "open daemon log:", err)
-		os.Exit(1)
+		return fmt.Errorf("open daemon log: %w", err)
 	}
 	defer logFile.Close()
 
@@ -535,7 +474,7 @@ func runTUI(args []string) {
 	go func() {
 		daemonErr <- embeddedRun(ctx, daemonOpts{
 			DataDir:      dir,
-			NoCredInject: *noCredInject,
+			NoCredInject: f.noCredInject,
 			Mode:         embeddedMode,
 			LogOutput:    logFile,
 		}, func(int) { close(ready) })
@@ -544,23 +483,17 @@ func runTUI(args []string) {
 	select {
 	case <-ready:
 	case err := <-daemonErr:
-		fmt.Fprintln(os.Stderr, "embedded daemon failed:", err)
-		fmt.Fprintln(os.Stderr, "see", logPath)
-		os.Exit(1)
+		return fmt.Errorf("embedded daemon failed: %w (see %s)", err, logPath)
 	case <-time.After(5 * time.Second):
 		cancel()
 		<-daemonErr
-		fmt.Fprintln(os.Stderr, "embedded daemon did not become ready within 5s; see", logPath)
-		os.Exit(1)
+		return fmt.Errorf("embedded daemon did not become ready within 5s; see %s", logPath)
 	}
 
 	tuiErr := tui.Run(dir, "embedded")
 	cancel()
 	<-daemonErr // wait for daemon cleanup (cred restore, store close, port file remove)
-	if tuiErr != nil {
-		fmt.Fprintln(os.Stderr, tuiErr)
-		os.Exit(1)
-	}
+	return tuiErr
 }
 
 // pingDaemon returns true if a daemon is already healthy at dir. Reads the

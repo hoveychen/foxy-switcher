@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"net/url"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -31,6 +33,13 @@ type App struct {
 	// combined-mode user with accounts), or once the user has picked
 	// local / approved a cloud pairing during this session.
 	onboarding onboardingState
+
+	// Vault mode banner state, fed by onboardingDecisionMsg (which
+	// already pulls /api/about). Drives the statusbar's "vault: local"
+	// vs "vault: cloud · host" segment so the user can tell at a glance
+	// which vault they're talking to.
+	vaultMode string
+	vaultURL  string
 
 	// Outer terminal dimensions (full screen, including chrome).
 	width, height int
@@ -83,6 +92,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.onboarding.phase = onboardingChoose
 		}
 		a.onboarding.decided = true
+		// Capture vault mode/URL even when needOnboarding=false (returning
+		// user case) so the statusbar banner is populated from the first
+		// /api/about call regardless of the wizard outcome.
+		a.vaultMode = msg.mode
+		a.vaultURL = msg.vaultURL
+		// Sync admin-writes-disabled flag so the Accounts page hides
+		// add/pause/delete entry points and ignores their keystrokes.
+		// Settings page reads p.about.Mode directly via its own load
+		// path so no parallel sync is needed there.
+		a.accounts.disableAdminActions = (msg.mode == "agent")
 		return a, nil
 	case pairInitMsg:
 		return a, a.onPairInitMsg(msg)
@@ -206,9 +225,17 @@ func (a *App) acceptsGlobalKey() bool {
 }
 
 // handleGlobalKey processes the App-level shortcuts (page switch, theme
-// cycle, help toggle). Returns handled=true to stop further routing.
+// cycle, help toggle, quit). Returns handled=true to stop further routing.
+//
+// q / ctrl+c are intercepted here so every tab can quit, not just Accounts —
+// previously Dashboard/Activity/Settings dropped 'q' on the floor because no
+// page-level handler claimed it. acceptsGlobalKey() guards against stealing
+// 'q' from Accounts modals (paste, search, threshold, confirm) where the
+// keystroke must reach the focused textinput.
 func (a *App) handleGlobalKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch msg.String() {
+	case "q", "ctrl+c":
+		return tea.Quit, true
 	case "1":
 		a.setScreen(screenDashboard)
 		return nil, true
@@ -336,13 +363,39 @@ func (a *App) statusbarState() statusbarState {
 	page := pageLabel(a.screen)
 	// Pure-keyboard users had no on-screen cue that 1-4 switched pages; the
 	// nav hint sits to the right of the bar so it's always visible.
-	hint := dimStyle.Render("1-4 pages · ? help")
+	hint := dimStyle.Render("1-4 pages · ? help · q quit")
 	return statusbarState{
 		DaemonDot:   dot,
 		DaemonLabel: mode,
+		VaultLabel:  renderVaultLabel(a.vaultMode, a.vaultURL),
 		Breadcrumb:  page,
 		NavHint:     hint,
 		Clock:       "",
+	}
+}
+
+// renderVaultLabel returns the statusbar's vault segment based on the
+// /api/about response. Empty string if mode is unknown (early in startup,
+// before decideOnboardingCmd has resolved) so the bar shows the daemon
+// label alone instead of a misleading "vault: local" placeholder.
+func renderVaultLabel(mode, vaultURL string) string {
+	switch mode {
+	case "":
+		return ""
+	case "agent":
+		host := vaultURL
+		if u, err := url.Parse(vaultURL); err == nil && u.Host != "" {
+			host = u.Host
+		}
+		if host == "" {
+			return dimStyle.Render("vault: cloud")
+		}
+		return dimStyle.Render("vault: cloud · " + host)
+	case "vault":
+		return dimStyle.Render("vault: serving")
+	default:
+		// "combined" or any future local-flavoured mode.
+		return dimStyle.Render("vault: local")
 	}
 }
 

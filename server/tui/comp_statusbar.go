@@ -13,6 +13,7 @@ type statusbarState struct {
 	// Left segment.
 	DaemonDot   string // pre-rendered status glyph (statusDot output)
 	DaemonLabel string // e.g. "owned :8451" / "attached :8451"
+	VaultLabel  string // e.g. "vault: local" / "vault: cloud · my.vault.com"
 
 	// Center segment.
 	Breadcrumb string // e.g. "Accounts · 12 active"
@@ -38,7 +39,7 @@ func renderStatusbar(s statusbarState, width int) string {
 
 	bg := lipgloss.NewStyle().Background(bgSubtle).Foreground(textSecondary)
 
-	left := joinSeg(s.DaemonDot, s.DaemonLabel)
+	left := joinSeg(s.DaemonDot, s.DaemonLabel, s.VaultLabel)
 	right := joinSeg(s.NavHint, s.AutoSwitchDot, s.AutoSwitchLabel, s.Clock)
 	center := s.Breadcrumb
 

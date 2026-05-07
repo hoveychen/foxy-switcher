@@ -24,16 +24,42 @@ const (
 	rowResetData
 )
 
-func settingsRowOrder() []settingsRowID {
-	return []settingsRowID{
+// rowOrder is the focusable-row sequence for keyboard nav and renderers.
+// In agent mode the default-threshold row is filtered out: thresholds are
+// vault-side state shared across agents, so a lease-only consumer can't
+// edit them and the row would only frustrate the user. Mirrors the
+// agent-lease-only desktop UI rule.
+func (p *settingsPage) rowOrder() []settingsRowID {
+	out := []settingsRowID{
 		rowThemePicker,
 		rowPollInterval,
-		rowDefaultThreshold,
+	}
+	if !p.adminDisabled() {
+		out = append(out, rowDefaultThreshold)
+	}
+	out = append(out,
 		rowRestoreNative,
 		rowAutoSwitchEnabled,
 		rowAutoSwitchPolicy,
 		rowResetData,
+	)
+	return out
+}
+
+// adminDisabled returns true when the daemon is in agent mode (paired with
+// a remote vault). The flag suppresses vault-side admin writes the agent's
+// lease boundary would 405 anyway.
+func (p *settingsPage) adminDisabled() bool {
+	return p.about.Mode == "agent"
+}
+
+func (p *settingsPage) indexOfRow(id settingsRowID) int {
+	for i, r := range p.rowOrder() {
+		if r == id {
+			return i
+		}
 	}
+	return 0
 }
 
 // autoSwitchPolicies — match the server's allowedPolicies map. Order is the
@@ -231,7 +257,7 @@ func (p *settingsPage) handleKey(msg tea.KeyMsg, c *Client) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case "down", "j":
-		if p.cursor < len(settingsRowOrder())-1 {
+		if p.cursor < len(p.rowOrder())-1 {
 			p.cursor++
 		}
 		return nil, true
@@ -243,11 +269,11 @@ func (p *settingsPage) handleKey(msg tea.KeyMsg, c *Client) (tea.Cmd, bool) {
 		return p.handleAction(c, 0)
 	case "r":
 		// Quick path: place cursor on Reset row and arm the confirm.
-		p.cursor = indexOfRow(rowResetData)
+		p.cursor = p.indexOfRow(rowResetData)
 		p.confirmReset = true
 		return nil, true
 	case "R":
-		p.cursor = indexOfRow(rowResetData)
+		p.cursor = p.indexOfRow(rowResetData)
 		p.confirmReset = true
 		return nil, true
 	}
@@ -257,7 +283,7 @@ func (p *settingsPage) handleKey(msg tea.KeyMsg, c *Client) (tea.Cmd, bool) {
 // handleAction applies a direction (-1, 0=enter, +1) to the focused row. The
 // 0 case is "activate" — toggles bool, fires reset, etc.
 func (p *settingsPage) handleAction(c *Client, dir int) (tea.Cmd, bool) {
-	row := settingsRowOrder()[p.cursor]
+	row := p.rowOrder()[p.cursor]
 	switch row {
 	case rowThemePicker:
 		if dir == 0 {
@@ -303,15 +329,6 @@ func (p *settingsPage) handleAction(c *Client, dir int) (tea.Cmd, bool) {
 		return nil, true
 	}
 	return nil, false
-}
-
-func indexOfRow(id settingsRowID) int {
-	for i, r := range settingsRowOrder() {
-		if r == id {
-			return i
-		}
-	}
-	return 0
 }
 
 func cyclePolicy(cur string, dir int) string {
@@ -373,15 +390,21 @@ func (p *settingsPage) view() string {
 		return dimStyle.Render("loading…")
 	}
 
+	behaviorRows := []string{
+		p.renderRow(rowPollInterval, "Poll interval", fmt.Sprintf("%ds", p.settings.UsagePollIntervalSec)),
+	}
+	// Default threshold lives on the vault side; in agent mode the lease
+	// boundary blocks the write and the row's adjustments would silently
+	// no-op. Hide it in lock-step with rowOrder.
+	if !p.adminDisabled() {
+		behaviorRows = append(behaviorRows, p.renderRow(rowDefaultThreshold, "Default threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultThresholdPercent)))
+	}
+	behaviorRows = append(behaviorRows, p.renderRow(rowRestoreNative, "Restore native on quit", boolValue(p.settings.RestoreNativeOnQuit)))
 	rows := []string{
 		p.section("Appearance",
 			p.renderRow(rowThemePicker, "Theme", themeName(currentTheme)),
 		),
-		p.section("Behavior",
-			p.renderRow(rowPollInterval, "Poll interval", fmt.Sprintf("%ds", p.settings.UsagePollIntervalSec)),
-			p.renderRow(rowDefaultThreshold, "Default threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultThresholdPercent)),
-			p.renderRow(rowRestoreNative, "Restore native on quit", boolValue(p.settings.RestoreNativeOnQuit)),
-		),
+		p.section("Behavior", behaviorRows...),
 		p.section("Auto-switch",
 			p.renderRow(rowAutoSwitchEnabled, "Enabled", boolValue(p.autoSwitch.Enabled)),
 			p.renderRow(rowAutoSwitchPolicy, "Policy", strings.ToUpper(p.autoSwitch.Policy)),
@@ -416,13 +439,13 @@ func (p *settingsPage) renderRow(id settingsRowID, label, value string) string {
 	const valueW = 22
 
 	caret := "  "
-	if id == settingsRowOrder()[p.cursor] {
+	if id == p.rowOrder()[p.cursor] {
 		caret = cursorStyle.Render("▸ ")
 	}
 	lab := padRightPlain(label, labelW)
 	val := padRightPlain(formatValue(id, value), valueW)
 	row := caret + lab + val
-	if id == settingsRowOrder()[p.cursor] {
+	if id == p.rowOrder()[p.cursor] {
 		row = selectedStyle.Render(row)
 	}
 	return row
@@ -502,12 +525,12 @@ func (p *settingsPage) renderResetRow() string {
 			dimStyle.Render("Enter = wipe + exit daemon · Esc = cancel")
 	}
 	caret := "  "
-	if rowResetData == settingsRowOrder()[p.cursor] {
+	if rowResetData == p.rowOrder()[p.cursor] {
 		caret = cursorStyle.Render("▸ ")
 	}
 	row := caret + padRightPlain("Reset all data", 26) +
 		dimStyle.Render("press R or enter to arm")
-	if rowResetData == settingsRowOrder()[p.cursor] {
+	if rowResetData == p.rowOrder()[p.cursor] {
 		row = selectedStyle.Render(row)
 	}
 	return row
