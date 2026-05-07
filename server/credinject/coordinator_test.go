@@ -86,7 +86,7 @@ func newCoord(t *testing.T) (*Coordinator, *fakeBackend, *store.Store, string) {
 	}
 	t.Cleanup(func() { st.Close() })
 	be := &fakeBackend{}
-	c := New(vault.NewInProc(st), be, dir, log.New(io.Discard, "", 0))
+	c := New(vault.NewInProc(st), be, dir, log.New(io.Discard, "", 0), "")
 	return c, be, st, dir
 }
 
@@ -552,5 +552,54 @@ func TestBootstrap_ExternalRotationDoesNotForceSwitch(t *testing.T) {
 	}
 	if a.RefreshToken != rotatedRefresh {
 		t.Errorf("store did not catch up with rotated A refresh_token; got %q", a.RefreshToken)
+	}
+}
+
+// TestNew_DeviceIDPersistsAcrossRestarts is the regression test for the
+// "agent restart blanks the keychain for ~minute" symptom. Two coordinators
+// constructed against the same dataDir must reuse the same deviceID so the
+// vault's leases table sees the new process as the same device and the
+// AcquireLease can renew (instead of returning ErrLeaseLocked until the stale
+// lease's TTL lapses).
+func TestNew_DeviceIDPersistsAcrossRestarts(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	be := &fakeBackend{}
+	logger := log.New(io.Discard, "", 0)
+
+	c1 := New(vault.NewInProc(st), be, dir, logger, "")
+	if c1.deviceID == "" {
+		t.Fatal("c1.deviceID is empty; New must produce one")
+	}
+
+	c2 := New(vault.NewInProc(st), be, dir, logger, "")
+	if c2.deviceID != c1.deviceID {
+		t.Fatalf("deviceID not persisted across restarts: c1=%q c2=%q", c1.deviceID, c2.deviceID)
+	}
+}
+
+// TestNew_HonoursExplicitDeviceID covers the agent-mode path: the caller
+// passes the pair-assigned cfg.DeviceID, and the coordinator must use it
+// verbatim (not generate or load a different one). This is what keeps the
+// vault's devices table and leases table coherent for the same physical
+// agent across restarts.
+func TestNew_HonoursExplicitDeviceID(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	be := &fakeBackend{}
+	logger := log.New(io.Discard, "", 0)
+
+	const explicit = "device-from-pair-flow"
+	c := New(vault.NewInProc(st), be, dir, logger, explicit)
+	if c.deviceID != explicit {
+		t.Fatalf("deviceID: got %q want %q", c.deviceID, explicit)
 	}
 }

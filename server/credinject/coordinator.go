@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,9 +94,26 @@ func (c *Coordinator) SetBus(b *activity.Bus) {
 
 // New constructs a Coordinator. The dataDir is where injected.json /
 // native-cred-backup.json live (typically ~/.foxy-switcher).
-func New(svc vault.Service, backend Backend, dataDir string, logger *log.Logger) *Coordinator {
+//
+// deviceID identifies this agent to the vault for lease bookkeeping. Agent
+// mode passes the pair-assigned cfg.DeviceID so the vault's devices/leases
+// tables stay coherent across restarts. Pass "" to fall back to a per-dataDir
+// persisted ID — daemon/combined mode and tests use that path.
+//
+// Why the persistence matters: the vault's leases table is keyed by
+// (account_id, device_id). If a previous process exited without releasing
+// (kill -9, OS reboot, Tauri crash) and the new process gets a fresh random
+// device_id, AcquireLease returns ErrLeaseLocked until the stale row's TTL
+// expires (≤60s). During that window the coordinator falls back to "no
+// available account" and restores the user's native credentials, blanking
+// the keychain for ~minutes — exactly the "agent doesn't auto-inject on
+// startup" symptom we hit in production.
+func New(svc vault.Service, backend Backend, dataDir string, logger *log.Logger, deviceID string) *Coordinator {
 	if logger == nil {
 		logger = log.Default()
+	}
+	if deviceID == "" {
+		deviceID = loadOrGenDeviceID(dataDir, logger)
 	}
 	return &Coordinator{
 		svc:                 svc,
@@ -104,15 +124,13 @@ func New(svc vault.Service, backend Backend, dataDir string, logger *log.Logger)
 		reconcileInterval:   DefaultReconcileInterval,
 		reverseSyncInterval: DefaultReverseSyncInterval,
 		trigger:             make(chan struct{}, 1),
-		deviceID:            newDeviceID(),
+		deviceID:            deviceID,
 		leaseTTL:            DefaultLeaseTTL,
 		restoreOnQuit:       true,
 	}
 }
 
-// newDeviceID returns a random opaque identifier. Stable for the lifetime
-// of the process — Step 4 will persist it so reattaching to the vault after
-// a restart picks up the same ID.
+// newDeviceID returns a random opaque identifier.
 func newDeviceID() string {
 	var buf [12]byte
 	if _, err := rand.Read(buf[:]); err != nil {
@@ -121,6 +139,33 @@ func newDeviceID() string {
 		panic("credinject: rand.Read failed: " + err.Error())
 	}
 	return hex.EncodeToString(buf[:])
+}
+
+// deviceIDFile is where loadOrGenDeviceID stashes the persisted ID for
+// daemon/combined mode. Agent mode bypasses this entirely by passing the
+// pair-assigned cfg.DeviceID into New.
+const deviceIDFile = "device-id"
+
+// loadOrGenDeviceID returns a deviceID that survives across process restarts
+// for the same dataDir. On first call it generates a fresh ID and writes it;
+// on subsequent calls it reads the file. Read errors and partial writes both
+// fall back to a fresh in-memory ID so a corrupted file never wedges startup
+// (the cost is one extra "stale lease 60s" cycle, not a crash).
+func loadOrGenDeviceID(dataDir string, logger *log.Logger) string {
+	path := filepath.Join(dataDir, deviceIDFile)
+	if buf, err := os.ReadFile(path); err == nil {
+		id := strings.TrimSpace(string(buf))
+		if id != "" {
+			return id
+		}
+	} else if !os.IsNotExist(err) {
+		logger.Printf("[credinject] read %s: %v (regenerating)", path, err)
+	}
+	id := newDeviceID()
+	if err := os.WriteFile(path, []byte(id), 0o600); err != nil {
+		logger.Printf("[credinject] persist device-id: %v (will regenerate next start)", err)
+	}
+	return id
 }
 
 // SetRestoreOnQuit toggles whether RestoreOnShutdown actually restores the

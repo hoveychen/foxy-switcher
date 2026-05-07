@@ -278,7 +278,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 			ln.Close()
 			return fmt.Errorf("credinject backend: %w", err)
 		}
-		cc = credinject.New(vaultSvc, backend, opts.DataDir, logger)
+		cc = credinject.New(vaultSvc, backend, opts.DataDir, logger, "")
 		cc.SetBus(bus)
 		cc.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
 		defer func() {

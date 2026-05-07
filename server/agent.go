@@ -74,7 +74,7 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		if err != nil {
 			return fmt.Errorf("credinject backend: %w", err)
 		}
-		cc = credinject.New(client, backend, opts.DataDir, logger)
+		cc = credinject.New(client, backend, opts.DataDir, logger, cfg.DeviceID)
 		cc.SetBus(bus)
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
