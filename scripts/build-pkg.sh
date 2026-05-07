@@ -60,11 +60,16 @@ echo "==> wrapping $APP_PATH"
 # component while Installer.app still reports success. v1.1.6..v1.1.8 had
 # this misconfiguration and shipped pkgs that installed nothing on first-
 # time users. Leave BundleOverwriteAction at the default "upgrade".
-PKG_STAGING="$(mktemp -d)"
-trap 'rm -rf "$PKG_STAGING"' EXIT
+# Keep the component plist OUTSIDE the staging tree — pkgbuild --root packs
+# everything under the root into the BOM, so a plist sitting in staging
+# would ship as /Applications/component.plist on user machines.
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+PKG_STAGING="$SCRATCH/staging"
+COMPONENT_PLIST="$SCRATCH/component.plist"
+mkdir -p "$PKG_STAGING"
 cp -R "$APP_PATH" "$PKG_STAGING/"
 
-COMPONENT_PLIST="$PKG_STAGING/component.plist"
 pkgbuild --analyze --root "$PKG_STAGING" "$COMPONENT_PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false"   "$COMPONENT_PLIST"
 /usr/libexec/PlistBuddy -c "Set :0:BundleIsVersionChecked false" "$COMPONENT_PLIST"
