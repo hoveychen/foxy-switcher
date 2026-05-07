@@ -117,12 +117,15 @@ var emptyTime time.Time
 //   - /app, /app/*    — desktop SPA in browser (legacy embed prefix)
 //   - /admin, /admin/* — admin bootstrap surface (setup + login only after
 //     the vault-app-admin-merge migration; devices/pair/password moved out)
-//   - /, /devices, /pair, /password — the merged App with admin sidebar
-//     items. These are gated by httpserver.gateAppRoute before the request
-//     reaches us, so unsigned visitors don't make it here.
+//   - /, /accounts, /activity, /settings, /devices, /pair, /password —
+//     the merged App with admin sidebar items. Dashboard lives at /
+//     (App.tsx pushes "/" instead of "/dashboard"). These are gated by
+//     httpserver.gateAppRoute before the request reaches us, so unsigned
+//     visitors don't make it here.
 func isSPARoute(p string) bool {
 	switch p {
 	case "/", "/app", "/app/", "/admin", "/admin/",
+		"/accounts", "/activity", "/settings",
 		"/devices", "/pair", "/password":
 		return true
 	}

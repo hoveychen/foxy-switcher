@@ -397,7 +397,7 @@ func TestAppRoutesGatedToAdminBootstrap(t *testing.T) {
 	f := newAuthFixture(t)
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
-	paths := []string{"/", "/devices", "/pair", "/password"}
+	paths := []string{"/", "/accounts", "/activity", "/settings", "/devices", "/pair", "/password"}
 	for _, p := range paths {
 		resp, err := c.Get(f.server.URL + p)
 		if err != nil {

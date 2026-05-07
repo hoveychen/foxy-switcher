@@ -52,3 +52,20 @@ func TestHandler_NonAppPath404(t *testing.T) {
 		t.Errorf("non-app path: got %d want 404", rr.Code)
 	}
 }
+
+// TestIsSPARoute_MergedSidebarPaths pins the post-merge sidebar set:
+// after vault-app-admin-merge the SPA owns dashboard / accounts /
+// activity / settings / devices / pair / password as top-level paths.
+// Every one of them must resolve to index.html so a refresh on the URL
+// (or a direct paste) re-enters the SPA instead of 404'ing on the file
+// lookup branch.
+func TestIsSPARoute_MergedSidebarPaths(t *testing.T) {
+	for _, p := range []string{
+		"/", "/accounts", "/activity", "/settings",
+		"/devices", "/pair", "/password",
+	} {
+		if !isSPARoute(p) {
+			t.Errorf("isSPARoute(%q) = false, want true", p)
+		}
+	}
+}

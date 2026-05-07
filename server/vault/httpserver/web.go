@@ -42,8 +42,13 @@ func (s *Server) RegisterWebRoutes(mux *http.ServeMux) {
 	// Top-level App routes. gateAppRoute requires an admin session and
 	// hands off to webapp.Handler() (the React bundle); webapp's
 	// isSPARoute whitelist recognizes these paths and returns index.html.
+	// Dashboard pushes to "/" (not "/dashboard"), so it's covered by the
+	// "/" handler.
 	gated := s.gateAppRoute()
 	mux.Handle("GET /{$}", gated)
+	mux.Handle("GET /accounts", gated)
+	mux.Handle("GET /activity", gated)
+	mux.Handle("GET /settings", gated)
 	mux.Handle("GET /devices", gated)
 	mux.Handle("GET /pair", gated)
 	mux.Handle("GET /password", gated)
