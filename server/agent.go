@@ -76,6 +76,13 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		}
 		cc = credinject.New(client, backend, opts.DataDir, logger, cfg.DeviceID)
 		cc.SetBus(bus)
+		// Read auto-switch from the agent-local store rather than the
+		// remote vault. The desktop's settings page writes the toggle to
+		// agent-activity.db via /api/auto-switch (see registerLocalPrefRoutes
+		// below); without this wiring credinject's choose() would consult
+		// the vault's global auto-switch and silently ignore the user's
+		// per-agent choice.
+		cc.SetAutoSwitchSource(agentStore.GetAutoSwitch)
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
 				logger.Printf("warning: restore native credentials: %v", err)

@@ -80,6 +80,28 @@ type Coordinator struct {
 	// last-injected credential in the keychain — useful when a user wants
 	// Claude Code to keep using the foxy account between sessions.
 	restoreOnQuit bool
+
+	// autoSwitchSource, when non-nil, replaces svc.GetAutoSwitch as the
+	// authority for "is auto-switch enabled?". Agent mode wires this to a
+	// local store-backed lookup so the desktop's per-agent toggle (which
+	// writes to agent-activity.db via /api/auto-switch) actually drives
+	// credinject's choose() decision instead of being silently ignored.
+	// Daemon/combined mode leaves it nil — the in-process svc already reads
+	// the same store the frontend writes to.
+	autoSwitchSource func(context.Context) (vault.AutoSwitch, error)
+}
+
+// SetAutoSwitchSource overrides where Coordinator reads auto-switch from.
+// Agent mode passes a closure backed by its local store.GetAutoSwitch so
+// the per-agent kv row drives behaviour. Pass nil to revert to svc.
+func (c *Coordinator) SetAutoSwitchSource(fn func(context.Context) (vault.AutoSwitch, error)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Stub: store the function but choose() still asks svc until P2.
+	c.autoSwitchSource = fn
 }
 
 // SetBus wires the activity bus after construction. Optional — when nil,
@@ -283,7 +305,16 @@ func (c *Coordinator) loadState() {
 // when the current account becomes ineligible. Without an eligible target,
 // return ErrNoAvailable so the caller restores the user's native creds.
 func (c *Coordinator) choose(ctx context.Context) (*vault.Account, error) {
-	auto, err := c.svc.GetAutoSwitch(ctx)
+	c.mu.Lock()
+	src := c.autoSwitchSource
+	c.mu.Unlock()
+	getAuto := func(ctx context.Context) (vault.AutoSwitch, error) {
+		if src != nil {
+			return src(ctx)
+		}
+		return c.svc.GetAutoSwitch(ctx)
+	}
+	auto, err := getAuto(ctx)
 	if err != nil {
 		c.logger.Printf("[credinject] read auto-switch: %v", err)
 		auto = vault.AutoSwitch{Enabled: true, Policy: "lru"}

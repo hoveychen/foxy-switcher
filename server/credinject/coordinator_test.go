@@ -582,6 +582,36 @@ func TestNew_DeviceIDPersistsAcrossRestarts(t *testing.T) {
 	}
 }
 
+// TestSetAutoSwitchSource_OverridesSvc is the regression test for the
+// agent-mode auto-switch inconsistency: the desktop's /api/auto-switch
+// writes to the agent-local store, but until this wiring landed the
+// Coordinator's choose() called svc.GetAutoSwitch (the remote vault).
+// With auto-switch=disabled in the override and currentID=0, chooseManual
+// must return ErrNoAvailable and no inject happens — even when the
+// remote svc still says enabled.
+func TestSetAutoSwitchSource_OverridesSvc(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	// Underlying svc (vault.InProc) defaults to auto-switch enabled. Seed
+	// an active account so an enabled-path reconcile would inject it.
+	seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+
+	// Override says auto-switch is OFF. With currentID=0 and no pinned
+	// account (LastUsedAt > 0 from Upsert defaults), chooseManual returns
+	// ErrNoAvailable → handleNoAvailable does not inject.
+	c.SetAutoSwitchSource(func(_ context.Context) (vault.AutoSwitch, error) {
+		return vault.AutoSwitch{Enabled: false, Policy: "lru"}, nil
+	})
+
+	c.reconcile(context.Background())
+
+	if be.hasOAuth {
+		t.Fatalf("auto-switch override (off) was ignored: blob written despite manual mode + no pin")
+	}
+	if c.CurrentAccountID() != 0 {
+		t.Fatalf("CurrentAccountID: got %d want 0 (no inject expected)", c.CurrentAccountID())
+	}
+}
+
 // TestNew_HonoursExplicitDeviceID covers the agent-mode path: the caller
 // passes the pair-assigned cfg.DeviceID, and the coordinator must use it
 // verbatim (not generate or load a different one). This is what keeps the
