@@ -44,6 +44,12 @@ type Server struct {
 	// summary. Defaults to false so a binary built without `pnpm build`
 	// still serves something.
 	HasWebApp bool
+	// AppHandler is the React SPA file server (webapp.Handler()) injected
+	// by main when the bundle is available. /, /devices, /pair, /password
+	// hand off to it after the admin-session gate passes. Nil in builds
+	// without `pnpm build`, which causes those routes to fall back to the
+	// pre-merge redirect behavior (handleRoot bouncing to /admin/devices).
+	AppHandler http.Handler
 }
 
 // New constructs the handler. svc and st are non-nil. PublicBaseURL is set

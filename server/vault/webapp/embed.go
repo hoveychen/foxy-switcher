@@ -112,12 +112,18 @@ func Handler() http.Handler {
 var emptyTime time.Time
 
 // isSPARoute reports whether the URL path should resolve to the SPA
-// entry (index.html). Both /app/* and /admin/* share the same bundle —
-// the React app's entry decides which root component to render based
-// on the path.
+// entry (index.html). The bundle's main.tsx dispatches based on
+// window.location.pathname:
+//   - /app, /app/*    — desktop SPA in browser (legacy embed prefix)
+//   - /admin, /admin/* — admin bootstrap surface (setup + login only after
+//     the vault-app-admin-merge migration; devices/pair/password moved out)
+//   - /, /devices, /pair, /password — the merged App with admin sidebar
+//     items. These are gated by httpserver.gateAppRoute before the request
+//     reaches us, so unsigned visitors don't make it here.
 func isSPARoute(p string) bool {
 	switch p {
-	case "/app", "/app/", "/admin", "/admin/":
+	case "/", "/app", "/app/", "/admin", "/admin/",
+		"/devices", "/pair", "/password":
 		return true
 	}
 	return strings.HasPrefix(p, "/app/") || strings.HasPrefix(p, "/admin/")

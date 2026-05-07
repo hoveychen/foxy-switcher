@@ -350,10 +350,14 @@ func TestAPI_FreshVaultReturnsSetupRequired(t *testing.T) {
 }
 
 // TestLegacyWebRoutesRedirectToAdmin pins down the bookmark-friendly
-// redirects that replaced the deleted server-rendered admin pages.
-// The agent's pair-init verification URL still says "/pair", so a user
-// clicking that link must end up on the SPA's /admin/pair?code=…
-// route with the query string preserved.
+// redirects after vault-app-admin-merge:
+//   - /setup, /login keep redirecting onto /admin/* (those are still the
+//     unauthenticated bootstrap pages).
+//   - /admin/devices, /admin/pair, /admin/password are the legacy surface
+//     and 301 to the top-level App paths now hosting the sidebar items.
+//
+// Pair-init verification URL preservation is exercised through the
+// /admin/pair?code=… → /pair?code=… case below.
 func TestLegacyWebRoutesRedirectToAdmin(t *testing.T) {
 	f := newAuthFixture(t)
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -365,10 +369,10 @@ func TestLegacyWebRoutesRedirectToAdmin(t *testing.T) {
 		{"/setup", "/admin/setup"},
 		{"/login", "/admin/login"},
 		{"/login?next=/devices", "/admin/login?next=/devices"},
-		{"/devices", "/admin/devices"},
-		{"/pair", "/admin/pair"},
-		{"/pair?code=ABCD-1234", "/admin/pair?code=ABCD-1234"},
-		{"/password", "/admin/password"},
+		{"/admin/devices", "/devices"},
+		{"/admin/pair", "/pair"},
+		{"/admin/pair?code=ABCD-1234", "/pair?code=ABCD-1234"},
+		{"/admin/password", "/password"},
 	}
 	for _, tc := range cases {
 		resp, err := c.Get(f.server.URL + tc.from)
@@ -381,6 +385,30 @@ func TestLegacyWebRoutesRedirectToAdmin(t *testing.T) {
 		}
 		if got := resp.Header.Get("Location"); got != tc.to {
 			t.Errorf("%s redirect: got %q want %q", tc.from, got, tc.to)
+		}
+	}
+}
+
+// TestAppRoutesGatedToAdminBootstrap covers gateAppRoute's pre-setup
+// branch: on a fresh vault (no password yet) every top-level App route
+// bounces to /admin/setup so the bootstrap wizard runs before the
+// merged sidebar surfaces.
+func TestAppRoutesGatedToAdminBootstrap(t *testing.T) {
+	f := newAuthFixture(t)
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	paths := []string{"/", "/devices", "/pair", "/password"}
+	for _, p := range paths {
+		resp, err := c.Get(f.server.URL + p)
+		if err != nil {
+			t.Fatalf("GET %s: %v", p, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Errorf("%s status: got %s want 303", p, resp.Status)
+		}
+		if loc := resp.Header.Get("Location"); loc != "/admin/setup" {
+			t.Errorf("%s redirect: got %q want %q", p, loc, "/admin/setup")
 		}
 	}
 }
