@@ -97,6 +97,19 @@ fn reveal_data_dir(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// open_external_url hands a URL off to the OS default browser via
+// tauri-plugin-opener. The webview itself swallows <a target="_blank">
+// (no popup window in Tauri), so any external link in the React UI has
+// to round-trip through this command. Matches the menu Help → Docs path
+// (handle_menu_event uses opener().open_url directly there).
+#[tauri::command]
+fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 // data_dir_path returns the resolved ~/.foxy-switcher so the Settings page
 // can show it without baking platform logic into the React side.
 #[tauri::command]
@@ -593,6 +606,7 @@ pub fn run() {
             autostart_set,
             reveal_data_dir,
             data_dir_path,
+            open_external_url,
             save_agent_config,
             clear_agent_config,
             get_device_info

@@ -412,6 +412,11 @@ export function AccountsPage({
   }, [accounts, search, statusFilter, nowMs]);
 
   const startLogin = useCallback(async () => {
+    // In agent mode the daemon proxies admin writes to the vault, which
+    // returns 405 "agent mode is read-only". Block at the source so the
+    // native menu (Cmd+N) and any other future caller don't surface that
+    // error banner.
+    if (disableAdminActions) return;
     setCopied(false);
     try {
       const r = await apiClient.startLogin();
@@ -423,7 +428,7 @@ export function AccountsPage({
     } catch (e) {
       setLoginState({ phase: "error", message: String(e) });
     }
-  }, []);
+  }, [disableAdminActions]);
 
   useEffect(() => {
     if (addAccountTick === 0) return;
@@ -584,10 +589,12 @@ export function AccountsPage({
               <div className="list">
                 <div className="list-empty">
                   <p>{t("accounts.empty.no_pool")}</p>
-                  <button className="btn btn-secondary" onClick={startLogin}>
-                    <Icon d={ICON_PLUS} />
-                    {t("accounts.empty.add_first")}
-                  </button>
+                  {!disableAdminActions && (
+                    <button className="btn btn-secondary" onClick={startLogin}>
+                      <Icon d={ICON_PLUS} />
+                      {t("accounts.empty.add_first")}
+                    </button>
+                  )}
                 </div>
               </div>
             )

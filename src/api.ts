@@ -449,6 +449,25 @@ export const clearAgentConfig = async (): Promise<void> => {
   return invoke<void>("clear_agent_config");
 };
 
+// openExternal hands a URL off to the OS default browser. Tauri's webview
+// silently drops <a target="_blank">, so every external link in the UI
+// has to call this instead. In a browser host (vault server's /app embed)
+// we fall back to window.open.
+export const openExternal = async (url: string): Promise<void> => {
+  if (!url) return;
+  if (inTauri) {
+    try {
+      await invoke<void>("open_external_url", { url });
+      return;
+    } catch (e) {
+      console.warn("open_external_url failed", e);
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+};
+
 // VaultDevice is the wire shape /api/devices returns. Mirrors deviceView
 // in server/httpapi/routes.go. Hostname/OS/Model/etc. are empty for
 // devices paired before the device-meta migration shipped.

@@ -6,6 +6,7 @@ import { FoxyIntroPlayer } from "./FoxyIntroPlayer";
 import {
   apiClient,
   getDeviceInfo,
+  openExternal,
   restartDaemon,
   saveAgentConfig,
 } from "../api";
@@ -234,8 +235,10 @@ export function OnboardingOverlay({ onDismiss }: { onDismiss: () => void }) {
             <p className="onboarding-wizard-body">
               <a
                 href={DEPLOY_DOCS_URL}
-                target="_blank"
-                rel="noreferrer"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void openExternal(DEPLOY_DOCS_URL);
+                }}
                 className="onboarding-deploy-link"
               >
                 {t("onboarding.cloud.url.deploy_link")}
@@ -294,7 +297,13 @@ export function OnboardingOverlay({ onDismiss }: { onDismiss: () => void }) {
             <div className="onboarding-pair-code">{userCode}</div>
             <p className="onboarding-input-sub">
               {t("onboarding.cloud.pair.url_hint")}{" "}
-              <a href={verificationUrl} target="_blank" rel="noreferrer">
+              <a
+                href={verificationUrl}
+                onClick={(e) => {
+                  e.preventDefault();
+                  void openExternal(verificationUrl);
+                }}
+              >
                 {verificationUrl}
               </a>
             </p>

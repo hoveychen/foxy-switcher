@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
-import { apiClient, getDeviceInfo, saveAgentConfig } from "../api";
+import {
+  apiClient,
+  getDeviceInfo,
+  openExternal,
+  restartDaemon,
+  saveAgentConfig,
+} from "../api";
 import { t } from "../i18n";
 
 // PairVaultModal walks the user through the device-flow handshake against
@@ -104,6 +110,16 @@ export function PairVaultModal({
             });
             setSavedPath(path);
             setPhase("approved");
+            // Auto-apply: restart the daemon so it picks up agent-config.json,
+            // then bounce the window so cached port + about state re-hydrate.
+            // Mirrors onUnpair in SettingsPage. Restart errors are swallowed —
+            // the config is saved, worst case the user relaunches manually.
+            try {
+              await restartDaemon();
+            } catch {
+              // intentional: don't surface restart failure over the success state
+            }
+            setTimeout(() => window.location.reload(), 1200);
           } catch (e) {
             setErrorMsg(
               t("pair.error.save_failed") +
@@ -225,7 +241,13 @@ export function PairVaultModal({
         </div>
         <p style={{ fontSize: "0.9em", marginBottom: 0 }}>
           {t("pair.polling.url_hint")}{" "}
-          <a href={verificationUrl} target="_blank" rel="noreferrer">
+          <a
+            href={verificationUrl}
+            onClick={(e) => {
+              e.preventDefault();
+              void openExternal(verificationUrl);
+            }}
+          >
             {verificationUrl}
           </a>
         </p>
@@ -256,8 +278,8 @@ export function PairVaultModal({
       </div>
     );
     footer = (
-      <button type="button" className="btn btn-primary" onClick={onClose}>
-        {t("modal.done")}
+      <button type="button" className="btn btn-primary" disabled>
+        {t("pair.approved.applying")}
       </button>
     );
   }

@@ -15,6 +15,7 @@ import {
   getDaemonMode,
   getServerPort,
   isTauriHost,
+  openExternal,
   restartDaemon,
   revealDataDir,
 } from "../api";
@@ -537,8 +538,10 @@ export function SettingsPage({
                       {about?.vault_url ? (
                         <a
                           href={about.vault_url}
-                          target="_blank"
-                          rel="noreferrer"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            void openExternal(about.vault_url!);
+                          }}
                         >
                           {about.vault_url}
                         </a>
@@ -548,14 +551,13 @@ export function SettingsPage({
                     </div>
                   </div>
                   {about?.vault_url && (
-                    <a
-                      href={`${about.vault_url}/admin`}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
                       className="btn"
+                      onClick={() => void openExternal(about.vault_url!)}
                     >
                       {t("settings.vault.manage.btn")}
-                    </a>
+                    </button>
                   )}
                 </div>
                 {about?.device_id && (
