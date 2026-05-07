@@ -34,6 +34,13 @@ const (
 	// (suspended laptop, blocked goroutine), the next tick still lands well
 	// before the lease lapses.
 	DefaultLeaseTTL = time.Minute
+
+	// StartupGracePeriod is how long bootstrap suppresses the keychain
+	// restore-on-no-available path. Sized to lease TTL + sweep cadence so a
+	// stale lease left by another device (or our own previous process) has
+	// time to expire and become Pickable before we conclude the pool is
+	// empty and blank the user's keychain.
+	StartupGracePeriod = 90 * time.Second
 )
 
 // Coordinator owns the credinjection state machine. One instance per daemon.
@@ -80,6 +87,15 @@ type Coordinator struct {
 	// last-injected credential in the keychain — useful when a user wants
 	// Claude Code to keep using the foxy account between sessions.
 	restoreOnQuit bool
+
+	// startupGraceUntil suppresses the "restore native credentials" path of
+	// handleNoAvailable while it is in the future. bootstrap sets it to
+	// clock+StartupGracePeriod so the very first reconcile can't blank a
+	// healthy keychain just because the vault briefly has no eligible
+	// account (typical cause: another device on the same vault is still
+	// holding a lease). Once the grace window passes the normal restore
+	// behaviour resumes.
+	startupGraceUntil time.Time
 
 	// autoSwitchSource, when non-nil, replaces svc.GetAutoSwitch as the
 	// authority for "is auto-switch enabled?". Agent mode wires this to a
@@ -266,6 +282,9 @@ func (c *Coordinator) Run(ctx context.Context) {
 // clobbering the externally-rotated tokens. Pulling the rotation back into
 // the store first keeps the previously-injected account eligible.
 func (c *Coordinator) bootstrap(ctx context.Context) {
+	c.mu.Lock()
+	c.startupGraceUntil = c.clock().Add(StartupGracePeriod)
+	c.mu.Unlock()
 	c.loadState()
 	c.reverseSync(ctx)
 	c.reconcile(ctx)
@@ -537,10 +556,21 @@ func (c *Coordinator) releaseLease(ctx context.Context) {
 // handleNoAvailable runs when selector.Pick returns ErrNoAvailable. Restores
 // the user's native credentials so Claude Code keeps working with their own
 // login while the foxy pool is empty / rate-limited.
+//
+// During the bootstrap grace window we suppress the restore: a transient
+// ErrNoAvailable right after launch is usually a stale lease (own or
+// another device's) that will clear within a minute. Reconcile retries
+// every 5s, so once the lease lapses we converge without ever touching
+// the user's keychain.
 func (c *Coordinator) handleNoAvailable() {
 	c.mu.Lock()
 	if c.currentAccountID == 0 {
 		c.mu.Unlock()
+		return
+	}
+	if c.clock().Before(c.startupGraceUntil) {
+		c.mu.Unlock()
+		c.logger.Print("[credinject] no available account during startup grace; keeping current keychain")
 		return
 	}
 	c.mu.Unlock()

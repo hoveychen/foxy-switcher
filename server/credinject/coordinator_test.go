@@ -582,6 +582,71 @@ func TestNew_DeviceIDPersistsAcrossRestarts(t *testing.T) {
 	}
 }
 
+// TestHandleNoAvailable_StartupGraceKeepsCurrent is the regression test
+// for the multi-device boot case: machine B is currently leasing the only
+// eligible account, so machine A's first reconcile gets ErrNoAvailable.
+// Without a grace window, handleNoAvailable would restoreLocked and
+// blank the user's keychain — the same symptom we already fixed for the
+// single-device stale-lease case via deviceID persistence. Inside the
+// grace window the keychain must be left alone.
+func TestHandleNoAvailable_StartupGraceKeepsCurrent(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+
+	// Prime an injection so currentAccountID != 0 and the keychain has
+	// the foxy blob — exactly the state a returning agent boots into.
+	c.reconcile(context.Background())
+	if c.CurrentAccountID() == 0 || !be.hasOAuth {
+		t.Fatalf("setup failed: expected an injection (currentID=%d hasOAuth=%v)",
+			c.CurrentAccountID(), be.hasOAuth)
+	}
+	initialID := c.CurrentAccountID()
+	initialBlob := string(be.oauthBlob)
+
+	// Pretend bootstrap just set the grace window. Frozen clock + future
+	// startupGraceUntil keeps us inside it for the duration of the call.
+	c.startupGraceUntil = c.clock().Add(time.Minute)
+
+	c.handleNoAvailable()
+
+	if c.CurrentAccountID() != initialID {
+		t.Fatalf("startup grace ignored: currentAccountID went from %d to %d",
+			initialID, c.CurrentAccountID())
+	}
+	if string(be.oauthBlob) != initialBlob {
+		t.Fatalf("startup grace ignored: keychain blob mutated")
+	}
+	if !be.hasOAuth {
+		t.Fatalf("startup grace ignored: keychain blob was deleted")
+	}
+}
+
+// TestHandleNoAvailable_AfterGraceRestoresAsBefore confirms the grace
+// window is bounded — once it lapses, the existing restore-native
+// behaviour kicks back in. Without this assertion a too-aggressive guard
+// would silently keep stale foxy tokens in the keychain forever.
+func TestHandleNoAvailable_AfterGraceRestoresAsBefore(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	c.reconcile(context.Background())
+	if c.CurrentAccountID() == 0 || !be.hasOAuth {
+		t.Fatalf("setup failed: expected an injection")
+	}
+
+	// Grace already lapsed — handleNoAvailable should restore native creds
+	// (which here means "delete the blob" because no native backup exists).
+	c.startupGraceUntil = c.clock().Add(-time.Second)
+
+	c.handleNoAvailable()
+
+	if c.CurrentAccountID() != 0 {
+		t.Fatalf("post-grace currentAccountID: got %d want 0", c.CurrentAccountID())
+	}
+	if be.hasOAuth {
+		t.Fatalf("post-grace blob should have been cleared")
+	}
+}
+
 // TestSetAutoSwitchSource_OverridesSvc is the regression test for the
 // agent-mode auto-switch inconsistency: the desktop's /api/auto-switch
 // writes to the agent-local store, but until this wiring landed the
