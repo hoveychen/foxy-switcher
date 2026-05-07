@@ -18,12 +18,16 @@ export function AppShell({
   daemonOk,
   children,
   drawer,
+  showAdminNav,
+  onAdminLogout,
 }: {
   current: Route;
   onNavigate: (r: Route) => void;
   daemonOk: boolean;
   children: ReactNode;
   drawer?: ReactNode;
+  showAdminNav?: boolean;
+  onAdminLogout?: () => void;
 }) {
   const [collapsed, setCollapsed] = useState<boolean>(readInitialCollapsed);
 
@@ -49,6 +53,8 @@ export function AppShell({
         daemonOk={daemonOk}
         collapsed={collapsed}
         onToggleCollapse={onToggleCollapse}
+        showAdminNav={showAdminNav}
+        onLogout={onAdminLogout}
       />
       <main className="app-main">{children}</main>
       {drawer}

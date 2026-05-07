@@ -11,6 +11,7 @@
   "sidebar.aria": "Primary",
   "sidebar.health.label.ok": "Daemon",
   "sidebar.health.label.down": "Offline",
+  "sidebar.admin.section": "Admin",
 
   "page.dashboard.title": "Dashboard",
   "page.accounts.title": "Accounts",

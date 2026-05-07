@@ -1,42 +1,14 @@
-/* Cloud vault admin SPA styles. Reuses LURA tokens from
-   src/styles/tokens.css + typography.css. Layout is a centered
-   column with a top nav (when signed in) — no sidebar, since the
-   admin surface only has 4 pages and they're all flat. */
+/* Admin pages (devices/pair/password) reuse these classes from inside
+   the App sidebar shell. The standalone .admin-shell + .admin-topbar
+   layout that hosted the old top-bar SPA was removed in
+   vault-app-admin-merge — pages now sit inside .app-shell + .app-main
+   like the rest of the App. Bootstrap pages (setup + login) still get
+   .admin-loading as a centered fallback, and links rendered inside
+   admin pages still use .admin-nav-link (legacy class kept for the
+   "go pair" hint at the bottom of DevicesPage).
 
-.admin-shell {
-  min-height: 100vh;
-  background: var(--bg-window);
-  color: var(--text-primary);
-  font: var(--font-body);
-  display: flex;
-  flex-direction: column;
-}
-
-.admin-topbar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-12);
-  padding: var(--space-8) var(--space-16);
-  background: var(--bg-topbar);
-  backdrop-filter: saturate(140%) blur(14px);
-  -webkit-backdrop-filter: saturate(140%) blur(14px);
-  border-bottom: 1px solid var(--separator);
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-
-.admin-topbar__brand {
-  font: var(--font-h3);
-  letter-spacing: -0.01em;
-  color: var(--accent);
-  margin-right: auto;
-}
-
-.admin-topbar__nav {
-  display: flex;
-  gap: var(--space-2);
-}
+   All rules consume tokens from src/styles/tokens.css +
+   typography.css so the admin pages match LURA exactly. */
 
 .admin-nav-link {
   display: inline-flex;
@@ -44,20 +16,15 @@
   padding: var(--space-3) var(--space-8);
   border-radius: var(--radius-button);
   font: var(--font-body-strong);
-  color: var(--text-secondary);
+  color: var(--accent);
   text-decoration: none;
   background: transparent;
   border: 0;
   cursor: pointer;
-  transition: background var(--motion-quick), color var(--motion-quick);
+  transition: background var(--motion-quick);
 }
 .admin-nav-link:hover {
   background: var(--bg-overlay);
-  color: var(--text-primary);
-}
-.admin-nav-link[aria-current="page"] {
-  background: var(--accent-soft);
-  color: var(--accent-soft-text);
 }
 
 .admin-content {

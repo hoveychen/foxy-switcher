@@ -28,3 +28,9 @@ export const ICON_GRID =
   "M3 3h4v4H3z M9 3h4v4H9z M3 9h4v4H3z M9 9h4v4H9z";
 export const ICON_LIST =
   "M3 4h10 M3 8h10 M3 12h10";
+export const ICON_DEVICE =
+  "M3 3h10v8H3z M6 13.5h4 M8 11v2.5";
+export const ICON_LINK =
+  "M6.5 9.5L9.5 6.5 M5 11a2.5 2.5 0 0 1 0-3.5l1-1a2.5 2.5 0 0 1 3.5 3.5 M11 5a2.5 2.5 0 0 1 0 3.5l-1 1a2.5 2.5 0 0 1-3.5-3.5";
+export const ICON_KEY =
+  "M10 5.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z M9.5 6.5l4 4 M11.5 8.5l1 1 M12 11l1 1";

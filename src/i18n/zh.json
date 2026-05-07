@@ -11,6 +11,7 @@
   "sidebar.aria": "主导航",
   "sidebar.health.label.ok": "守护进程",
   "sidebar.health.label.down": "离线",
+  "sidebar.admin.section": "管理",
 
   "page.dashboard.title": "仪表盘",
   "page.accounts.title": "账号",

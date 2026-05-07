@@ -126,7 +126,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
         </div>
         <p className="admin-page__subtitle">
           {t("admin.devices.pair_hint_prefix")}{" "}
-          <a className="admin-nav-link" href="/admin/pair">
+          <a className="admin-nav-link" href="/pair">
             {t("admin.nav.pair")}
           </a>
           {t("admin.devices.pair_hint_suffix")}

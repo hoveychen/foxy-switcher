@@ -11,8 +11,10 @@ import {
   ThresholdInput,
   apiClient,
   getDaemonMode,
+  isTauriHost,
   restartDaemon,
 } from "./api";
+import { adminApi, type AdminMe } from "./admin/api";
 import { AppShell } from "./components/AppShell";
 import { AccountDrawer } from "./components/AccountDrawer";
 import type { Route } from "./components/Sidebar";
@@ -21,15 +23,62 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { ActivityPage } from "./pages/ActivityPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { DevicesPage } from "./admin/pages/DevicesPage";
+import { PairPage } from "./admin/pages/PairPage";
+import { PasswordPage } from "./admin/pages/PasswordPage";
 import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
 import { t, tf } from "./i18n";
 
 const ONBOARDING_SEEN_KEY = "foxy.onboarding.seen.v1";
 
-const ROUTE_KEYS: Route[] = ["dashboard", "accounts", "activity", "settings"];
+// ROUTE_KEYS lists every route the in-app navigation surfaces — the
+// native menu's "menu:navigate" event payload validates against this
+// list. Admin routes (devices/pair/password) are included so a deep
+// link in the browser (vault server / + path) opens the right page;
+// the menu doesn't expose them since native menus only show on Tauri.
+const ROUTE_KEYS: Route[] = [
+  "dashboard",
+  "accounts",
+  "activity",
+  "settings",
+  "devices",
+  "pair",
+  "password",
+];
+
+// initialRouteFromPath reads window.location.pathname so a user who
+// landed at /devices (because the vault server 301-redirected from
+// /admin/devices, or they bookmarked the URL) sees the matching
+// sidebar item active on first paint. Tauri always loads from "/" so
+// it falls through to "dashboard".
+function initialRouteFromPath(): Route {
+  if (typeof window === "undefined") return "dashboard";
+  const p = window.location.pathname;
+  switch (p) {
+    case "/accounts":
+      return "accounts";
+    case "/activity":
+      return "activity";
+    case "/settings":
+      return "settings";
+    case "/devices":
+      return "devices";
+    case "/pair":
+      return "pair";
+    case "/password":
+      return "password";
+    default:
+      return "dashboard";
+  }
+}
 
 export default function App() {
-  const [route, setRoute] = useState<Route>("dashboard");
+  const [route, setRoute] = useState<Route>(initialRouteFromPath);
+  // adminMe is only meaningful in the browser (the vault server's web
+  // UI). Tauri leaves it null so the admin sidebar section stays hidden.
+  // Populated by GET /admin/api/me on mount; revoked when adminApi
+  // returns 401 from any inner page.
+  const [adminMe, setAdminMe] = useState<AdminMe | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [managedAccountId, setManagedAccountId] = useState<number>(0);
   const [now, setNow] = useState<number>(Date.now());
@@ -340,6 +389,70 @@ export default function App() {
   const onNavigate = useCallback((r: Route) => {
     setRoute(r);
     setSelectedAccountId(null);
+    // Browser host: keep window.location in sync so a refresh re-enters
+    // the same sidebar section (and bookmarks behave). Tauri's webview
+    // is stuck on file:// (or the dev URL) so syncing has no value
+    // there and pushState would burn history entries.
+    if (typeof window === "undefined" || isTauriHost()) return;
+    const target = r === "dashboard" ? "/" : "/" + r;
+    if (window.location.pathname !== target) {
+      window.history.pushState({}, "", target);
+    }
+  }, []);
+
+  // Browser host: bootstrap admin state once on mount. Tauri leaves
+  // adminMe null forever — admin actions don't make sense from the
+  // local desktop, so the sidebar's admin section stays hidden.
+  useEffect(() => {
+    if (isTauriHost()) return;
+    let canceled = false;
+    (async () => {
+      try {
+        const me = await adminApi.me();
+        if (!canceled) setAdminMe(me);
+      } catch {
+        // /admin/api/me only exists on the vault server. In dev (npm
+        // run dev pointed at a non-vault daemon) this 404s — harmless,
+        // adminMe stays null and the admin sidebar items don't render.
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  // Sync route with browser back/forward so the sidebar follows the
+  // URL when the user navigates via history. No-op in Tauri.
+  useEffect(() => {
+    if (isTauriHost()) return;
+    const onPop = () => setRoute(initialRouteFromPath());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const onAdminLogout = useCallback(async () => {
+    try {
+      await adminApi.logout();
+    } catch {
+      // Best-effort: even if the server rejects, drop the local state
+      // so the UI stops offering admin actions.
+    }
+    setAdminMe(null);
+    // Bounce to the login page so the next admin action starts fresh.
+    if (typeof window !== "undefined" && !isTauriHost()) {
+      window.location.assign("/admin/login");
+    }
+  }, []);
+
+  // onAdminUnauthorized fires when an admin page sees a 401 — usually
+  // because the session timed out. Drop adminMe and route the browser
+  // to /admin/login so the user can sign back in.
+  const onAdminUnauthorized = useCallback(() => {
+    setAdminMe(null);
+    if (typeof window !== "undefined" && !isTauriHost()) {
+      const next = encodeURIComponent(window.location.pathname);
+      window.location.assign(`/admin/login?next=${next}`);
+    }
   }, []);
 
   // Native menu (lib.rs build_app_menu) emits these events. They duplicate
@@ -356,6 +469,12 @@ export default function App() {
         }
       }),
       listen<void>("menu:add-account", () => {
+        // Agent mode proxies admin writes to the vault and gets 405 back.
+        // Don't even surface the modal — the vault admin web UI is where
+        // account login belongs. Mirrors the disableAdminActions guards
+        // on the in-app + button. Native menu items don't carry app
+        // state so the gate has to live here.
+        if (disableAdminActions) return;
         setRoute("accounts");
         setSelectedAccountId(null);
         setAddAccountTick((t) => t + 1);
@@ -367,13 +486,23 @@ export default function App() {
     return () => {
       subs.forEach((p) => void p.then((u) => u()));
     };
-  }, [refresh]);
+  }, [refresh, disableAdminActions]);
+
+  // Show the admin sidebar section when the App runs in a browser at
+  // the vault server origin and the visitor is signed in as admin.
+  // Tauri desktop never shows it (admin is the vault owner's surface),
+  // and signed-out browser visitors don't either (they 'd hit /admin/login
+  // before reaching here for /devices et al, but the sidebar still
+  // shouldn't tease links to pages they can't open).
+  const showAdminNav = !isTauriHost() && !!adminMe?.signed_in;
 
   return (
     <AppShell
       current={route}
       onNavigate={onNavigate}
       daemonOk={daemonOk}
+      showAdminNav={showAdminNav}
+      onAdminLogout={showAdminNav ? onAdminLogout : undefined}
       drawer={
         route === "accounts" && selectedAccount ? (
           <AccountDrawer
@@ -482,6 +611,22 @@ export default function App() {
           settings={settings}
           onSettingsChange={persistSettings}
         />
+      )}
+      {route === "devices" && showAdminNav && (
+        <DevicesPage onUnauthorized={onAdminUnauthorized} />
+      )}
+      {route === "pair" && showAdminNav && (
+        <PairPage
+          initialCode={
+            typeof window === "undefined"
+              ? null
+              : new URLSearchParams(window.location.search).get("code")
+          }
+          onUnauthorized={onAdminUnauthorized}
+        />
+      )}
+      {route === "password" && showAdminNav && (
+        <PasswordPage onUnauthorized={onAdminUnauthorized} />
       )}
       {showOnboarding && <OnboardingOverlay onDismiss={dismissOnboarding} />}
     </AppShell>
