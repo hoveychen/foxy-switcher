@@ -490,8 +490,12 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 
 	if prev == a.ID {
 		c.logger.Printf("[credinject] re-injected account %d (%s) — token rotated", a.ID, a.Name)
-		// Token-rotation re-injects are noise on the activity timeline —
-		// the user already sees them as token.refreshed events. Skip.
+		// Emit so agent-mode debugging has a timeline to read against
+		// reverseSync events: a fast string of "Re-injected" without an
+		// intervening "rotated externally" is the signature of the
+		// reconcile-vs-reverseSync race overwriting CC-rotated tokens.
+		c.bus.EmitInfo(activity.TypeCredInjected, a.ID,
+			fmt.Sprintf("Re-injected %s — token rotated", a.Name))
 	} else if prev == 0 {
 		c.logger.Printf("[credinject] injected account %d (%s)", a.ID, a.Name)
 		c.bus.EmitInfo(activity.TypeCredInjected, a.ID,
@@ -638,6 +642,11 @@ func (c *Coordinator) reverseSync(ctx context.Context) {
 	}
 	c.logger.Printf("[credinject] reverse-sync: account %d rotated externally; new expiry in %s",
 		id, time.Until(time.UnixMilli(exp)).Round(time.Second))
+	// Emit so agent-mode debugging can correlate keychain-side rotations
+	// (CC writing new tokens behind us) with reconcile re-inject events
+	// — see the comment in reconcile's prev==a.ID branch.
+	c.bus.EmitInfo(activity.TypeTokenRefreshed, id,
+		fmt.Sprintf("Account #%d rotated externally — synced to vault", id))
 }
 
 // maybeSnapshotNative captures the user's pre-foxy keychain content the

@@ -6,10 +6,12 @@ import (
 	"io"
 	"log"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/store"
 	"github.com/hoveychen/foxy-switcher/server/vault"
 )
@@ -696,5 +698,110 @@ func TestNew_HonoursExplicitDeviceID(t *testing.T) {
 	c := New(vault.NewInProc(st), be, dir, logger, explicit)
 	if c.deviceID != explicit {
 		t.Fatalf("deviceID: got %q want %q", c.deviceID, explicit)
+	}
+}
+
+// TestReconcile_EmitsReinjectOnTokenRotation pins the activity surface for the
+// "same account, new token" reconcile path. Without this emit, agent mode is
+// silent on every token rotation — making it impossible to tell from the
+// activity timeline whether a reverseSync race overwrote a freshly-rotated
+// keychain blob with the vault's stale copy.
+func TestReconcile_EmitsReinjectOnTokenRotation(t *testing.T) {
+	c, _, st, _ := newCoord(t)
+
+	bus, err := activity.NewBus(st.DB(), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("activity bus: %v", err)
+	}
+	c.SetBus(bus)
+
+	id := seedActive(t, st, "alpha", "sk-ant-oat01-V1")
+
+	// First reconcile: prev==0 path emits "Injected alpha" — the baseline
+	// we already cover elsewhere; sanity-counting it lets the assertion
+	// below distinguish the *new* re-inject event from this one.
+	c.reconcile(context.Background())
+	if c.CurrentAccountID() != id {
+		t.Fatalf("first inject: CurrentAccountID=%d", c.CurrentAccountID())
+	}
+
+	// Simulate vault-side token rotation for the same account: the access
+	// token (and hash) changes, but the account ID does not.
+	newExpiry := time.Now().Add(2 * time.Hour).UnixMilli()
+	if err := st.UpdateTokens(context.Background(), id,
+		"sk-ant-oat01-V2", "sk-ant-ort01-V2", newExpiry); err != nil {
+		t.Fatalf("UpdateTokens: %v", err)
+	}
+
+	// Second reconcile detects the rotated token and re-injects.
+	c.reconcile(context.Background())
+
+	var found bool
+	for _, ev := range bus.List(activity.Filter{}) {
+		if ev.Type != activity.TypeCredInjected || ev.AccountID != id {
+			continue
+		}
+		if strings.Contains(strings.ToLower(ev.Message), "re-injected") ||
+			strings.Contains(strings.ToLower(ev.Message), "rotated") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected cred.injected re-inject/rotated event for account %d after token rotation; got events: %+v",
+			id, bus.List(activity.Filter{}))
+	}
+}
+
+// TestReverseSync_EmitsExternalRotationEvent pins the activity surface for the
+// path where Claude Code rotated the keychain blob behind the vault. Without
+// this emit, the agent silently uploads new tokens and the user has no way
+// to correlate that with a downstream "credentials not found" symptom.
+func TestReverseSync_EmitsExternalRotationEvent(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+
+	bus, err := activity.NewBus(st.DB(), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("activity bus: %v", err)
+	}
+	c.SetBus(bus)
+
+	id := seedActive(t, st, "alpha", "sk-ant-oat01-V1")
+	c.reconcile(context.Background())
+	if c.CurrentAccountID() != id {
+		t.Fatalf("inject: CurrentAccountID=%d", c.CurrentAccountID())
+	}
+
+	// Simulate Claude Code rotating the keychain entry. The new blob has a
+	// different access token so reverseSync's hash check fires and the
+	// store gets the rotated tuple via UpdateTokens.
+	rotatedExpiry := time.Now().Add(8 * time.Hour).UnixMilli()
+	rotatedBlob, _ := json.Marshal(map[string]any{
+		"claudeAiOauth": map[string]any{
+			"accessToken":  "sk-ant-oat01-NEW",
+			"refreshToken": "sk-ant-ort01-NEW",
+			"expiresAt":    rotatedExpiry,
+		},
+	})
+	be.mu.Lock()
+	be.oauthBlob = rotatedBlob
+	be.mu.Unlock()
+
+	c.reverseSync(context.Background())
+
+	var found bool
+	for _, ev := range bus.List(activity.Filter{}) {
+		if ev.Type != activity.TypeTokenRefreshed || ev.AccountID != id {
+			continue
+		}
+		if strings.Contains(strings.ToLower(ev.Message), "external") ||
+			strings.Contains(strings.ToLower(ev.Message), "rotated") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected token.refreshed externally-rotated event for account %d after reverseSync; got events: %+v",
+			id, bus.List(activity.Filter{}))
 	}
 }
