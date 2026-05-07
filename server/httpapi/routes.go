@@ -1042,8 +1042,20 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 // handleCredStatus reports the credinject coordinator's current state for the
 // frontend / TUI status surface. Returns zero values when no Coordinator is
 // wired (e.g. --no-cred-inject mode).
-func (s *Server) handleCredStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.Cred.Status())
+//
+// Vault mode has no local Coordinator (s.Cred is nil), but App.tsx still drives
+// managedAccountId off this endpoint — the dashboard hero, AccountsPage's
+// "in use" badge, and the isInUse selector all key off it. Fall back to
+// store.FirstActiveLease so a remote agent's renewing lease surfaces here,
+// matching the equivalent fallback in handleGetDashboard.
+func (s *Server) handleCredStatus(w http.ResponseWriter, r *http.Request) {
+	status := s.Cred.Status()
+	if s.Cred == nil {
+		if id, ok, err := s.Store.FirstActiveLease(r.Context()); err == nil && ok {
+			status.ManagedAccountID = id
+		}
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 // --- helpers ---------------------------------------------------------------
