@@ -61,8 +61,8 @@ export function ActivityPage({
   autoSwitch,
   onAutoSwitchToggle,
 }: {
-  autoSwitch: { enabled: boolean; policy: "lru" | "lowest" | "rr" };
-  onAutoSwitchToggle: () => void;
+  autoSwitch?: { enabled: boolean; policy: "lru" | "lowest" | "rr" };
+  onAutoSwitchToggle?: () => void;
 }) {
   const [filter, setFilter] = useState<FilterKey>("all");
   const [events, setEvents] = useState<ActivityEvent[]>([]);

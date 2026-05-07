@@ -366,8 +366,8 @@ export function AccountsPage({
   busyAccountId: number | null;
   addAccountTick: number;
   onAddAccountConsumed: () => void;
-  autoSwitch: { enabled: boolean; policy: "lru" | "lowest" | "rr" };
-  onAutoSwitchToggle: () => void;
+  autoSwitch?: { enabled: boolean; policy: "lru" | "lowest" | "rr" };
+  onAutoSwitchToggle?: () => void;
   onSelectRow: (id: number | null) => void;
   onUseNow: (id: number) => void;
   onRefreshAccount: (id: number) => void;

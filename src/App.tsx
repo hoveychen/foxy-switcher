@@ -264,6 +264,11 @@ export default function App() {
   // hides Add / Pause / Resume / Delete / Threshold UI to avoid leading
   // the user to operations the agent will 405.
   const disableAdminActions = about?.mode === "agent";
+  // isVaultOnly is the dual: this UI is being served by a vault-only daemon
+  // (browser at vault origin, no local agent). Per-agent-local features
+  // — auto-switch toggle, daemon-process health badge — have no meaning
+  // here and are hidden, mirroring how agent mode hides admin actions.
+  const isVaultOnly = about?.mode === "vault";
 
   // Apply theme to <html data-theme>. CSS tokens.css already keys its
   // dark-mode block off both `prefers-color-scheme: dark` (system) and
@@ -503,6 +508,7 @@ export default function App() {
       daemonOk={daemonOk}
       showAdminNav={showAdminNav}
       onAdminLogout={showAdminNav ? onAdminLogout : undefined}
+      hideDaemonStatus={isVaultOnly}
       drawer={
         route === "accounts" && selectedAccount ? (
           <AccountDrawer
@@ -569,8 +575,8 @@ export default function App() {
           managedAccountId={managedAccountId}
           nowMs={now}
           onNavigate={setRoute}
-          autoSwitch={autoSwitch}
-          onAutoSwitchToggle={onAutoSwitchToggle}
+          autoSwitch={isVaultOnly ? undefined : autoSwitch}
+          onAutoSwitchToggle={isVaultOnly ? undefined : onAutoSwitchToggle}
           recentEvents={recentEvents}
           stale={!daemonOk}
         />
@@ -584,8 +590,8 @@ export default function App() {
           busyAccountId={busyAccountId}
           addAccountTick={addAccountTick}
           onAddAccountConsumed={() => setAddAccountTick(0)}
-          autoSwitch={autoSwitch}
-          onAutoSwitchToggle={onAutoSwitchToggle}
+          autoSwitch={isVaultOnly ? undefined : autoSwitch}
+          onAutoSwitchToggle={isVaultOnly ? undefined : onAutoSwitchToggle}
           onSelectRow={setSelectedAccountId}
           onUseNow={onUseNow}
           onRefreshAccount={onRefreshAccount}
@@ -599,15 +605,15 @@ export default function App() {
       )}
       {route === "activity" && (
         <ActivityPage
-          autoSwitch={autoSwitch}
-          onAutoSwitchToggle={onAutoSwitchToggle}
+          autoSwitch={isVaultOnly ? undefined : autoSwitch}
+          onAutoSwitchToggle={isVaultOnly ? undefined : onAutoSwitchToggle}
         />
       )}
       {route === "settings" && (
         <SettingsPage
-          autoSwitch={autoSwitch}
-          onAutoSwitchToggle={onAutoSwitchToggle}
-          onAutoSwitchChange={setAutoSwitch}
+          autoSwitch={isVaultOnly ? undefined : autoSwitch}
+          onAutoSwitchToggle={isVaultOnly ? undefined : onAutoSwitchToggle}
+          onAutoSwitchChange={isVaultOnly ? undefined : setAutoSwitch}
           settings={settings}
           onSettingsChange={persistSettings}
         />

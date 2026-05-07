@@ -93,8 +93,8 @@ export function DashboardPage({
   managedAccountId: number;
   nowMs: number;
   onNavigate: (r: Route) => void;
-  autoSwitch: { enabled: boolean; policy: Policy };
-  onAutoSwitchToggle: () => void;
+  autoSwitch?: { enabled: boolean; policy: Policy };
+  onAutoSwitchToggle?: () => void;
   recentEvents: ActivityEvent[];
   stale: boolean;
 }) {

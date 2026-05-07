@@ -94,9 +94,9 @@ export function SettingsPage({
   settings,
   onSettingsChange,
 }: {
-  autoSwitch: { enabled: boolean; policy: Policy };
-  onAutoSwitchToggle: () => void;
-  onAutoSwitchChange: (v: { enabled: boolean; policy: Policy }) => void;
+  autoSwitch?: { enabled: boolean; policy: Policy };
+  onAutoSwitchToggle?: () => void;
+  onAutoSwitchChange?: (v: { enabled: boolean; policy: Policy }) => void;
   settings: Settings;
   onSettingsChange: (patch: Partial<Settings>) => void;
 }) {
@@ -341,70 +341,72 @@ export function SettingsPage({
           </div>
         </section>
 
-        <section className="settings-group">
-          <h3 className="settings-group-title">{t("settings.group.auto_switch")}</h3>
-          <div className="settings-card">
-            <div className="settings-row">
-              <div className="settings-row-text">
-                <div className="settings-row-label">
-                  {t("dashboard.auto_switch.eyebrow")}
+        {autoSwitch && onAutoSwitchToggle && onAutoSwitchChange && (
+          <section className="settings-group">
+            <h3 className="settings-group-title">{t("settings.group.auto_switch")}</h3>
+            <div className="settings-card">
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <div className="settings-row-label">
+                    {t("dashboard.auto_switch.eyebrow")}
+                  </div>
+                  <div className="settings-row-sub text-meta">
+                    {autoSwitch.enabled
+                      ? t("dashboard.auto_switch.desc.on")
+                      : t("dashboard.auto_switch.desc.off")}
+                  </div>
                 </div>
-                <div className="settings-row-sub text-meta">
-                  {autoSwitch.enabled
-                    ? t("dashboard.auto_switch.desc.on")
-                    : t("dashboard.auto_switch.desc.off")}
-                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoSwitch.enabled}
+                  aria-label={t("dashboard.auto_switch.aria")}
+                  className={`toggle ${autoSwitch.enabled ? "on" : "off"}`}
+                  onClick={onAutoSwitchToggle}
+                >
+                  <span className="toggle-thumb" aria-hidden />
+                </button>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={autoSwitch.enabled}
-                aria-label={t("dashboard.auto_switch.aria")}
-                className={`toggle ${autoSwitch.enabled ? "on" : "off"}`}
-                onClick={onAutoSwitchToggle}
-              >
-                <span className="toggle-thumb" aria-hidden />
-              </button>
-            </div>
 
-            <div className="settings-row settings-row-stack">
-              <div className="settings-row-text">
-                <div className="settings-row-label">
-                  {t("dashboard.auto_switch.policy_legend")}
+              <div className="settings-row settings-row-stack">
+                <div className="settings-row-text">
+                  <div className="settings-row-label">
+                    {t("dashboard.auto_switch.policy_legend")}
+                  </div>
+                  <div className="settings-row-sub text-meta">
+                    {t("settings.auto_switch.policy_sub")}
+                  </div>
                 </div>
-                <div className="settings-row-sub text-meta">
-                  {t("settings.auto_switch.policy_sub")}
-                </div>
-              </div>
-              <fieldset
-                className="auto-switch-policy"
-                disabled={!autoSwitch.enabled}
-              >
-                <legend className="visually-hidden">
-                  {t("dashboard.auto_switch.policy_legend")}
-                </legend>
-                {POLICIES.map((p) => (
-                  <label key={p.key} className="auto-switch-radio">
-                    <input
-                      type="radio"
-                      name="auto-switch-policy"
-                      checked={autoSwitch.policy === p.key}
-                      onChange={() =>
-                        onAutoSwitchChange({ ...autoSwitch, policy: p.key })
-                      }
-                    />
-                    <span className="auto-switch-radio-text">
-                      <span className="auto-switch-radio-label">
-                        {t(p.labelKey)}
+                <fieldset
+                  className="auto-switch-policy"
+                  disabled={!autoSwitch.enabled}
+                >
+                  <legend className="visually-hidden">
+                    {t("dashboard.auto_switch.policy_legend")}
+                  </legend>
+                  {POLICIES.map((p) => (
+                    <label key={p.key} className="auto-switch-radio">
+                      <input
+                        type="radio"
+                        name="auto-switch-policy"
+                        checked={autoSwitch.policy === p.key}
+                        onChange={() =>
+                          onAutoSwitchChange({ ...autoSwitch, policy: p.key })
+                        }
+                      />
+                      <span className="auto-switch-radio-text">
+                        <span className="auto-switch-radio-label">
+                          {t(p.labelKey)}
+                        </span>
+                        <span className="text-meta">{t(p.subKey)}</span>
                       </span>
-                      <span className="text-meta">{t(p.subKey)}</span>
-                    </span>
-                  </label>
-                ))}
-              </fieldset>
+                    </label>
+                  ))}
+                </fieldset>
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        )}
 
         <section className="settings-group">
           <h3 className="settings-group-title">{t("settings.group.appearance")}</h3>

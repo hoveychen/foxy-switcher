@@ -45,6 +45,7 @@ export function Sidebar({
   onToggleCollapse,
   showAdminNav,
   onLogout,
+  hideDaemonStatus,
 }: {
   current: Route;
   onNavigate: (r: Route) => void;
@@ -53,6 +54,10 @@ export function Sidebar({
   onToggleCollapse: () => void;
   showAdminNav?: boolean;
   onLogout?: () => void;
+  // hideDaemonStatus: when true (vault-only mode), the bottom-left
+  // "守护进程" badge is suppressed because there is no local agent
+  // process to monitor — the browser is talking to a remote vault.
+  hideDaemonStatus?: boolean;
 }) {
   return (
     <nav
@@ -124,15 +129,17 @@ export function Sidebar({
       </ul>
 
       <div className="sidebar-footer">
-        <span
-          className={`sidebar-health ${daemonOk ? "ok" : "danger"}`}
-          aria-label={daemonOk ? t("sidebar.health.ok") : t("sidebar.health.down")}
-        >
-          <span className="dot" />
-          <span className="sidebar-health-label">
-            {daemonOk ? t("sidebar.health.label.ok") : t("sidebar.health.label.down")}
+        {!hideDaemonStatus && (
+          <span
+            className={`sidebar-health ${daemonOk ? "ok" : "danger"}`}
+            aria-label={daemonOk ? t("sidebar.health.ok") : t("sidebar.health.down")}
+          >
+            <span className="dot" />
+            <span className="sidebar-health-label">
+              {daemonOk ? t("sidebar.health.label.ok") : t("sidebar.health.label.down")}
+            </span>
           </span>
-        </span>
+        )}
         <button
           type="button"
           className="sidebar-collapse-btn"
