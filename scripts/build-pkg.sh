@@ -43,24 +43,31 @@ fi
 echo "==> wrapping $APP_PATH"
 
 # Build via --root + a hand-edited component plist so we can override two
-# pkgbuild defaults that quietly break local dev installs:
+# pkgbuild defaults that quietly break installs:
 #   - BundleIsRelocatable=true: PackageKit looks the bundle id up in the
 #     LaunchServices database and rewrites --install-location to wherever
 #     a copy of the .app is already registered (e.g. a stale build sitting
 #     in target/release/bundle/macos/), so /Applications is silently
 #     ignored and the install appears to succeed without changing anything.
-#   - BundleOverwriteAction=upgrade: emits the bundle into <upgrade-bundle>
-#     in PackageInfo, which makes PackageKit skip the component when an
-#     equal-or-newer version is already installed. Switching to "update"
-#     moves it to <update-bundle> and overwrites unconditionally.
+#   - BundleIsVersionChecked=true: PackageKit refuses to overwrite a bundle
+#     when an equal-or-newer CFBundleVersion is already on disk, so a
+#     re-install of the same tag is a silent no-op. Setting it to false
+#     forces overwrite regardless of version.
+# Do NOT switch BundleOverwriteAction to "update" to "force overwrite" —
+# despite the name, "update" means update-only (pkgbuild(1): "the package
+# bundle will not be installed at all if there is not already a version on
+# disk"), so on a fresh user machine PackageKit silently skips the entire
+# component while Installer.app still reports success. v1.1.6..v1.1.8 had
+# this misconfiguration and shipped pkgs that installed nothing on first-
+# time users. Leave BundleOverwriteAction at the default "upgrade".
 PKG_STAGING="$(mktemp -d)"
 trap 'rm -rf "$PKG_STAGING"' EXIT
 cp -R "$APP_PATH" "$PKG_STAGING/"
 
 COMPONENT_PLIST="$PKG_STAGING/component.plist"
 pkgbuild --analyze --root "$PKG_STAGING" "$COMPONENT_PLIST" >/dev/null
-/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false"  "$COMPONENT_PLIST"
-/usr/libexec/PlistBuddy -c "Set :0:BundleOverwriteAction update" "$COMPONENT_PLIST"
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false"   "$COMPONENT_PLIST"
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsVersionChecked false" "$COMPONENT_PLIST"
 
 pkgbuild \
   --root "$PKG_STAGING" \
