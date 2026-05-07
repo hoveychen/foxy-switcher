@@ -520,3 +520,49 @@ func TestUpsertDefaultsLastUsedAtToNow(t *testing.T) {
 		t.Errorf("LastUsedAt not stamped on insert: got %d, want >= %d", got.LastUsedAt, before)
 	}
 }
+
+// TestFirstActiveLease covers the vault-mode dashboard fallback: with at
+// least one live lease, the helper must return its account_id; with no
+// live leases, it must report not-found. Two leases with different
+// acquired_at timestamps assert the longest-held one wins so the
+// dashboard doesn't flap between concurrent agents.
+func TestFirstActiveLease(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	id, found, err := st.FirstActiveLease(ctx)
+	if err != nil {
+		t.Fatalf("FirstActiveLease (empty): %v", err)
+	}
+	if found || id != 0 {
+		t.Fatalf("empty store: got id=%d found=%v want 0,false", id, found)
+	}
+
+	a := &Account{Name: "alice", AccessToken: "at-a", RefreshToken: "rt-a", ExpiresAt: 1}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert a: %v", err)
+	}
+	b := &Account{Name: "bob", AccessToken: "at-b", RefreshToken: "rt-b", ExpiresAt: 1}
+	if err := st.Upsert(ctx, b); err != nil {
+		t.Fatalf("upsert b: %v", err)
+	}
+
+	if _, err := st.AcquireLease(ctx, "lease-b", b.ID, "device-old", time.Minute); err != nil {
+		t.Fatalf("acquire b: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := st.AcquireLease(ctx, "lease-a", a.ID, "device-new", time.Minute); err != nil {
+		t.Fatalf("acquire a: %v", err)
+	}
+
+	id, found, err = st.FirstActiveLease(ctx)
+	if err != nil {
+		t.Fatalf("FirstActiveLease: %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true with two live leases")
+	}
+	if id != b.ID {
+		t.Fatalf("expected longest-held lease (bob, id=%d); got id=%d", b.ID, id)
+	}
+}

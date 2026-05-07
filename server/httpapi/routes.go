@@ -864,6 +864,15 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	kpis := DashboardKPIs{PoolSize: len(accs)}
 	if s.Cred != nil {
 		kpis.InUseAccountID = s.Cred.Status().ManagedAccountID
+	} else {
+		// Vault mode has no local credinject — the only place that knows
+		// "which account is currently being used" is the leases table that
+		// remote agents renew every few seconds. Without this fallback the
+		// vault Web UI would show "未注入账号" even when an agent is
+		// actively driving an account.
+		if id, ok, err := s.Store.FirstActiveLease(ctx); err == nil && ok {
+			kpis.InUseAccountID = id
+		}
 	}
 	var nextReset int64
 	var peak float64

@@ -131,6 +131,31 @@ func (s *Store) ReleaseLease(ctx context.Context, leaseID string) error {
 	return err
 }
 
+// FirstActiveLease returns the account_id of an arbitrary live lease, or
+// (0, false) when no live lease exists. Used by the vault Web UI's
+// dashboard handler to surface "which account is currently being used by
+// some agent" — vault mode has no local credinject Coordinator, so this
+// is the only way to derive in_use_account_id without round-tripping to
+// the agent. Picks the longest-held lease deterministically (lowest
+// acquired_at) so a multi-device deployment shows the same account on
+// every dashboard reload instead of flapping between concurrent leases.
+func (s *Store) FirstActiveLease(ctx context.Context) (int64, bool, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT account_id FROM leases
+		   WHERE expires_at > ?
+		   ORDER BY acquired_at ASC, id ASC
+		   LIMIT 1`,
+		time.Now().UnixMilli()).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
+}
+
 // IsAccountLeased reports whether accountID has a live lease. Used by
 // refresh.Scheduler.IsAccountInUse and by selector.Pick to skip in-use
 // accounts.
