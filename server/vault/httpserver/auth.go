@@ -23,10 +23,30 @@ const PairingTTL = 10 * time.Minute
 const VerificationPath = "/pair"
 
 // agentDeviceCtxKey carries the device ID attached by the Bearer
-// middleware. Protected handlers can call deviceFromCtx to learn who
-// authenticated, but Step 3 doesn't yet need that — the lease APIs already
-// take device_id in the body.
+// middleware. Protected handlers can call DeviceFromContext to learn who
+// authenticated; the lease APIs also still take device_id in the body
+// for callers that haven't been migrated to ctx-based lookup.
 type agentDeviceCtxKey struct{}
+
+// SessionDeviceID is the sentinel ctx value that BearerAuth attaches
+// when authentication succeeded via a Web UI session cookie rather than
+// a paired-device Bearer token. Callers that key off "is this caller a
+// device with leases" (e.g. the multi-device lease badges on
+// /api/accounts) compare against this to skip cookie sessions.
+const SessionDeviceID = "session"
+
+// DeviceFromContext returns the device ID stored on ctx by BearerAuth.
+// ok == false when the request didn't go through BearerAuth (combined
+// mode, where loopback is the only attacker model and the local owner
+// is implicit). Returns SessionDeviceID for cookie-authenticated
+// browser sessions; the device ID otherwise.
+func DeviceFromContext(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(agentDeviceCtxKey{}).(string)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
+}
 
 // requireBearer is the middleware wrapper protected agent routes use.
 // Internally it just delegates to BearerAuth so the agent surface and
@@ -85,11 +105,10 @@ func authenticateRequest(r *http.Request, st *store.Store) (string, bool) {
 	}
 	if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
 		if _, err := st.LookupWebSession(r.Context(), c.Value); err == nil {
-			// "session" is a sentinel value the per-request context can
-			// distinguish from a real device id. Today nothing consumes
-			// it; if a route later needs to differentiate, it's a clean
-			// hook.
-			return "session", true
+			// SessionDeviceID is the sentinel cookie-auth callers carry on
+			// ctx; lease-aware handlers compare against it to skip
+			// "is this caller the lease holder" comparisons.
+			return SessionDeviceID, true
 		}
 	}
 	return "", false

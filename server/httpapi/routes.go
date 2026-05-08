@@ -21,7 +21,28 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/refresh"
 	"github.com/hoveychen/foxy-switcher/server/selector"
 	"github.com/hoveychen/foxy-switcher/server/store"
+	vaulthttpserver "github.com/hoveychen/foxy-switcher/server/vault/httpserver"
 )
+
+// leaseMine reports whether the caller in ctx is the holder of a lease
+// owned by leaseDeviceID:
+//   - combined mode (no BearerAuth wrap; ctx carries no device id) →
+//     true, because loopback is the only attacker model and the local
+//     owner is implicit.
+//   - vault mode + cookie session (SessionDeviceID sentinel) → false:
+//     web admins are not a device with leases, so badges should render
+//     device names for every entry rather than mark some as "yours".
+//   - vault mode + Bearer device → equality check.
+func leaseMine(ctx context.Context, leaseDeviceID string) bool {
+	devID, ok := vaulthttpserver.DeviceFromContext(ctx)
+	if !ok {
+		return true
+	}
+	if devID == vaulthttpserver.SessionDeviceID {
+		return false
+	}
+	return devID == leaseDeviceID
+}
 
 // Server bundles the dependencies of the HTTP layer. Construct with New.
 type Server struct {
@@ -121,6 +142,22 @@ type usageWindowView struct {
 	ResetsAt    string  `json:"resets_at"`   // RFC3339; "" when API didn't return this window
 }
 
+// accountLeaseView is the per-account lease metadata surfaced on
+// /api/accounts so multi-device deployments can render "in use by
+// Device X" badges in one round-trip. Nil when no live lease exists.
+//
+// Mine is computed server-side from the BearerAuth ctx device_id (or
+// implicit "true" in combined mode where loopback is the only caller);
+// the frontend never sees other devices' raw IDs through the Mine
+// flag's lens, so it can't be spoofed.
+type accountLeaseView struct {
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+	Mine       bool   `json:"mine"`
+	AcquiredAt int64  `json:"acquired_at"`
+	ExpiresAt  int64  `json:"expires_at"`
+}
+
 type accountView struct {
 	ID               int64  `json:"id"`
 	Name             string `json:"name"`
@@ -163,6 +200,12 @@ type accountView struct {
 	FiveHourThreshold       float64 `json:"five_hour_threshold"`
 	SevenDayThreshold       float64 `json:"seven_day_threshold"`
 	SevenDaySonnetThreshold float64 `json:"seven_day_sonnet_threshold"`
+	// Lease is the per-account current-holder metadata for multi-device
+	// deployments: device that holds the live lease, its display name,
+	// timestamps, and a server-computed Mine flag for "is the caller the
+	// holder". Nil when no live lease exists. Populated by
+	// handleListAccounts via store.ListAccountsWithLeases.
+	Lease *accountLeaseView `json:"lease,omitempty"`
 	// Tokens are deliberately omitted from the UI surface.
 }
 
@@ -197,14 +240,24 @@ func toView(a store.Account) accountView {
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
-	accs, err := s.Store.List(r.Context())
+	accs, err := s.Store.ListAccountsWithLeases(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	out := make([]accountView, len(accs))
-	for i, a := range accs {
-		out[i] = toView(a)
+	for i, av := range accs {
+		v := toView(av.Account)
+		if av.Lease != nil {
+			v.Lease = &accountLeaseView{
+				DeviceID:   av.Lease.DeviceID,
+				DeviceName: av.Lease.DeviceName,
+				Mine:       leaseMine(r.Context(), av.Lease.DeviceID),
+				AcquiredAt: av.Lease.AcquiredAt,
+				ExpiresAt:  av.Lease.ExpiresAt,
+			}
+		}
+		out[i] = v
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
 }
@@ -760,11 +813,29 @@ func writeSSEEvent(w http.ResponseWriter, ev activity.Event) bool {
 
 // --- dashboard ------------------------------------------------------------
 
+// InUseEntry is one row in DashboardKPIs.InUse: an active lease joined
+// with the holding device's display name, plus a server-computed Mine
+// flag for "is this lease held by the caller". Vault Web UI renders one
+// badge per entry; the agent's desktop UI uses Mine to highlight its
+// own entry distinctly from other devices'.
+type InUseEntry struct {
+	AccountID  int64  `json:"account_id"`
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+	Mine       bool   `json:"mine"`
+	ExpiresAt  int64  `json:"expires_at"`
+}
+
 // DashboardKPIs are the pool-level numbers shown above the trend chart.
 type DashboardKPIs struct {
-	PoolSize        int   `json:"pool_size"`
-	ActiveCount     int   `json:"active_count"`
-	InUseAccountID  int64 `json:"in_use_account_id"` // 0 = none injected
+	PoolSize    int `json:"pool_size"`
+	ActiveCount int `json:"active_count"`
+	// InUse is every active lease (one per account; the leases table
+	// uniqueness index enforces 1:1). Replaces the legacy single
+	// InUseAccountID — multi-device deployments need to surface every
+	// in-flight lease, not just the longest-held one. Empty list when
+	// no agent currently holds any account.
+	InUse []InUseEntry `json:"in_use"`
 	// CoolingCount is how many active accounts are currently throttled by
 	// the per-window utilization threshold (selector.exceedsThreshold).
 	CoolingCount int `json:"cooling_count"`
@@ -862,17 +933,24 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	kpis := DashboardKPIs{PoolSize: len(accs)}
-	if s.Cred != nil {
-		kpis.InUseAccountID = s.Cred.Status().ManagedAccountID
-	} else {
-		// Vault mode has no local credinject — the only place that knows
-		// "which account is currently being used" is the leases table that
-		// remote agents renew every few seconds. Without this fallback the
-		// vault Web UI would show "未注入账号" even when an agent is
-		// actively driving an account.
-		if id, ok, err := s.Store.FirstActiveLease(ctx); err == nil && ok {
-			kpis.InUseAccountID = id
-		}
+	// Surface every active lease as a separate kpis.in_use[] entry so
+	// multi-device deployments can render one badge per holder. Replaces
+	// the legacy single InUseAccountID + FirstActiveLease fallback —
+	// agents and the vault Web UI now read the same authoritative list.
+	leases, err := s.Store.ListActiveLeases(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	kpis.InUse = make([]InUseEntry, 0, len(leases))
+	for _, l := range leases {
+		kpis.InUse = append(kpis.InUse, InUseEntry{
+			AccountID:  l.AccountID,
+			DeviceID:   l.DeviceID,
+			DeviceName: l.DeviceName,
+			Mine:       leaseMine(ctx, l.DeviceID),
+			ExpiresAt:  l.ExpiresAt,
+		})
 	}
 	var nextReset int64
 	var peak float64

@@ -161,14 +161,17 @@ func (c *Client) LoginCallback(ctx context.Context, pasted, state string) error 
 	return c.do(ctx, http.MethodPost, "/api/accounts/callback", body, nil)
 }
 
-// DashboardKPIs mirrors httpapi.DashboardKPIs.
+// DashboardKPIs mirrors httpapi.DashboardKPIs. The TUI doesn't render
+// the in_use[] list (its account view derives "in use" from the local
+// credinject Coordinator's ManagedAccountID), so the field is omitted
+// here to keep this struct minimal and the wire shape divergence
+// explicit.
 type DashboardKPIs struct {
-	PoolSize        int   `json:"pool_size"`
-	ActiveCount     int   `json:"active_count"`
-	InUseAccountID  int64 `json:"in_use_account_id"`
-	CoolingCount    int   `json:"cooling_count"`
+	PoolSize        int `json:"pool_size"`
+	ActiveCount     int `json:"active_count"`
+	CoolingCount    int `json:"cooling_count"`
 	NextResetAt     int64 `json:"next_reset_at"`
-	PeakUtilPercent int   `json:"peak_util_percent"`
+	PeakUtilPercent int `json:"peak_util_percent"`
 }
 
 // DashboardTrendBucket mirrors httpapi.DashboardTrendBucket. One hour-aligned
