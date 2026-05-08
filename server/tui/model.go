@@ -96,9 +96,13 @@ type model struct {
 	lastRefresh time.Time
 
 	// Async op spinner. pendingOp is the user-facing label shown while a
-	// command is in flight; empty means idle.
-	spinner   spinner.Model
-	pendingOp string
+	// command is in flight; empty means idle. pendingAccountID is the
+	// row-level target so renderAccountRow can also surface a busy chip
+	// inline — the bottom statusline's spinner is too peripheral to
+	// notice for fast local-daemon round-trips.
+	spinner          spinner.Model
+	pendingOp        string
+	pendingAccountID int64
 
 	// daemonMode labels the source of the daemon this TUI is talking to —
 	// "attached" (pre-existing) or "embedded" (started by this TUI). Empty
@@ -249,6 +253,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case opResultMsg:
 		m.pendingOp = ""
+		m.pendingAccountID = 0
 		if msg.err != nil {
 			m.statusErr = msg.err.Error()
 			m.statusMsg = ""
@@ -366,13 +371,13 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.statusMsg = ""
 				return m, nil
 			}
-			return m, m.startOp("Switching to "+a.Name+"…", "Now using "+a.Name, func(ctx context.Context) error {
+			return m, m.startOp("Switching to "+a.Name+"…", "Now using "+a.Name, a.ID, func(ctx context.Context) error {
 				return m.client.SelectAccount(ctx, a.ID)
 			})
 		}
 	case "r":
 		if a, ok := m.selected(); ok {
-			return m, m.startOp("Refreshing "+a.Name+"…", "Token refreshed for "+a.Name, func(ctx context.Context) error {
+			return m, m.startOp("Refreshing "+a.Name+"…", "Token refreshed for "+a.Name, a.ID, func(ctx context.Context) error {
 				return m.client.RefreshNow(ctx, a.ID)
 			})
 		}
@@ -384,11 +389,11 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if a, ok := m.selected(); ok {
 			if a.Status == "paused" {
-				return m, m.startOp("Resuming "+a.Name+"…", "Resumed "+a.Name, func(ctx context.Context) error {
+				return m, m.startOp("Resuming "+a.Name+"…", "Resumed "+a.Name, a.ID, func(ctx context.Context) error {
 					return m.client.Resume(ctx, a.ID)
 				})
 			}
-			return m, m.startOp("Pausing "+a.Name+"…", "Paused "+a.Name, func(ctx context.Context) error {
+			return m, m.startOp("Pausing "+a.Name+"…", "Paused "+a.Name, a.ID, func(ctx context.Context) error {
 				return m.client.Pause(ctx, a.ID)
 			})
 		}
@@ -493,7 +498,7 @@ func (m *model) handleAddPasteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		m.pendingState = ""
 		m.pendingURL = ""
-		return m, m.startOp("Adding account…", "Account added", func(ctx context.Context) error {
+		return m, m.startOp("Adding account…", "Account added", 0, func(ctx context.Context) error {
 			return m.client.LoginCallback(ctx, pasted, state)
 		})
 	}
@@ -565,7 +570,7 @@ func (m *model) handleThresholdsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		id := m.thresholdAccountID
 		v := m.thresholdValues
 		m.mode = modeList
-		return m, m.startOp("Updating thresholds…", "Thresholds saved", func(ctx context.Context) error {
+		return m, m.startOp("Updating thresholds…", "Thresholds saved", id, func(ctx context.Context) error {
 			return m.client.SetThresholds(ctx, id, v[0], v[1], v[2])
 		})
 	}
@@ -591,7 +596,7 @@ func (m *model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		return m, m.startOp("Deleting "+a.Name+"…", "Deleted "+a.Name, func(ctx context.Context) error {
+		return m, m.startOp("Deleting "+a.Name+"…", "Deleted "+a.Name, a.ID, func(ctx context.Context) error {
 			return m.client.Delete(ctx, a.ID)
 		})
 	case "n", "N", "esc", "q":
@@ -674,8 +679,11 @@ func (m *model) opCmd(okMsg string, fn func(ctx context.Context) error) tea.Cmd 
 
 // startOp begins an async op: stamps pendingOp so the spinner+label render in
 // the status line, then batches the spinner tick with the actual command.
-func (m *model) startOp(pendingLabel, okMsg string, fn func(ctx context.Context) error) tea.Cmd {
+// accountID is the row this op targets (0 for non-row ops); renderAccountRow
+// reads it to draw the inline busy chip.
+func (m *model) startOp(pendingLabel, okMsg string, accountID int64, fn func(ctx context.Context) error) tea.Cmd {
 	m.pendingOp = pendingLabel
+	m.pendingAccountID = accountID
 	m.statusErr = ""
 	m.statusMsg = ""
 	return tea.Batch(m.spinner.Tick, m.opCmd(okMsg, fn))

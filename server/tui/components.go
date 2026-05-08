@@ -184,6 +184,14 @@ func inUseChip() string {
 	return pill("in use", pillAccent, pillFilled)
 }
 
+// switchingChip renders a row-level busy chip with the spinner glyph followed
+// by "switching…". Used by renderAccountRow when pendingAccountID matches the
+// row — the bottom statusline's spinner is too peripheral to notice for fast
+// local-daemon round-trips.
+func (m *model) switchingChip() string {
+	return pill(m.spinner.View()+" switching…", pillAccent, pillFilled)
+}
+
 // foreignLeaseChip renders the "held by another device" badge: device name
 // plus the lease's remaining TTL (e.g. `held by laptop-2 12m`). Returned as a
 // soft info pill so it reads as informational, not as an action affordance.

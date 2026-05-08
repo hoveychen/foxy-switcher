@@ -60,6 +60,44 @@ func TestRenderAccountRow_OwnLeaseSuppressesForeignBadge(t *testing.T) {
 	}
 }
 
+// TestRenderAccountRow_BusyShowsSwitchingChip: when pendingAccountID matches
+// the row's account, the row must render an inline "switching…" chip so the
+// user gets a row-level acknowledgment instead of relying on the bottom
+// statusline spinner (which flashes through too fast on local-daemon calls).
+func TestRenderAccountRow_BusyShowsSwitchingChip(t *testing.T) {
+	now := time.Now().UnixMilli()
+	a := Account{ID: 7, Name: "alpha", Status: "active"}
+	m := &model{
+		width:            140,
+		height:           40,
+		accounts:         []Account{a},
+		pendingAccountID: 7,
+		pendingOp:        "Switching to alpha…",
+	}
+	out := m.renderAccountRow(a, false, false, 60, now)
+	if !strings.Contains(out, "switching") {
+		t.Errorf("busy account row should carry switching chip; got %q", out)
+	}
+}
+
+// TestRenderAccountRow_BusyOnDifferentAccountIsClean: the busy chip must be
+// scoped to the targeted row only — other rows during the same op stay clean.
+func TestRenderAccountRow_BusyOnDifferentAccountIsClean(t *testing.T) {
+	now := time.Now().UnixMilli()
+	other := Account{ID: 9, Name: "beta", Status: "active"}
+	m := &model{
+		width:            140,
+		height:           40,
+		accounts:         []Account{other},
+		pendingAccountID: 7,
+		pendingOp:        "Switching to alpha…",
+	}
+	out := m.renderAccountRow(other, false, false, 60, now)
+	if strings.Contains(out, "switching") {
+		t.Errorf("non-target row must not carry switching chip; got %q", out)
+	}
+}
+
 // TestHandleListKey_USkipsForeignLeasedAccount: pressing 'u' on an account
 // held by another device must NOT issue a SelectAccount call (which would
 // 409 on leases_account_id_uniq) and must surface an inline error naming the

@@ -231,8 +231,18 @@ export function AccountDrawer({
             className="btn btn-primary"
             onClick={onSelect}
             disabled={isInUse || !isSelectable(account) || busy}
+            aria-busy={busy}
           >
-            {isInUse ? t("drawer.actions.in_use") : t("drawer.actions.use_now")}
+            {busy ? (
+              <>
+                <span className="spinner" aria-hidden />
+                {t("drawer.actions.switching")}
+              </>
+            ) : isInUse ? (
+              t("drawer.actions.in_use")
+            ) : (
+              t("drawer.actions.use_now")
+            )}
           </button>
           <button
             type="button"

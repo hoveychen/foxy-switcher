@@ -262,6 +262,8 @@ func (m *model) renderAccountRow(a Account, selected, isInUse bool, innerW int, 
 	plan := planBadge(a.Plan)
 	chip := ""
 	switch {
+	case m.pendingAccountID != 0 && a.ID == m.pendingAccountID:
+		chip = m.switchingChip()
 	case isInUse:
 		chip = inUseChip()
 	default:

@@ -323,6 +323,7 @@
   "drawer.identity.in_use": "In use",
   "drawer.actions.in_use": "In use",
   "drawer.actions.use_now": "Use now",
+  "drawer.actions.switching": "Switching…",
   "drawer.actions.refresh": "Refresh",
   "drawer.actions.pause": "Pause",
   "drawer.actions.resume": "Resume",

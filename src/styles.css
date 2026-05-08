@@ -579,11 +579,44 @@ input {
   background: var(--bg-card);
 }
 
+.account-card.busy {
+  box-shadow:
+    var(--shadow-card),
+    0 0 0 1.5px var(--accent);
+  animation: account-card-busy-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes account-card-busy-pulse {
+  0%, 100% { background: var(--bg-card); }
+  50% { background: var(--bg-card-hover); }
+}
+
+.pill.switching-pill {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .pill.leased-pill {
   background: var(--bg-card-hover, rgba(0, 0, 0, 0.06));
   color: var(--text-meta, #888);
   font-size: 11px;
   white-space: nowrap;
+  /* Override .pill's flex-shrink: 0 — the leased-pill embeds a device
+     name that can be longer than the title cell, and without shrinking
+     it overflows into the plan-badge column and overlaps it.
+     text-overflow: ellipsis needs display: inline-block (not inline-flex),
+     so we restore vertical centering via line-height. */
+  display: inline-block;
+  line-height: 17px;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dash-others-in-use {

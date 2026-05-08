@@ -255,11 +255,12 @@ function AccountCard({
     <div
       className={`account-card ${isSelected ? "selected" : ""} ${
         isInUse && !vaultMode ? "active" : ""
-      } ${fLease ? "leased-foreign" : ""}`}
+      } ${fLease ? "leased-foreign" : ""} ${busy ? "busy" : ""}`}
       onClick={onClickCard}
       role="button"
       tabIndex={0}
       aria-label={a.name}
+      aria-busy={busy}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -273,6 +274,12 @@ function AccountCard({
         <div className="account-card-title">
           <div className="account-card-title-line">
             <span className="name">{a.name}</span>
+            {busy && (
+              <span className="pill switching-pill">
+                <span className="spinner" aria-hidden />
+                {t("drawer.actions.switching")}
+              </span>
+            )}
             {vaultMode
               ? vaultBadgeLease && (
                   <span
