@@ -180,10 +180,11 @@ func (c *Client) LoginCallback(ctx context.Context, pasted, state string) error 
 }
 
 // DashboardKPIs mirrors httpapi.DashboardKPIs. The TUI doesn't render
-// the in_use[] list (its account view derives "in use" from the local
-// credinject Coordinator's ManagedAccountID), so the field is omitted
-// here to keep this struct minimal and the wire shape divergence
-// explicit.
+// the in_use[] list at the dashboard level — its accounts list already
+// surfaces foreign-device leases per row via Account.Lease, so a
+// duplicate dashboard sidebar would be redundant. The "in use" indicator
+// in the TUI header is still derived from the local credinject
+// Coordinator's ManagedAccountID, not from this struct.
 type DashboardKPIs struct {
 	PoolSize        int `json:"pool_size"`
 	ActiveCount     int `json:"active_count"`
