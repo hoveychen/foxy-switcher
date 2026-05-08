@@ -173,43 +173,51 @@ func TestReconcile_SwitchesAccount(t *testing.T) {
 	}
 }
 
-func TestReconcile_NoAvailable_RestoresBackup(t *testing.T) {
+// TestReconcile_NoAvailable_HoldsKeychain pins the rate-limit-storm fix:
+// when the only account is paused (or all accounts cross threshold) the
+// reconcile loop must KEEP the current keychain blob in place, not fall back
+// to native creds. Restoring native used to wedge running CC sessions on
+// macOS — see [keychain-credentials-pool.md §4.3] and the comment on
+// [handleNoAvailable]. A native backup is still pre-populated here to verify
+// it is intentionally ignored on this code path; RestoreOnShutdown remains
+// the only writer that consumes it.
+func TestReconcile_NoAvailable_HoldsKeychain(t *testing.T) {
 	c, be, st, dir := newCoord(t)
 
-	// Pre-populate a "native" backup the way maybeSnapshotNative would have.
-	nativeBlob := []byte(`{"native":"yes"}`)
 	if err := writeBackup(dir, backupFile{
-		OAuthBlob:     nativeBlob,
+		OAuthBlob:     []byte(`{"native":"yes"}`),
 		ManagedAPIKey: "sk-ant-api03-native",
 		SnapshotAt:    time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("writeBackup: %v", err)
 	}
 
-	// Inject one account, then pause it so the next reconcile sees no
-	// available accounts and triggers restore.
 	id := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
 	c.reconcile(context.Background())
 	if c.CurrentAccountID() != id {
 		t.Fatalf("inject: CurrentAccountID=%d", c.CurrentAccountID())
 	}
+	injectedBlob := append([]byte(nil), be.oauthBlob...)
+	injectedDeletes := be.deletes
+
 	if err := st.SetStatus(context.Background(), id, "paused"); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 
 	c.reconcile(context.Background())
 
-	if c.CurrentAccountID() != 0 {
-		t.Errorf("after no-available: CurrentAccountID=%d, want 0", c.CurrentAccountID())
+	if c.CurrentAccountID() != id {
+		t.Errorf("after no-available: CurrentAccountID=%d, want %d (account should still be marked as last-injected)",
+			c.CurrentAccountID(), id)
 	}
 	if !be.hasOAuth {
-		t.Fatal("expected restore to put native blob back")
+		t.Error("keychain blob was deleted; expected hold")
 	}
-	if string(be.oauthBlob) != string(nativeBlob) {
-		t.Errorf("restored blob mismatch: got %q", string(be.oauthBlob))
+	if string(be.oauthBlob) != string(injectedBlob) {
+		t.Errorf("keychain blob changed: got %q want %q", string(be.oauthBlob), string(injectedBlob))
 	}
-	if !be.hasAPIKey || be.apiKey != "sk-ant-api03-native" {
-		t.Errorf("restored api key mismatch: hasAPIKey=%v apiKey=%q", be.hasAPIKey, be.apiKey)
+	if be.deletes != injectedDeletes {
+		t.Errorf("DeleteOAuthBlob called: got %d want %d", be.deletes, injectedDeletes)
 	}
 }
 
@@ -436,11 +444,13 @@ func TestReconcile_ManualMode_RespectsExplicitPin(t *testing.T) {
 	}
 }
 
-// TestReconcile_ManualMode_RestoresWhenIneligible covers the safety net: if
-// the account currently injected becomes ineligible (paused, cooldown,
-// over-threshold), manual mode must NOT silently rotate to a different one —
-// it must restore the user's native creds, same as auto mode with empty pool.
-func TestReconcile_ManualMode_RestoresWhenIneligible(t *testing.T) {
+// TestReconcile_ManualMode_HoldsCurrentWhenIneligible covers the safety net:
+// if the account currently injected becomes ineligible (paused, cooldown,
+// over-threshold), manual mode must NOT silently rotate to a different one
+// AND must NOT fall back to native creds — it holds the current keychain so
+// running CC sessions don't get rugged out from under by stale native creds
+// (see TestReconcile_NoAvailable_HoldsKeychain for the auto-mode twin).
+func TestReconcile_ManualMode_HoldsCurrentWhenIneligible(t *testing.T) {
 	c, be, st, dir := newCoord(t)
 	if err := writeBackup(dir, backupFile{
 		OAuthBlob:  []byte(`{"native":"yes"}`),
@@ -455,6 +465,7 @@ func TestReconcile_ManualMode_RestoresWhenIneligible(t *testing.T) {
 	if c.CurrentAccountID() != idA {
 		t.Fatalf("setup: expected idA, got %d", c.CurrentAccountID())
 	}
+	injectedBlob := append([]byte(nil), be.oauthBlob...)
 
 	if err := st.SetAutoSwitch(context.Background(), store.AutoSwitch{Enabled: false, Policy: "lru"}); err != nil {
 		t.Fatalf("SetAutoSwitch: %v", err)
@@ -465,11 +476,14 @@ func TestReconcile_ManualMode_RestoresWhenIneligible(t *testing.T) {
 
 	c.reconcile(context.Background())
 
-	if c.CurrentAccountID() != 0 {
-		t.Errorf("expected restore to clear current account, got %d", c.CurrentAccountID())
+	if c.CurrentAccountID() != idA {
+		t.Errorf("expected hold of idA; got CurrentAccountID=%d", c.CurrentAccountID())
 	}
 	if got := extractAccessToken(be.oauthBlob); got == "sk-ant-oat01-beta" {
-		t.Errorf("manual mode auto-rotated to beta; expected native restore instead")
+		t.Errorf("manual mode auto-rotated to beta; expected hold of idA")
+	}
+	if string(be.oauthBlob) != string(injectedBlob) {
+		t.Errorf("keychain blob changed: got %q want %q", string(be.oauthBlob), string(injectedBlob))
 	}
 }
 
@@ -623,32 +637,6 @@ func TestHandleNoAvailable_StartupGraceKeepsCurrent(t *testing.T) {
 	}
 }
 
-// TestHandleNoAvailable_AfterGraceRestoresAsBefore confirms the grace
-// window is bounded — once it lapses, the existing restore-native
-// behaviour kicks back in. Without this assertion a too-aggressive guard
-// would silently keep stale foxy tokens in the keychain forever.
-func TestHandleNoAvailable_AfterGraceRestoresAsBefore(t *testing.T) {
-	c, be, st, _ := newCoord(t)
-	seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
-	c.reconcile(context.Background())
-	if c.CurrentAccountID() == 0 || !be.hasOAuth {
-		t.Fatalf("setup failed: expected an injection")
-	}
-
-	// Grace already lapsed — handleNoAvailable should restore native creds
-	// (which here means "delete the blob" because no native backup exists).
-	c.startupGraceUntil = c.clock().Add(-time.Second)
-
-	c.handleNoAvailable()
-
-	if c.CurrentAccountID() != 0 {
-		t.Fatalf("post-grace currentAccountID: got %d want 0", c.CurrentAccountID())
-	}
-	if be.hasOAuth {
-		t.Fatalf("post-grace blob should have been cleared")
-	}
-}
-
 // TestSetAutoSwitchSource_OverridesSvc is the regression test for the
 // agent-mode auto-switch inconsistency: the desktop's /api/auto-switch
 // writes to the agent-local store, but until this wiring landed the
@@ -750,6 +738,95 @@ func TestReconcile_EmitsReinjectOnTokenRotation(t *testing.T) {
 	if !found {
 		t.Errorf("expected cred.injected re-inject/rotated event for account %d after token rotation; got events: %+v",
 			id, bus.List(activity.Filter{}))
+	}
+}
+
+// TestHandleNoAvailable_HoldsKeychainAfterGrace is the regression test for
+// the rate-limit-storm 401 reported by users on macOS. Before the fix, when
+// every account simultaneously crossed its 95% threshold (or got paused),
+// handleNoAvailable wrote the user's pre-foxy native credentials back into
+// the keychain. Running CC sessions on macOS still had the previously-
+// injected token cached in lodash.memoize; the next 401 retry re-read the
+// keychain, picked up the stale native creds, and surfaced "Failed to
+// authenticate. API Error: 401 Invalid authentication credentials" to the
+// user. The fix: outside startup grace, hold the current keychain in place
+// instead of restoring native — when the rate-limit window resets, reconcile
+// re-injects the same account and the running session continues.
+func TestHandleNoAvailable_HoldsKeychainAfterGrace(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	id := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+
+	c.reconcile(context.Background())
+	if c.CurrentAccountID() != id || !be.hasOAuth {
+		t.Fatalf("setup: expected initial inject (currentID=%d hasOAuth=%v)",
+			c.CurrentAccountID(), be.hasOAuth)
+	}
+	initialBlob := append([]byte(nil), be.oauthBlob...)
+	initialDeletes := be.deletes
+
+	// Pause the only account so choose() returns ErrNoAvailable on the next
+	// reconcile — the rate-limit case picks the same path.
+	if err := st.SetStatus(context.Background(), id, "paused"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	// Force grace to be in the past so the existing grace-window guard does
+	// not mask the new behaviour.
+	c.startupGraceUntil = c.clock().Add(-time.Second)
+
+	c.handleNoAvailable()
+
+	if c.CurrentAccountID() != id {
+		t.Errorf("CurrentAccountID changed: got %d want %d (account should still be marked as last-injected)",
+			c.CurrentAccountID(), id)
+	}
+	if !be.hasOAuth {
+		t.Error("keychain blob was deleted; expected hold")
+	}
+	if string(be.oauthBlob) != string(initialBlob) {
+		t.Errorf("keychain blob mutated: got %q want %q", string(be.oauthBlob), string(initialBlob))
+	}
+	if be.deletes != initialDeletes {
+		t.Errorf("DeleteOAuthBlob called: got %d want %d", be.deletes, initialDeletes)
+	}
+}
+
+// TestHandleNoAvailable_DoesNotSpamWarn pins the deduplication: the reconcile
+// loop fires every 5s, so without a flag a multi-minute rate-limit window
+// would post a warn event per tick (12/min × N minutes) into the activity
+// log. The contract is one warn per "transition into all-unavailable", not
+// per tick.
+func TestHandleNoAvailable_DoesNotSpamWarn(t *testing.T) {
+	c, _, st, _ := newCoord(t)
+
+	bus, err := activity.NewBus(st.DB(), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("activity bus: %v", err)
+	}
+	c.SetBus(bus)
+
+	id := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	c.reconcile(context.Background())
+	if c.CurrentAccountID() != id {
+		t.Fatalf("setup: expected initial inject")
+	}
+	if err := st.SetStatus(context.Background(), id, "paused"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	c.startupGraceUntil = c.clock().Add(-time.Second)
+
+	c.handleNoAvailable()
+	c.handleNoAvailable()
+	c.handleNoAvailable()
+
+	var warns int
+	for _, ev := range bus.List(activity.Filter{}) {
+		if ev.Type == activity.TypeCredRestored {
+			warns++
+		}
+	}
+	if warns != 1 {
+		t.Errorf("expected exactly 1 cred.restored warn across 3 handleNoAvailable calls, got %d; events: %+v",
+			warns, bus.List(activity.Filter{}))
 	}
 }
 

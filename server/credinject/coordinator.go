@@ -88,14 +88,22 @@ type Coordinator struct {
 	// Claude Code to keep using the foxy account between sessions.
 	restoreOnQuit bool
 
-	// startupGraceUntil suppresses the "restore native credentials" path of
-	// handleNoAvailable while it is in the future. bootstrap sets it to
-	// clock+StartupGracePeriod so the very first reconcile can't blank a
-	// healthy keychain just because the vault briefly has no eligible
-	// account (typical cause: another device on the same vault is still
-	// holding a lease). Once the grace window passes the normal restore
-	// behaviour resumes.
+	// startupGraceUntil suppresses the "warn about no-available accounts"
+	// path of handleNoAvailable while it is in the future. bootstrap sets
+	// it to clock+StartupGracePeriod so the very first reconcile can't
+	// noisily warn just because the vault briefly has no eligible account
+	// (typical cause: another device on the same vault is still holding a
+	// lease).
 	startupGraceUntil time.Time
+
+	// noAvailableEmitted is set when handleNoAvailable emits its warn and
+	// cleared by reconcile when an eligible account is found again. Without
+	// this latch a multi-minute rate-limit storm would post a warn into the
+	// activity log every reconcile tick (12/min). Reset on the success path
+	// regardless of whether the choose() result needed a keychain write —
+	// "any eligible account" is the recovery signal, not "we wrote the
+	// keychain again".
+	noAvailableEmitted bool
 
 	// autoSwitchSource, when non-nil, replaces svc.GetAutoSwitch as the
 	// authority for "is auto-switch enabled?". Agent mode wires this to a
@@ -428,6 +436,15 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 		return
 	}
 
+	// We have an eligible account. If a previous tick latched the
+	// no-available warn, clear the latch now so the next storm gets a fresh
+	// emit. Done before the keychain-write early-return so recovery from
+	// "all unavailable → same account becomes eligible" still resets the
+	// state even when no write is needed.
+	c.mu.Lock()
+	c.noAvailableEmitted = false
+	c.mu.Unlock()
+
 	// Lease bookkeeping. Run before the no-op early return so a non-switch
 	// tick still renews the lease — otherwise the vault's refresh scheduler
 	// would think this account is free and start rotating it parallel to CC.
@@ -557,15 +574,22 @@ func (c *Coordinator) releaseLease(ctx context.Context) {
 	}
 }
 
-// handleNoAvailable runs when selector.Pick returns ErrNoAvailable. Restores
-// the user's native credentials so Claude Code keeps working with their own
-// login while the foxy pool is empty / rate-limited.
+// handleNoAvailable runs when selector.Pick returns ErrNoAvailable. Holds
+// the current keychain in place and emits a single warn — the restore-to-
+// native fallback that used to live here was creating a worse failure mode:
+// running CC sessions on macOS cache OAuth tokens via lodash.memoize for the
+// process lifetime; when the keychain got rewritten with the user's pre-foxy
+// native blob, the next 401 retry re-read keychain, picked up stale native
+// creds, and surfaced "Failed to authenticate. API Error: 401 Invalid
+// authentication credentials" to the user. Holding the keychain lets the
+// running session keep its current memoized token, and as soon as one
+// account becomes eligible again (rate-limit window resets, status flips
+// back to active) reconcile re-injects on the next 5s tick.
 //
-// During the bootstrap grace window we suppress the restore: a transient
+// During the bootstrap grace window we suppress even the warn: a transient
 // ErrNoAvailable right after launch is usually a stale lease (own or
 // another device's) that will clear within a minute. Reconcile retries
-// every 5s, so once the lease lapses we converge without ever touching
-// the user's keychain.
+// every 5s, so once the lease lapses we converge without alerting.
 func (c *Coordinator) handleNoAvailable() {
 	c.mu.Lock()
 	if c.currentAccountID == 0 {
@@ -577,23 +601,17 @@ func (c *Coordinator) handleNoAvailable() {
 		c.logger.Print("[credinject] no available account during startup grace; keeping current keychain")
 		return
 	}
-	c.mu.Unlock()
-
-	if err := c.restoreLocked(); err != nil {
-		c.logger.Printf("[credinject] restore native creds: %v", err)
+	if c.noAvailableEmitted {
+		c.mu.Unlock()
 		return
 	}
-	c.releaseLease(context.Background())
-	c.mu.Lock()
-	c.currentAccountID = 0
-	c.lastAccessHash = ""
+	c.noAvailableEmitted = true
+	currentID := c.currentAccountID
 	c.mu.Unlock()
-	if err := clearState(c.dataDir); err != nil {
-		c.logger.Printf("[credinject] clear state: %v", err)
-	}
-	c.logger.Print("[credinject] no available account — restored native credentials")
-	c.bus.EmitWarn(activity.TypeCredRestored, 0,
-		"All accounts unavailable — restored native credentials")
+
+	c.logger.Printf("[credinject] all accounts unavailable — keeping current keychain (account %d); will re-inject when one becomes eligible", currentID)
+	c.bus.EmitWarn(activity.TypeCredRestored, currentID,
+		"All accounts unavailable — keeping current keychain (no fallback to native)")
 }
 
 // reverseSync pulls externally-rotated tokens back into the store. When
