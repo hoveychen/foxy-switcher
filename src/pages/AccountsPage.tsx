@@ -74,7 +74,16 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
 }
 
 function isSelectable(a: Account): boolean {
+  // Foreign-held lease (vault sees another device using this account)
+  // makes manual select pointless: AcquireLease would hit the
+  // leases_account_id_uniq index and 409. Skip in the UI so users see
+  // the badge instead of a confusing error toast.
+  if (a.lease && !a.lease.mine) return false;
   return a.status === "active" && !accountIsCooling(a);
+}
+
+function foreignLease(a: Account) {
+  return a.lease && !a.lease.mine ? a.lease : null;
 }
 
 function utilizationTone(pct: number): Tone {
@@ -232,11 +241,12 @@ function AccountCard({
       ? `${a.full_name} · ${a.email}`
       : a.email || a.full_name || "";
 
+  const fLease = foreignLease(a);
   return (
     <div
       className={`account-card ${isSelected ? "selected" : ""} ${
         isInUse ? "active" : ""
-      }`}
+      } ${fLease ? "leased-foreign" : ""}`}
       onClick={onClickCard}
       role="button"
       tabIndex={0}
@@ -259,6 +269,18 @@ function AccountCard({
                 {t("accounts.row.in_use")}
               </span>
             )}
+            {fLease && !isInUse && (
+              <span
+                className="pill leased-pill"
+                title={tf("accounts.badge.expires_in", {
+                  time: fmtRemaining(fLease.expires_at - nowMs),
+                })}
+              >
+                {tf("accounts.badge.in_use_by", {
+                  device: fLease.device_name || fLease.device_id || "—",
+                })}
+              </span>
+            )}
           </div>
           {ownerLine && (
             <div className="account-card-owner">{ownerLine}</div>
@@ -269,9 +291,11 @@ function AccountCard({
           busy={busy}
           items={[
             {
-              label: isInUse
-                ? t("accounts.kebab.in_use")
-                : t("accounts.kebab.use_now"),
+              label: fLease
+                ? t("accounts.kebab.leased_by_other")
+                : isInUse
+                  ? t("accounts.kebab.in_use")
+                  : t("accounts.kebab.use_now"),
               onClick: onUseNow,
               disabled: isInUse || !isSelectable(a),
             },

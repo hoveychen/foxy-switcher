@@ -201,6 +201,9 @@ export function DashboardPage({
             <HeroEmpty onAdd={() => onNavigate("accounts")} />
           )}
 
+          <OthersInUse accounts={accounts} nowMs={nowMs} />
+
+
           <div className="kpi-grid">
             <KpiCard
               label={t("dashboard.kpi.available")}
@@ -458,6 +461,50 @@ function HeroUsageBar({
       <span className="usage-pct">{pct.toFixed(0)}%</span>
       <span className="usage-resets">{fmtResetsAt(win.resets_at, nowMs)}</span>
     </div>
+  );
+}
+
+// OthersInUse renders a compact strip of accounts currently held by
+// OTHER devices' leases (a.lease.mine === false). Hidden when no
+// foreign leases exist; the existing HeroCard already covers the
+// caller's own injected account. Drives multi-device awareness without
+// duplicating the hero layout for each device.
+function OthersInUse({
+  accounts,
+  nowMs,
+}: {
+  accounts: Account[];
+  nowMs: number;
+}) {
+  const others = accounts.filter((a) => a.lease && !a.lease.mine);
+  if (others.length === 0) return null;
+  return (
+    <section className="dash-others-in-use">
+      <div className="dash-hero-eyebrow">{t("dashboard.others_in_use")}</div>
+      <div className="dash-others-list">
+        {others.map((a) => {
+          const lease = a.lease!;
+          const remaining = lease.expires_at - nowMs;
+          return (
+            <div key={a.id} className="pill leased-pill" title={a.email || ""}>
+              <strong>{a.name}</strong>
+              <span> · </span>
+              <span>{lease.device_name || lease.device_id || "—"}</span>
+              {remaining > 0 && (
+                <>
+                  <span> · </span>
+                  <span>
+                    {tf("accounts.badge.expires_in", {
+                      time: fmtRemaining(remaining),
+                    })}
+                  </span>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

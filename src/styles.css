@@ -571,6 +571,34 @@ input {
     0 0 0 1.5px var(--accent);
 }
 
+.account-card.leased-foreign {
+  opacity: 0.7;
+}
+
+.account-card.leased-foreign:hover {
+  background: var(--bg-card);
+}
+
+.pill.leased-pill {
+  background: var(--bg-card-hover, rgba(0, 0, 0, 0.06));
+  color: var(--text-meta, #888);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.dash-others-in-use {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: -8px;
+}
+
+.dash-others-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .account-card-head {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto auto;

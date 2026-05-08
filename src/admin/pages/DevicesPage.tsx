@@ -15,6 +15,19 @@ function formatRelative(ts: number): string {
   return tf("admin.devices.d_ago", { n: Math.floor(diff / 86_400_000) });
 }
 
+// fmtRemaining formats a future unix-millis instant as "Nh Mm" or "Nm"
+// down to "—" when already past — used by the current_lease cell to
+// show how much TTL the lease has left.
+function fmtRemaining(ts: number): string {
+  const ms = ts - Date.now();
+  if (ms <= 0) return "—";
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 export function DevicesPage({ onUnauthorized }: Props) {
   const [devices, setDevices] = useState<AdminDevice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +90,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
               <thead>
                 <tr>
                   <th>{t("admin.devices.col.name")}</th>
+                  <th>{t("admin.devices.col.current_account")}</th>
                   <th>{t("admin.devices.col.os")}</th>
                   <th>{t("admin.devices.col.arch")}</th>
                   <th>{t("admin.devices.col.app")}</th>
@@ -92,6 +106,20 @@ export function DevicesPage({ onUnauthorized }: Props) {
                       {d.name}
                       {d.hostname && d.hostname !== d.name && (
                         <span className="admin-table__sub">{d.hostname}</span>
+                      )}
+                    </td>
+                    <td>
+                      {d.current_lease ? (
+                        <>
+                          {d.current_lease.account_name || `#${d.current_lease.account_id}`}
+                          <span className="admin-table__sub">
+                            {tf("admin.devices.lease_remaining", {
+                              time: fmtRemaining(d.current_lease.expires_at),
+                            })}
+                          </span>
+                        </>
+                      ) : (
+                        "—"
                       )}
                     </td>
                     <td>

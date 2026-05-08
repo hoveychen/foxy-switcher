@@ -185,6 +185,21 @@ type apiDeviceRow struct {
 	ClientType string `json:"client_type,omitempty"`
 	CreatedAt  int64  `json:"created_at"`
 	LastSeenAt int64  `json:"last_seen_at"`
+	// CurrentLease names the account this device is currently leasing,
+	// joined with the account name so the admin DevicesPage can render
+	// "currently using X (12 min left)" without a second query. Nil when
+	// the device holds no live lease.
+	CurrentLease *apiDeviceLease `json:"current_lease,omitempty"`
+}
+
+// apiDeviceLease is the lightweight lease shape used by /admin/api/devices.
+// account_name is taken from the accounts table (empty fallback) so the UI
+// can render "currently using {name}" directly.
+type apiDeviceLease struct {
+	AccountID   int64  `json:"account_id"`
+	AccountName string `json:"account_name"`
+	AcquiredAt  int64  `json:"acquired_at"`
+	ExpiresAt   int64  `json:"expires_at"`
 }
 
 type apiDevicesResp struct {
@@ -197,9 +212,18 @@ func (s *Server) handleAPIDevicesList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	leases, err := s.st.ListActiveLeasesWithAccounts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	leaseByDevice := make(map[string]store.LeaseWithAccount, len(leases))
+	for _, l := range leases {
+		leaseByDevice[l.DeviceID] = l
+	}
 	out := make([]apiDeviceRow, 0, len(devs))
 	for _, d := range devs {
-		out = append(out, apiDeviceRow{
+		row := apiDeviceRow{
 			ID:         d.ID,
 			Name:       d.Name,
 			Hostname:   d.Hostname,
@@ -211,7 +235,16 @@ func (s *Server) handleAPIDevicesList(w http.ResponseWriter, r *http.Request) {
 			ClientType: d.ClientType,
 			CreatedAt:  d.CreatedAt,
 			LastSeenAt: d.LastSeenAt,
-		})
+		}
+		if l, ok := leaseByDevice[d.ID]; ok {
+			row.CurrentLease = &apiDeviceLease{
+				AccountID:   l.AccountID,
+				AccountName: l.AccountName,
+				AcquiredAt:  l.AcquiredAt,
+				ExpiresAt:   l.ExpiresAt,
+			}
+		}
+		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, apiDevicesResp{Devices: out})
 }

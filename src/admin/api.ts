@@ -21,6 +21,17 @@ export type AdminDevice = {
   client_type?: string;
   created_at: number;
   last_seen_at: number;
+  // current_lease names the account this device is currently holding,
+  // joined with account_name server-side. Absent when the device has no
+  // live lease.
+  current_lease?: AdminDeviceLease;
+};
+
+export type AdminDeviceLease = {
+  account_id: number;
+  account_name: string;
+  acquired_at: number;
+  expires_at: number;
 };
 
 export type AdminPairLookup = {

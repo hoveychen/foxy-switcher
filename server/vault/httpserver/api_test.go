@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/store"
 	vaultauth "github.com/hoveychen/foxy-switcher/server/vault/auth"
@@ -177,6 +178,77 @@ func TestAPIDevices_ListAndRevoke(t *testing.T) {
 	devs, _ := f.st.ListDevices(ctx)
 	if len(devs) != 1 || devs[0].ID != d2.ID {
 		t.Errorf("after revoke: %+v", devs)
+	}
+}
+
+// TestAPIDevices_WithLease pins the multi-device-lease-visibility
+// extension to /admin/api/devices: each device row carries an optional
+// current_lease field naming the account it currently holds. Devices
+// without a live lease emit current_lease == nil; live leases include
+// account_id, account_name (from the accounts join), and the lease
+// timestamps so the admin DevicesPage can render "currently using X
+// (12 min left)" without an N+1 round-trip.
+func TestAPIDevices_WithLease(t *testing.T) {
+	f := newAuthFixture(t)
+	ctx := context.Background()
+	hash, _ := vaultauth.HashPassword("pw")
+	_ = f.st.SetPasswordHash(ctx, hash)
+
+	// Two devices: holder + idle.
+	holder := store.Device{ID: vaultauth.NewID(), Name: "holder", TokenHash: vaultauth.HashToken(vaultauth.NewToken())}
+	idle := store.Device{ID: vaultauth.NewID(), Name: "idle", TokenHash: vaultauth.HashToken(vaultauth.NewToken())}
+	if err := f.st.InsertDevice(ctx, holder); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.InsertDevice(ctx, idle); err != nil {
+		t.Fatal(err)
+	}
+
+	// One account, leased by holder.
+	a := &store.Account{Name: "alpha", AccessToken: "at", RefreshToken: "rt", Status: "active"}
+	if err := f.st.Upsert(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.AcquireLease(ctx, "lease-1", a.ID, holder.ID, time.Minute); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	jar := newCookieJar(t)
+	resp := postJSON(t, f.server.URL+"/admin/api/login", jar, map[string]string{"password": "pw"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: %s", resp.Status)
+	}
+
+	resp = getWith(t, f.server.URL+"/admin/api/devices", jar)
+	defer resp.Body.Close()
+	var list apiDevicesResp
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list.Devices) != 2 {
+		t.Fatalf("len: got %d want 2", len(list.Devices))
+	}
+
+	byID := map[string]apiDeviceRow{}
+	for _, d := range list.Devices {
+		byID[d.ID] = d
+	}
+	if h := byID[holder.ID]; h.CurrentLease == nil {
+		t.Errorf("holder: expected CurrentLease populated, got nil")
+	} else {
+		if h.CurrentLease.AccountID != a.ID {
+			t.Errorf("holder.CurrentLease.AccountID: got %d want %d", h.CurrentLease.AccountID, a.ID)
+		}
+		if h.CurrentLease.AccountName != "alpha" {
+			t.Errorf("holder.CurrentLease.AccountName: got %q want %q", h.CurrentLease.AccountName, "alpha")
+		}
+		if h.CurrentLease.ExpiresAt == 0 {
+			t.Error("holder.CurrentLease.ExpiresAt: zero (expected unix millis)")
+		}
+	}
+	if i := byID[idle.ID]; i.CurrentLease != nil {
+		t.Errorf("idle: expected nil CurrentLease, got %+v", i.CurrentLease)
 	}
 }
 

@@ -133,6 +133,25 @@ export interface Account {
   five_hour_threshold: number;
   seven_day_threshold: number;
   seven_day_sonnet_threshold: number;
+  // Per-account lease info populated by the vault when a remote agent is
+  // currently using this account. Nil when no live lease exists.
+  // - mine: true when the lease belongs to THIS daemon's device. The
+  //   server resolves it from the BearerAuth ctx, so the frontend never
+  //   has to know its own device_id; combined-mode requests have no
+  //   auth context and get mine=true (loopback owner).
+  // - device_id / device_name: only meaningful for foreign leases (badges
+  //   render device_name in "in use by Device X"). Falls back to hostname
+  //   when name is empty.
+  // - acquired_at / expires_at are unix millis.
+  lease?: AccountLease;
+}
+
+export interface AccountLease {
+  device_id: string;
+  device_name: string;
+  mine: boolean;
+  acquired_at: number;
+  expires_at: number;
 }
 
 export interface ThresholdInput {
@@ -302,10 +321,24 @@ export interface ActivityFilter {
   severity?: ActivitySeverity;
 }
 
+export interface InUseEntry {
+  account_id: number;
+  device_id: string;
+  device_name: string;
+  // Mine === true when the lease belongs to the caller's device (resolved
+  // server-side from BearerAuth ctx; combined mode → true).
+  mine: boolean;
+  expires_at: number;
+}
+
 export interface DashboardKPIs {
   pool_size: number;
   active_count: number;
-  in_use_account_id: number;
+  // Every active lease, joined with the holding device's display name.
+  // Replaces the legacy single in_use_account_id — multi-device
+  // deployments see one entry per holder; empty list when no agent
+  // currently holds any account.
+  in_use: InUseEntry[];
   // Number of accounts whose latest usage poll showed at least one window
   // at or above its threshold (i.e. the daemon's selector would skip them).
   cooling_count: number;
