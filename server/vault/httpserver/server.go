@@ -310,7 +310,16 @@ type pickResponse struct {
 func (s *Server) handlePick(w http.ResponseWriter, r *http.Request) {
 	// Body is empty — vault uses its own clock. The agent doesn't pass a
 	// `now` because clocks across hosts may differ; vault is the authority.
-	a, err := s.svc.Pick(r.Context(), time.Now())
+	// Caller device is read from BearerAuth ctx so the lease filter
+	// excludes only OTHER devices' leases (own lease passes — letting the
+	// caller renew on a single-account pool).
+	devID, _ := DeviceFromContext(r.Context())
+	if devID == SessionDeviceID {
+		// Cookie sessions aren't lease holders — fall back to legacy
+		// behaviour (filter every leased account).
+		devID = ""
+	}
+	a, err := s.svc.PickForDevice(r.Context(), time.Now(), devID)
 	if err != nil {
 		if errors.Is(err, selector.ErrNoAvailable) {
 			// 204 — no account is currently eligible. Agent treats this as

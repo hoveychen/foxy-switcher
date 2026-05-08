@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/selector"
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
 
@@ -52,6 +53,58 @@ func TestPick_ExcludesAccountsLeasedByOthers(t *testing.T) {
 	}
 	if got == nil || got.ID != b.ID {
 		t.Fatalf("Pick: got %+v want id=%d", got, b.ID)
+	}
+}
+
+// TestPickForDevice_AllowsOwnLeaseSkipsForeign nails down the
+// multi-device-lease-visibility refinement: PickForDevice filters out
+// leases held by OTHER devices but lets the caller's OWN lease pass
+// through, so a single-account pool can keep re-Picking the same
+// account on every reconcile tick (no false ErrNoAvailable when the
+// caller already holds the only lease). Foreign-held leases stay
+// excluded — same guarantee Step 4 added in TestPick_ExcludesAccountsLeasedByOthers.
+func TestPickForDevice_AllowsOwnLeaseSkipsForeign(t *testing.T) {
+	st := openTestStore(t)
+	svc := NewInProc(st)
+	ctx := context.Background()
+
+	a := seedAccount(t, st, "alpha")
+	b := seedAccount(t, st, "beta")
+
+	// device-self holds alpha; device-other holds beta.
+	if _, err := svc.AcquireLease(ctx, a.ID, "device-self", time.Minute); err != nil {
+		t.Fatalf("self acquire alpha: %v", err)
+	}
+	if _, err := svc.AcquireLease(ctx, b.ID, "device-other", time.Minute); err != nil {
+		t.Fatalf("other acquire beta: %v", err)
+	}
+
+	// PickForDevice("device-self") should be allowed to return alpha
+	// (own lease, not a disqualifier) — selector's LRU tiebreak picks
+	// the longest-since-used; both are unused so id-asc breaks the tie.
+	got, err := svc.PickForDevice(ctx, time.Now(), "device-self")
+	if err != nil {
+		t.Fatalf("PickForDevice self: %v", err)
+	}
+	if got == nil || got.ID != a.ID {
+		t.Fatalf("PickForDevice self: got %+v want id=%d (own lease should pass)", got, a.ID)
+	}
+
+	// PickForDevice("device-other") symmetrically gets beta.
+	got, err = svc.PickForDevice(ctx, time.Now(), "device-other")
+	if err != nil {
+		t.Fatalf("PickForDevice other: %v", err)
+	}
+	if got == nil || got.ID != b.ID {
+		t.Fatalf("PickForDevice other: got %+v want id=%d", got, b.ID)
+	}
+
+	// Empty deviceID falls back to legacy Pick semantics — every leased
+	// account is excluded, so with only two accounts (both leased) the
+	// result must be ErrNoAvailable.
+	_, err = svc.PickForDevice(ctx, time.Now(), "")
+	if !errors.Is(err, selector.ErrNoAvailable) {
+		t.Errorf("PickForDevice(\"\"): got %v want ErrNoAvailable (legacy filter excludes own lease too)", err)
 	}
 }
 

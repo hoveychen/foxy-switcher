@@ -94,6 +94,15 @@ func (c *Client) Pick(ctx context.Context, _ time.Time) (*vault.Account, error) 
 	return out.Account, nil
 }
 
+// PickForDevice forwards to /agent/v1/pick — the server reads the
+// caller's device id from the BearerAuth ctx (the same Bearer token
+// the client already attaches), so deviceID is intentionally unused
+// here. Kept on the wire as a Service-interface method for symmetry
+// with InProc.
+func (c *Client) PickForDevice(ctx context.Context, now time.Time, _ string) (*vault.Account, error) {
+	return c.Pick(ctx, now)
+}
+
 func (c *Client) MarkUsed(ctx context.Context, id int64) error {
 	return c.postNoBody(ctx, "/agent/v1/accounts/"+strconv.FormatInt(id, 10)+"/used")
 }

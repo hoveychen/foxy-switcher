@@ -54,11 +54,21 @@ func (s *InProc) GetAutoSwitch(ctx context.Context) (AutoSwitch, error) {
 // Step 4 added the lease filter; the rest matches selector.Pick from
 // earlier steps.
 func (s *InProc) Pick(ctx context.Context, now time.Time) (*Account, error) {
+	return s.PickForDevice(ctx, now, "")
+}
+
+// PickForDevice is Pick with caller-device awareness: when deviceID is
+// non-empty, the lease filter excludes only OTHER devices' leases so
+// the caller can re-pick its own lease (allowing renewal on a single-
+// account pool). deviceID == "" preserves Pick's legacy "filter every
+// leased account" behaviour for callers that don't yet plumb device
+// identity through.
+func (s *InProc) PickForDevice(ctx context.Context, now time.Time, deviceID string) (*Account, error) {
 	return selector.PickWithFilter(ctx, s.st, now, func(a Account) bool {
-		// Lease check is per-account. The selector returns LRU within the
-		// surviving set — so an account leased by another device gets
-		// dropped here and the next-best LRU candidate wins.
-		return s.st.IsAccountLeased(a.ID)
+		if deviceID == "" {
+			return s.st.IsAccountLeased(a.ID)
+		}
+		return s.st.IsAccountLeasedByOther(a.ID, deviceID)
 	})
 }
 

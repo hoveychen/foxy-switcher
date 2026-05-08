@@ -348,11 +348,11 @@ func (c *Coordinator) choose(ctx context.Context) (*vault.Account, error) {
 	}
 
 	if currentID == 0 {
-		return c.svc.Pick(ctx, c.clock())
+		return c.svc.PickForDevice(ctx, c.clock(), c.deviceID)
 	}
 	accs, err := c.svc.ListAccounts(ctx)
 	if err != nil {
-		return c.svc.Pick(ctx, c.clock())
+		return c.svc.PickForDevice(ctx, c.clock(), c.deviceID)
 	}
 	now := c.clock()
 	var cur *vault.Account
@@ -378,7 +378,7 @@ func (c *Coordinator) choose(ctx context.Context) (*vault.Account, error) {
 	if cur != nil && !pinnedOther {
 		return cur, nil
 	}
-	return c.svc.Pick(ctx, c.clock())
+	return c.svc.PickForDevice(ctx, c.clock(), c.deviceID)
 }
 
 // chooseManual implements the auto-switch=off path. Order:
@@ -774,6 +774,17 @@ type Status struct {
 	ManagedAccountID    int64 `json:"managed_account_id"`
 	NativeBackupPresent bool  `json:"native_backup_present"`
 	InjectedAt          int64 `json:"injected_at"`
+}
+
+// DeviceID returns this Coordinator's stable identity used in lease
+// bookkeeping. Nil-safe — returns "" when called on a nil receiver, so
+// callers like the agent's dashboard patch can probe without first
+// checking whether a Coordinator was wired.
+func (c *Coordinator) DeviceID() string {
+	if c == nil {
+		return ""
+	}
+	return c.deviceID
 }
 
 // Status snapshots the coordinator state for the HTTP surface.

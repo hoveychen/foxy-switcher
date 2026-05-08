@@ -141,11 +141,16 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	// allow-list — defense in depth, so a buggy / compromised agent
 	// can't reach admin writes by hitting a different proxy path.
 	proxy := newVaultAPIProxy(target, cfg.DeviceToken)
-	// Vault has no credinject so its /api/dashboard returns
-	// kpis.in_use_account_id = 0. Agent has the local Cred — patch the
-	// response on its way back so the desktop's "in use" highlight
-	// renders correctly.
-	proxy.ModifyResponse = patchDashboardInUseAccount(cc)
+	// Vault is authoritative for the kpis.in_use[] list (one entry per
+	// active lease, joined with each holding device's display name).
+	// Agent has the local Cred — patch ONLY its own entry on the way
+	// back so the desktop's "in use" highlight tracks local injection
+	// even when vault lags a tick behind. Other devices' entries pass
+	// through verbatim.
+	proxy.ModifyResponse = patchDashboardInUseSelf(
+		cc.DeviceID(),
+		func() int64 { return cc.Status().ManagedAccountID },
+	)
 	for _, path := range []string{
 		"GET /api/accounts",
 		"GET /api/dashboard",
@@ -289,13 +294,25 @@ func newVaultAPIProxy(target *url.URL, token string) *httputil.ReverseProxy {
 	return proxy
 }
 
-// patchDashboardInUseAccount returns a ReverseProxy.ModifyResponse hook
-// that rewrites kpis.in_use_account_id on /api/dashboard responses to
-// the agent-local Cred coordinator's view. The vault-side handler
-// returns 0 because vault mode has no credinject; only the agent knows
-// which account is currently injected on this machine. Other paths
-// pass through verbatim.
-func patchDashboardInUseAccount(cc *credinject.Coordinator) func(*http.Response) error {
+// patchDashboardInUseSelf returns a ReverseProxy.ModifyResponse hook
+// that reconciles the agent's own entry in /api/dashboard's
+// `kpis.in_use[]` list against the local credinject Coordinator's view.
+// Vault is authoritative for OTHER devices' entries; this hook only
+// touches the entry where mine==true (or appends one if missing) so the
+// desktop's "in use" highlight stays accurate even when the vault
+// hasn't yet observed a freshly-acquired lease.
+//
+// Behaviour:
+//   - non-dashboard paths: pass through verbatim.
+//   - accountIDFn()==0 (nothing injected locally): pass through verbatim.
+//     Vault's view is the only authority when we hold no lease.
+//   - mine entry exists: overwrite its account_id with the local truth.
+//   - mine entry absent: append { account_id, device_id, mine: true }.
+//   - other entries (mine==false) are never touched.
+//
+// deviceID is the agent's own ID (Coordinator.DeviceID()); accountIDFn
+// is read on every response so a mid-flight rotation lands immediately.
+func patchDashboardInUseSelf(deviceID string, accountIDFn func() int64) func(*http.Response) error {
 	return func(resp *http.Response) error {
 		if resp.StatusCode != http.StatusOK {
 			return nil
@@ -312,31 +329,57 @@ func patchDashboardInUseAccount(cc *credinject.Coordinator) func(*http.Response)
 			return err
 		}
 		_ = resp.Body.Close()
-		var doc map[string]any
-		if err := json.Unmarshal(body, &doc); err != nil {
-			// Couldn't decode — pass through verbatim. ContentLength has
-			// already been computed by the upstream; we just need to
-			// reset the body so the proxy can copy it through.
-			resp.Body = io.NopCloser(bytes.NewReader(body))
-			resp.ContentLength = int64(len(body))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		rewriteBody := func(b []byte) {
+			resp.Body = io.NopCloser(bytes.NewReader(b))
+			resp.ContentLength = int64(len(b))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
+		}
+		accID := accountIDFn()
+		if accID == 0 {
+			// Nothing injected locally — vault is authoritative.
+			rewriteBody(body)
 			return nil
 		}
-		if kpis, ok := doc["kpis"].(map[string]any); ok {
-			kpis["in_use_account_id"] = cc.Status().ManagedAccountID
+		var doc map[string]any
+		if err := json.Unmarshal(body, &doc); err != nil {
+			// Defensive: malformed body slips through unchanged.
+			rewriteBody(body)
+			return nil
+		}
+		kpis, ok := doc["kpis"].(map[string]any)
+		if !ok {
+			rewriteBody(body)
+			return nil
+		}
+		rawList, _ := kpis["in_use"].([]any)
+		var patched bool
+		for _, item := range rawList {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if mine, _ := entry["mine"].(bool); mine {
+				entry["account_id"] = accID
+				patched = true
+				break
+			}
+		}
+		if !patched {
+			rawList = append(rawList, map[string]any{
+				"account_id":  accID,
+				"device_id":   deviceID,
+				"device_name": "",
+				"mine":        true,
+				"expires_at":  0,
+			})
+			kpis["in_use"] = rawList
 		}
 		out, err := json.Marshal(doc)
 		if err != nil {
-			// Fallback to original body on marshal failure (shouldn't
-			// happen for any reachable doc shape, but defensive).
-			resp.Body = io.NopCloser(bytes.NewReader(body))
-			resp.ContentLength = int64(len(body))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			rewriteBody(body)
 			return nil
 		}
-		resp.Body = io.NopCloser(bytes.NewReader(out))
-		resp.ContentLength = int64(len(out))
-		resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
+		rewriteBody(out)
 		return nil
 	}
 }

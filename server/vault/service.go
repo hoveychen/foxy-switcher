@@ -66,7 +66,21 @@ type Service interface {
 	// coordinator's caller treats that as the trigger to restore the user's
 	// native creds. Pick does NOT mutate any state; the coordinator calls
 	// MarkUsed after a successful inject so the LRU clock advances.
+	//
+	// Lease semantics: filters out every leased account (own + foreign).
+	// Most callers should prefer PickForDevice — Pick is kept for
+	// back-compat with code paths that don't yet plumb device identity.
 	Pick(ctx context.Context, now time.Time) (*Account, error)
+
+	// PickForDevice is Pick with caller-device awareness: foreign leases
+	// (held by other devices) are still excluded, but the caller's own
+	// lease passes through so a single-account pool can keep re-picking
+	// the held account on rotation. deviceID "" behaves as Pick.
+	//
+	// In agent mode the httpclient impl forwards the request to vault
+	// without sending deviceID — the server reads BearerAuth ctx and
+	// substitutes the caller's device id automatically.
+	PickForDevice(ctx context.Context, now time.Time, deviceID string) (*Account, error)
 
 	// MarkUsed bumps last_used_at on the account so the LRU tiebreaker
 	// reflects real pool usage. Called after a switch lands successfully.
