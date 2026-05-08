@@ -350,6 +350,22 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.refreshCmd()
 	case "u":
 		if a, ok := m.selected(); ok {
+			// Foreign-leased accounts are unique-indexed at the vault — calling
+			// SelectAccount would 409 on leases_account_id_uniq. Short-circuit
+			// with an inline error so the user sees who's actually holding it
+			// instead of a cryptic API failure.
+			if a.Lease != nil && !a.Lease.Mine {
+				dev := a.Lease.DeviceName
+				if dev == "" {
+					dev = a.Lease.DeviceID
+				}
+				if dev == "" {
+					dev = "another device"
+				}
+				m.statusErr = a.Name + " is held by " + dev
+				m.statusMsg = ""
+				return m, nil
+			}
 			return m, m.startOp("Switching to "+a.Name+"…", "Now using "+a.Name, func(ctx context.Context) error {
 				return m.client.SelectAccount(ctx, a.ID)
 			})

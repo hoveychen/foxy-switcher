@@ -184,6 +184,52 @@ func inUseChip() string {
 	return pill("in use", pillAccent, pillFilled)
 }
 
+// foreignLeaseChip renders the "held by another device" badge: device name
+// plus the lease's remaining TTL (e.g. `held by laptop-2 12m`). Returned as a
+// soft info pill so it reads as informational, not as an action affordance.
+// Empty string when the lease is nil or owned by this device.
+func foreignLeaseChip(a Account, nowMs int64) string {
+	if a.Lease == nil || a.Lease.Mine {
+		return ""
+	}
+	dev := a.Lease.DeviceName
+	if dev == "" {
+		dev = a.Lease.DeviceID
+	}
+	if dev == "" {
+		dev = "another device"
+	}
+	ttl := leaseTTLLabel(a.Lease.ExpiresAt, nowMs)
+	label := "held by " + dev
+	if ttl != "" {
+		label += " " + ttl
+	}
+	return pill(label, pillInfo, pillSoft)
+}
+
+// leaseTTLLabel formats the lease's remaining lifetime as the short suffix
+// rendered after the device name. Empty when the lease has already expired
+// (the lease should have been GC'd; rendering "expired" would be noise).
+func leaseTTLLabel(expiresAtMs, nowMs int64) string {
+	d := time.Duration(expiresAtMs-nowMs) * time.Millisecond
+	if d <= 0 {
+		return ""
+	}
+	d = d.Round(time.Minute)
+	if d < time.Minute {
+		return "<1m"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	h := int(d.Hours())
+	mins := int(d.Minutes()) - h*60
+	if mins == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, mins)
+}
+
 const progressBarDefaultWidth = 10
 
 // progressBar renders `████░░░░░░  42%`. width is the bar cell count; pass 0

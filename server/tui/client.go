@@ -92,6 +92,24 @@ type Account struct {
 	FiveHourThreshold       float64 `json:"five_hour_threshold"`
 	SevenDayThreshold       float64 `json:"seven_day_threshold"`
 	SevenDaySonnetThreshold float64 `json:"seven_day_sonnet_threshold"`
+	// Lease mirrors httpapi.accountLeaseView. Nil when no live lease exists.
+	// Populated by the daemon's /api/accounts handler from
+	// store.ListAccountsWithLeases. The TUI uses this so multi-device users
+	// can see "held by Device X" instead of clicking 'u' on a foreign-leased
+	// account and hitting a 409 from the leases_account_id_uniq index.
+	Lease *AccountLease `json:"lease,omitempty"`
+}
+
+// AccountLease is the per-account lease metadata. Mine is server-computed
+// from the BearerAuth ctx (or implicit true in combined mode where loopback
+// is the only caller); the TUI trusts it as-is and never compares device
+// ids itself.
+type AccountLease struct {
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+	Mine       bool   `json:"mine"`
+	AcquiredAt int64  `json:"acquired_at"`
+	ExpiresAt  int64  `json:"expires_at"`
 }
 
 // CredStatus mirrors handleCredStatus.

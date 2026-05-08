@@ -122,7 +122,11 @@ func (m *model) viewListNarrow() string {
 			isInUse := inUseID != 0 && a.ID == inUseID
 			rail := rowRail(i == m.cursor, isInUse)
 			dot := statusDot(a, nowMs)
-			line := rail + dot + " " + truncate(a.Name, m.width-6)
+			name := truncate(a.Name, m.width-6)
+			if !isInUse && i != m.cursor && a.Lease != nil && !a.Lease.Mine {
+				name = dimStyle.Render(name)
+			}
+			line := rail + dot + " " + name
 			if i == m.cursor {
 				line = selectedStyle.Width(m.width).Render(line)
 			}
@@ -248,14 +252,20 @@ func (m *model) renderAccountList(innerW int) string {
 
 // renderAccountRow renders one list row honoring width constraints. When
 // width is tight, the in-use chip wins over the plan badge so the active
-// account is always identifiable.
+// account is always identifiable. A foreign-lease chip ("held by …") takes
+// the same emphasis slot when this account is currently leased by another
+// device — and the row's name is dimmed so foreign-leased rows visually
+// recede, mirroring the desktop AccountsPage's `leased-foreign` greying.
 func (m *model) renderAccountRow(a Account, selected, isInUse bool, innerW int, nowMs int64) string {
 	rail := rowRail(selected, isInUse)
 	dot := statusDot(a, nowMs)
 	plan := planBadge(a.Plan)
 	chip := ""
-	if isInUse {
+	switch {
+	case isInUse:
 		chip = inUseChip()
+	default:
+		chip = foreignLeaseChip(a, nowMs)
 	}
 	suffix, suffixW := composeRowSuffix(chip, plan, innerW-3)
 	nameMax := innerW - 3 - suffixW - 1
@@ -263,6 +273,9 @@ func (m *model) renderAccountRow(a Account, selected, isInUse bool, innerW int, 
 		nameMax = 4
 	}
 	name := truncate(a.Name, nameMax)
+	if !isInUse && !selected && a.Lease != nil && !a.Lease.Mine {
+		name = dimStyle.Render(name)
+	}
 	nameW := lipgloss.Width(name)
 	gap := innerW - 3 - nameW - suffixW
 	if gap < 1 {
