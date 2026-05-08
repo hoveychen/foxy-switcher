@@ -634,9 +634,13 @@ input {
 
 .account-card-head {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
+  /* Reserve room for the absolutely-positioned kebab in grid mode (cards
+     get position: relative; kebab sits top-right). List mode overrides
+     this and lets the kebab flow as a flex sibling instead. */
+  padding-right: 28px;
 }
 
 .account-card-title {
@@ -659,19 +663,47 @@ input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.account-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 2px;
 }
 
 .account-card-owner {
-  margin-top: 2px;
   font-size: 11.5px;
   color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .account-card-plan {
-  align-self: center;
+  flex-shrink: 0;
+  font-size: 10.5px;
+}
+
+/* Kebab is hoisted out of .account-card-head so list mode can park it at
+   the row's far right. In grid mode the card's position: relative anchors
+   it absolutely in the top-right corner, and .account-card-head reserves
+   padding-right so the title line never runs under it. */
+.account-card > .kebab {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+/* When the menu is open, lift the whole card so it stacks above later
+   sibling cards (which would otherwise paint over the dropdown because
+   each card is position: relative without an explicit z-index). */
+.account-card:has(.kebab-menu) {
+  z-index: 50;
 }
 
 .account-card-usage {
@@ -721,10 +753,11 @@ input {
 .mode-list .account-card-head {
   flex: 1 1 auto;
   min-width: 0;
-  /* Keep the 5-col template from card mode but tighten gap; plan + kebab
-     stay inside the head grid (they were getting bumped to a 2nd row when
-     the template only had 3 cols). */
   gap: var(--space-3);
+  /* Grid mode reserves right padding for the absolutely-positioned kebab;
+     in list mode the kebab is a sibling at row-end, so head doesn't need
+     that buffer. */
+  padding-right: 0;
 }
 
 .mode-list .account-card-title {
@@ -739,13 +772,13 @@ input {
   min-width: 0;
 }
 
-.mode-list .account-card-owner {
+.mode-list .account-card-meta {
   margin-top: 0;
   flex: 0 1 auto;
   min-width: 0;
 }
 
-.mode-list .account-card-owner::before {
+.mode-list .account-card-meta::before {
   content: "·";
   margin-right: var(--space-3);
   color: var(--text-tertiary);
@@ -755,6 +788,16 @@ input {
   flex-direction: row;
   flex: 0 0 auto;
   gap: var(--space-6);
+}
+
+/* In list mode the kebab is the row's last flex sibling — drop the
+   grid-mode absolute placement so it flows inline at far-right. */
+.mode-list .account-card > .kebab {
+  position: relative;
+  top: auto;
+  right: auto;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .mode-list .account-card-usage .usage-row-compact {

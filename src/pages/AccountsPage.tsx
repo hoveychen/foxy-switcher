@@ -309,43 +309,17 @@ function AccountCard({
                   </>
                 )}
           </div>
-          {ownerLine && (
-            <div className="account-card-owner">{ownerLine}</div>
+          {(ownerLine || a.plan) && (
+            <div className="account-card-meta">
+              {ownerLine && (
+                <span className="account-card-owner">{ownerLine}</span>
+              )}
+              {a.plan && (
+                <span className="pill account-card-plan">{a.plan}</span>
+              )}
+            </div>
           )}
         </div>
-        {a.plan && <span className="pill account-card-plan">{a.plan}</span>}
-        <KebabMenu
-          busy={busy}
-          items={[
-            {
-              label: fLease
-                ? t("accounts.kebab.leased_by_other")
-                : isInUse
-                  ? t("accounts.kebab.in_use")
-                  : t("accounts.kebab.use_now"),
-              onClick: onUseNow,
-              disabled: isInUse || !isSelectable(a),
-            },
-            { label: t("accounts.kebab.refresh"), onClick: onRefresh },
-            // Pause/Resume + Delete write to vault state, hidden in
-            // agent mode (admin lives on the vault web UI).
-            ...(disableAdminActions
-              ? []
-              : [
-                  {
-                    label: paused
-                      ? t("accounts.kebab.resume")
-                      : t("accounts.kebab.pause"),
-                    onClick: onTogglePause,
-                  },
-                  {
-                    label: t("accounts.kebab.delete"),
-                    onClick: onDelete,
-                    danger: true,
-                  },
-                ]),
-          ]}
-        />
       </div>
       <div className="account-card-usage">
         <UsageMiniBar label={t("drawer.usage.5h")} win={a.five_hour} />
@@ -355,6 +329,38 @@ function AccountCard({
           win={a.seven_day_sonnet}
         />
       </div>
+      <KebabMenu
+        busy={busy}
+        items={[
+          {
+            label: fLease
+              ? t("accounts.kebab.leased_by_other")
+              : isInUse
+                ? t("accounts.kebab.in_use")
+                : t("accounts.kebab.use_now"),
+            onClick: onUseNow,
+            disabled: isInUse || !isSelectable(a),
+          },
+          { label: t("accounts.kebab.refresh"), onClick: onRefresh },
+          // Pause/Resume + Delete write to vault state, hidden in
+          // agent mode (admin lives on the vault web UI).
+          ...(disableAdminActions
+            ? []
+            : [
+                {
+                  label: paused
+                    ? t("accounts.kebab.resume")
+                    : t("accounts.kebab.pause"),
+                  onClick: onTogglePause,
+                },
+                {
+                  label: t("accounts.kebab.delete"),
+                  onClick: onDelete,
+                  danger: true,
+                },
+              ]),
+        ]}
+      />
     </div>
   );
 }
@@ -379,7 +385,6 @@ function SkeletonCard() {
         <div className="account-card-title">
           <span className="sk-bar sk-bar-name" />
         </div>
-        <span className="sk-bar sk-bar-pct" aria-hidden />
       </div>
       <div className="account-card-usage">
         {skRow}
