@@ -208,7 +208,7 @@ export function DashboardPage({
 
         <div className="dash-stack">
           {vaultMode ? (
-            <VaultInUseCard accounts={leasedAccounts} nowMs={nowMs} />
+            <VaultInUseCard accounts={leasedAccounts} />
           ) : active ? (
             <HeroCard
               account={active}
@@ -219,7 +219,7 @@ export function DashboardPage({
             <HeroEmpty onAdd={() => onNavigate("accounts")} />
           )}
 
-          {!vaultMode && <OthersInUse accounts={accounts} nowMs={nowMs} />}
+          {!vaultMode && <OthersInUse accounts={accounts} />}
 
 
           <div className="kpi-grid">
@@ -486,16 +486,10 @@ function HeroUsageBar({
 // VaultInUseCard is the dashboard hero for the vault admin web view.
 // The agent-singular HeroCard ("Managing X") doesn't fit a multi-device
 // admin context — there is no caller-side "current" account — so vault
-// mode swaps it for a list of every live lease (account · device · time
-// remaining). Empty state nudges the admin that nobody is using the pool
-// right now, instead of the misleading "Idle" chip on the agent path.
-function VaultInUseCard({
-  accounts,
-  nowMs,
-}: {
-  accounts: Account[];
-  nowMs: number;
-}) {
+// mode swaps it for a list of every live lease (account · device).
+// Empty state nudges the admin that nobody is using the pool right now,
+// instead of the misleading "Idle" chip on the agent path.
+function VaultInUseCard({ accounts }: { accounts: Account[] }) {
   if (accounts.length === 0) {
     return (
       <section className="dash-others-in-use">
@@ -512,22 +506,11 @@ function VaultInUseCard({
       <div className="dash-others-list">
         {accounts.map((a) => {
           const lease = a.lease!;
-          const remaining = lease.expires_at - nowMs;
           return (
             <div key={a.id} className="pill leased-pill" title={a.email || ""}>
               <strong>{a.name}</strong>
               <span> · </span>
               <span>{lease.device_name || lease.device_id || "—"}</span>
-              {remaining > 0 && (
-                <>
-                  <span> · </span>
-                  <span>
-                    {tf("accounts.badge.expires_in", {
-                      time: fmtRemaining(remaining),
-                    })}
-                  </span>
-                </>
-              )}
             </div>
           );
         })}
@@ -541,13 +524,7 @@ function VaultInUseCard({
 // foreign leases exist; the existing HeroCard already covers the
 // caller's own injected account. Drives multi-device awareness without
 // duplicating the hero layout for each device.
-function OthersInUse({
-  accounts,
-  nowMs,
-}: {
-  accounts: Account[];
-  nowMs: number;
-}) {
+function OthersInUse({ accounts }: { accounts: Account[] }) {
   const others = accounts.filter((a) => a.lease && !a.lease.mine);
   if (others.length === 0) return null;
   return (
@@ -556,22 +533,11 @@ function OthersInUse({
       <div className="dash-others-list">
         {others.map((a) => {
           const lease = a.lease!;
-          const remaining = lease.expires_at - nowMs;
           return (
             <div key={a.id} className="pill leased-pill" title={a.email || ""}>
               <strong>{a.name}</strong>
               <span> · </span>
               <span>{lease.device_name || lease.device_id || "—"}</span>
-              {remaining > 0 && (
-                <>
-                  <span> · </span>
-                  <span>
-                    {tf("accounts.badge.expires_in", {
-                      time: fmtRemaining(remaining),
-                    })}
-                  </span>
-                </>
-              )}
             </div>
           );
         })}
@@ -786,12 +752,7 @@ function CompactRow({
           {a.plan && <span className="pill">{a.plan}</span>}
           {showActiveBadge && (
             vaultLease ? (
-              <span
-                className="pill leased-pill"
-                title={tf("accounts.badge.expires_in", {
-                  time: fmtRemaining(vaultLease.expires_at - nowMs),
-                })}
-              >
+              <span className="pill leased-pill">
                 {tf("accounts.badge.in_use_by", {
                   device:
                     vaultLease.device_name || vaultLease.device_id || "—",

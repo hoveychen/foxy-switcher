@@ -282,12 +282,7 @@ function AccountCard({
             )}
             {vaultMode
               ? vaultBadgeLease && (
-                  <span
-                    className="pill leased-pill"
-                    title={tf("accounts.badge.expires_in", {
-                      time: fmtRemaining(vaultBadgeLease.expires_at - nowMs),
-                    })}
-                  >
+                  <span className="pill leased-pill">
                     {tf("accounts.badge.in_use_by", {
                       device:
                         vaultBadgeLease.device_name ||
@@ -304,12 +299,7 @@ function AccountCard({
                       </span>
                     )}
                     {fLease && !isInUse && (
-                      <span
-                        className="pill leased-pill"
-                        title={tf("accounts.badge.expires_in", {
-                          time: fmtRemaining(fLease.expires_at - nowMs),
-                        })}
-                      >
+                      <span className="pill leased-pill">
                         {tf("accounts.badge.in_use_by", {
                           device:
                             fLease.device_name || fLease.device_id || "—",
