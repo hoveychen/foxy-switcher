@@ -307,17 +307,46 @@ func (p *dashboardPage) renderTrend() string {
 		chartW = 12
 	}
 
+	// fmtSuffix produces the trailing "cur 25% · peak 38%" chip. When we're on
+	// the legacy raw-Pro-equivalent fallback path (hasPct=false), the values
+	// aren't percentages, so we drop the % and just show the magnitudes —
+	// otherwise old daemons would render misleading "cur 9.8%".
+	pctTail := func(values []float64) string {
+		if len(values) == 0 {
+			return ""
+		}
+		cur := values[len(values)-1]
+		peak := 0.0
+		for _, v := range values {
+			if v > peak {
+				peak = v
+			}
+		}
+		fmtV := func(v float64) string {
+			if !hasPct {
+				return fmt.Sprintf("%.1f", v)
+			}
+			if v >= 10 || v == 0 {
+				return fmt.Sprintf("%.0f%%", v)
+			}
+			return fmt.Sprintf("%.1f%%", v)
+		}
+		return fmt.Sprintf("cur %s · peak %s", fmtV(cur), fmtV(peak))
+	}
+
 	rows := sparklineStacked(chartW, 8,
 		struct {
 			Label  string
 			Values []float64
 			Color  lipgloss.TerminalColor
-		}{"5h", five, accentBrand},
+			Suffix string
+		}{"5h", five, accentBrand, pctTail(five)},
 		struct {
 			Label  string
 			Values []float64
 			Color  lipgloss.TerminalColor
-		}{"7d", seven, tokenInfo},
+			Suffix string
+		}{"7d", seven, tokenInfo, pctTail(seven)},
 	)
 	return heading + "\n" + rows
 }

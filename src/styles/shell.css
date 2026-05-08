@@ -1539,3 +1539,57 @@
   fill: var(--text-tertiary);
   font-size: 10px;
 }
+
+.trend-axis-y {
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-axis-warn {
+  fill: var(--warn);
+}
+
+.trend-grid-baseline {
+  stroke: var(--separator);
+  stroke-dasharray: 0;
+  opacity: 0.6;
+}
+
+.trend-legend-text {
+  fill: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-cursor {
+  stroke: var(--separator);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+  pointer-events: none;
+}
+
+.trend-tooltip {
+  fill: var(--bg-card);
+  stroke: var(--separator);
+  stroke-width: 1;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.08));
+  pointer-events: none;
+}
+
+.trend-tooltip-time {
+  fill: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.trend-tooltip-row {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.trend-tooltip-five  { fill: var(--accent); }
+.trend-tooltip-seven { fill: var(--info); }
+
+.trend-chart {
+  cursor: crosshair;
+}

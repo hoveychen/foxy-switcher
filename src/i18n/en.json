@@ -107,6 +107,8 @@
   "dashboard.trend.legend.7d_sonnet": "7d Sonnet",
   "dashboard.trend.legend.5h_pool": "5h pool",
   "dashboard.trend.legend.7d_pool": "7d pool",
+  "dashboard.trend.current.row": "{label} {pct}%",
+  "dashboard.trend.tooltip.row": "{label} {pct}%",
   "dashboard.compact.active": "active",
   "dashboard.compact.paused": "paused",
   "dashboard.compact.token_expired": "token expired",

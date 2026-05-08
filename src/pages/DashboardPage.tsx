@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Topbar } from "../components/Topbar";
 import { FoxAvatar } from "../components/FoxAvatar";
 import {
@@ -607,10 +607,14 @@ function StaleDot() {
 // history. Inline SVG keeps the daemon dependency-light.
 function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   const W = 720;
-  const H = 160;
-  const PAD_X = 12;
-  const PAD_TOP = 8;
-  const PAD_BOTTOM = 20;
+  const H = 200;
+  const PAD_LEFT = 32;
+  const PAD_RIGHT = 12;
+  const PAD_TOP = 36;
+  const PAD_BOTTOM = 22;
+
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
 
   const hasData = trend.some(
     (b) => (b.five_hour_pct ?? 0) > 0 || (b.seven_day_pct ?? 0) > 0,
@@ -625,9 +629,10 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   }
 
   const n = trend.length;
-  const innerW = W - PAD_X * 2;
+  const innerW = W - PAD_LEFT - PAD_RIGHT;
   const innerH = H - PAD_TOP - PAD_BOTTOM;
-  const x = (i: number) => PAD_X + (n === 1 ? innerW / 2 : (i * innerW) / (n - 1));
+  const x = (i: number) =>
+    PAD_LEFT + (n === 1 ? innerW / 2 : (i * innerW) / (n - 1));
   // Pool pct is 0–100; clamp so spurious >100 (e.g. capacity briefly 0)
   // doesn't blow past the chart area.
   const y = (v: number) =>
@@ -638,35 +643,122 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
       .map((b, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(sel(b)).toFixed(1)}`)
       .join(" ");
 
-  // Hour labels at 0, 6, 12, 18, 24h-back markers.
-  const labelIdx = [0, Math.floor(n / 4), Math.floor(n / 2), Math.floor((3 * n) / 4), n - 1];
+  // fmtPct keeps small values readable (one decimal under 10) so 0.4% doesn't
+  // collapse to "0%" at a glance; large values stay integer for tidy chips.
+  const fmtPct = (v: number) => {
+    const c = Math.max(0, Math.min(100, v));
+    return c < 10 && c > 0 ? c.toFixed(1) : `${Math.round(c)}`;
+  };
+
   const fmtHour = (ts: number) => {
     const d = new Date(ts);
     return `${d.getHours().toString().padStart(2, "0")}:00`;
   };
 
+  // Hour labels at 0, 25%, 50%, 75%, 100% positions across the window.
+  const labelIdx = [0, Math.floor(n / 4), Math.floor(n / 2), Math.floor((3 * n) / 4), n - 1];
+
+  const last = trend[n - 1];
+  const cur5 = last.five_hour_pct ?? 0;
+  const cur7 = last.seven_day_pct ?? 0;
+
+  // mousemove → nearest bucket. We project the cursor into SVG-user space via
+  // getScreenCTM so the math stays correct under any container width / DPR.
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const local = pt.matrixTransform(ctm.inverse());
+    if (local.x < PAD_LEFT - 4 || local.x > W - PAD_RIGHT + 4) {
+      setHoverIdx(null);
+      return;
+    }
+    const ratio = (local.x - PAD_LEFT) / innerW;
+    let idx = Math.round(ratio * (n - 1));
+    if (idx < 0) idx = 0;
+    if (idx > n - 1) idx = n - 1;
+    setHoverIdx(idx);
+  };
+
+  // Tooltip layout: prefer right of the cursor, flip to the left when it would
+  // clip the chart's right edge. Fixed dimensions keep the rect/text aligned
+  // without needing post-render measurement.
+  const TT_W = 150;
+  const TT_H = 64;
+  let tooltip: JSX.Element | null = null;
+  if (hoverIdx !== null) {
+    const b = trend[hoverIdx];
+    const v5 = b.five_hour_pct ?? 0;
+    const v7 = b.seven_day_pct ?? 0;
+    const cx = x(hoverIdx);
+    let tx = cx + 10;
+    if (tx + TT_W > W - PAD_RIGHT) tx = cx - 10 - TT_W;
+    if (tx < PAD_LEFT) tx = PAD_LEFT;
+    const ty = PAD_TOP - 4;
+    tooltip = (
+      <g className="trend-cursor-group">
+        <line
+          x1={cx}
+          x2={cx}
+          y1={PAD_TOP}
+          y2={H - PAD_BOTTOM}
+          className="trend-cursor"
+        />
+        <circle cx={cx} cy={y(v5)} r={4} className="trend-dot trend-five" />
+        <circle cx={cx} cy={y(v7)} r={4} className="trend-dot trend-seven" />
+        <rect
+          x={tx}
+          y={ty}
+          width={TT_W}
+          height={TT_H}
+          rx={6}
+          className="trend-tooltip"
+        />
+        <text x={tx + 10} y={ty + 18} className="trend-tooltip-time">
+          {fmtHour(b.ts)}
+        </text>
+        <text x={tx + 10} y={ty + 38} className="trend-tooltip-row trend-tooltip-five">
+          {tf("dashboard.trend.tooltip.row", {
+            label: t("dashboard.trend.legend.5h_pool"),
+            pct: fmtPct(v5),
+          })}
+        </text>
+        <text x={tx + 10} y={ty + 56} className="trend-tooltip-row trend-tooltip-seven">
+          {tf("dashboard.trend.tooltip.row", {
+            label: t("dashboard.trend.legend.7d_pool"),
+            pct: fmtPct(v7),
+          })}
+        </text>
+      </g>
+    );
+  }
+
   return (
     <svg
+      ref={svgRef}
       className="trend-chart"
       viewBox={`0 0 ${W} ${H}`}
       role="img"
       aria-label={t("dashboard.trend.aria")}
+      onMouseMove={onMove}
+      onMouseLeave={() => setHoverIdx(null)}
     >
+      {/* Y-axis labels — anchor to the left padding so 0/50/90/100 line up
+          with the gridlines they describe. 90 is colored to match the warn
+          band so the user knows which line is the threshold. */}
+      <text x={PAD_LEFT - 6} y={y(100) + 3} textAnchor="end" className="trend-axis trend-axis-y">100</text>
+      <text x={PAD_LEFT - 6} y={y(90) + 3} textAnchor="end" className="trend-axis trend-axis-y trend-axis-warn">90</text>
+      <text x={PAD_LEFT - 6} y={y(50) + 3} textAnchor="end" className="trend-axis trend-axis-y">50</text>
+      <text x={PAD_LEFT - 6} y={y(0) + 3} textAnchor="end" className="trend-axis trend-axis-y">0</text>
+
       {/* Reference grid at 50% and 90% (the threshold band). */}
-      <line
-        x1={PAD_X}
-        x2={W - PAD_X}
-        y1={y(50)}
-        y2={y(50)}
-        className="trend-grid"
-      />
-      <line
-        x1={PAD_X}
-        x2={W - PAD_X}
-        y1={y(90)}
-        y2={y(90)}
-        className="trend-grid trend-grid-warn"
-      />
+      <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(0)} y2={y(0)} className="trend-grid trend-grid-baseline" />
+      <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(50)} y2={y(50)} className="trend-grid" />
+      <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(90)} y2={y(90)} className="trend-grid trend-grid-warn" />
 
       <path
         className="trend-line trend-five"
@@ -677,11 +769,15 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
         d={path((b) => b.seven_day_pct ?? 0)}
       />
 
+      {/* End-of-series dots — anchor the eye to "what's the current value". */}
+      <circle cx={x(n - 1)} cy={y(cur5)} r={3.5} className="trend-dot trend-five" />
+      <circle cx={x(n - 1)} cy={y(cur7)} r={3.5} className="trend-dot trend-seven" />
+
       {labelIdx.map((i) => (
         <text
           key={i}
           x={x(i)}
-          y={H - 4}
+          y={H - 6}
           textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
           className="trend-axis"
         >
@@ -689,13 +785,26 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
         </text>
       ))}
 
-      {/* Legend dots — relative to top-right corner. */}
+      {/* Legend now carries the live "current value" — answers "我池子现在用了多少"
+          without needing the user to hover. */}
       <g className="trend-legend">
-        <circle cx={PAD_X + 6} cy={PAD_TOP + 4} r={3} className="trend-dot trend-five" />
-        <text x={PAD_X + 14} y={PAD_TOP + 8} className="trend-axis">{t("dashboard.trend.legend.5h_pool")}</text>
-        <circle cx={PAD_X + 60} cy={PAD_TOP + 4} r={3} className="trend-dot trend-seven" />
-        <text x={PAD_X + 68} y={PAD_TOP + 8} className="trend-axis">{t("dashboard.trend.legend.7d_pool")}</text>
+        <circle cx={PAD_LEFT + 4} cy={PAD_TOP - 16} r={3} className="trend-dot trend-five" />
+        <text x={PAD_LEFT + 12} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
+          {tf("dashboard.trend.current.row", {
+            label: t("dashboard.trend.legend.5h_pool"),
+            pct: fmtPct(cur5),
+          })}
+        </text>
+        <circle cx={PAD_LEFT + 124} cy={PAD_TOP - 16} r={3} className="trend-dot trend-seven" />
+        <text x={PAD_LEFT + 132} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
+          {tf("dashboard.trend.current.row", {
+            label: t("dashboard.trend.legend.7d_pool"),
+            pct: fmtPct(cur7),
+          })}
+        </text>
       </g>
+
+      {tooltip}
     </svg>
   );
 }

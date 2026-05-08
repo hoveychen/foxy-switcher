@@ -82,11 +82,15 @@ func sparkline(values []float64, max float64, width int) string {
 // sparklineStacked overlays three sparklines on the same row, drawing each
 // in its own color so the user can tell which window is hot. The output is
 // a `len(rows)`-line block where rows[i] is the labeled sparkline for
-// series[i]. Each row is exactly `labelW + width + 2` cells wide.
+// series[i]. Each row is at least `labelW + width + 2` cells wide; if a row
+// supplies a non-empty Suffix, it is appended after a single space — used
+// for the "cur 25% · peak 38%" tail on the dashboard so users get an actual
+// number alongside the silhouette.
 func sparklineStacked(width, labelW int, series ...struct {
 	Label  string
 	Values []float64
 	Color  lipgloss.TerminalColor
+	Suffix string
 }) string {
 	if width <= 0 || len(series) == 0 {
 		return ""
@@ -98,7 +102,11 @@ func sparklineStacked(width, labelW int, series ...struct {
 		spark := sparklineColored(s.Values, 0, width, s.Color)
 		label := lipgloss.NewStyle().Foreground(s.Color).Render(s.Label)
 		label = padRight(label, labelW)
-		lines = append(lines, label+" "+spark)
+		row := label + " " + spark
+		if s.Suffix != "" {
+			row += "  " + dimStyle.Render(s.Suffix)
+		}
+		lines = append(lines, row)
 	}
 	return strings.Join(lines, "\n")
 }
