@@ -579,6 +579,7 @@ export default function App() {
           onAutoSwitchToggle={isVaultOnly ? undefined : onAutoSwitchToggle}
           recentEvents={recentEvents}
           stale={!daemonOk}
+          vaultMode={isVaultOnly}
         />
       )}
       {route === "accounts" && (
@@ -601,6 +602,7 @@ export default function App() {
           onError={setError}
           stale={!daemonOk}
           disableAdminActions={disableAdminActions}
+          vaultMode={isVaultOnly}
         />
       )}
       {route === "activity" && (

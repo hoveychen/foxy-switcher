@@ -88,6 +88,7 @@ export function DashboardPage({
   onAutoSwitchToggle,
   recentEvents,
   stale,
+  vaultMode = false,
 }: {
   accounts: Account[];
   managedAccountId: number;
@@ -97,8 +98,12 @@ export function DashboardPage({
   onAutoSwitchToggle?: () => void;
   recentEvents: ActivityEvent[];
   stale: boolean;
+  // Vault mode → render the multi-device admin surface: drop the
+  // agent-singular hero/topbar and surface every active lease instead.
+  vaultMode?: boolean;
 }) {
   const active = accounts.find((a) => a.id === managedAccountId) ?? null;
+  const leasedAccounts = accounts.filter((a) => !!a.lease);
   const greet = greeting(new Date(nowMs));
   const firstName = active?.full_name?.split(" ")[0];
 
@@ -163,15 +168,26 @@ export function DashboardPage({
     })
     .slice(0, 5);
 
+  const topbarStatus = vaultMode
+    ? {
+        label: tf("dashboard.status.summary", {
+          total: accounts.length,
+          inUse: leasedAccounts.length,
+        }),
+        tone: "muted" as const,
+      }
+    : active
+      ? {
+          label: tf("dashboard.status.managing", { name: active.name }),
+          tone: "ok" as const,
+        }
+      : { label: t("dashboard.status.idle"), tone: "muted" as const };
+
   return (
     <>
       <Topbar
         title={t("dashboard.title")}
-        status={
-          active
-            ? { label: tf("dashboard.status.managing", { name: active.name }), tone: "ok" }
-            : { label: t("dashboard.status.idle"), tone: "muted" }
-        }
+        status={topbarStatus}
         autoSwitch={autoSwitch}
         onAutoSwitchToggle={onAutoSwitchToggle}
       />
@@ -191,7 +207,9 @@ export function DashboardPage({
         </div>
 
         <div className="dash-stack">
-          {active ? (
+          {vaultMode ? (
+            <VaultInUseCard accounts={leasedAccounts} nowMs={nowMs} />
+          ) : active ? (
             <HeroCard
               account={active}
               nowMs={nowMs}
@@ -201,7 +219,7 @@ export function DashboardPage({
             <HeroEmpty onAdd={() => onNavigate("accounts")} />
           )}
 
-          <OthersInUse accounts={accounts} nowMs={nowMs} />
+          {!vaultMode && <OthersInUse accounts={accounts} nowMs={nowMs} />}
 
 
           <div className="kpi-grid">
@@ -374,6 +392,7 @@ export function DashboardPage({
                     a={a}
                     nowMs={nowMs}
                     isActive={a.id === managedAccountId}
+                    vaultMode={vaultMode}
                   />
                 ))}
               </div>
@@ -461,6 +480,59 @@ function HeroUsageBar({
       <span className="usage-pct">{pct.toFixed(0)}%</span>
       <span className="usage-resets">{fmtResetsAt(win.resets_at, nowMs)}</span>
     </div>
+  );
+}
+
+// VaultInUseCard is the dashboard hero for the vault admin web view.
+// The agent-singular HeroCard ("Managing X") doesn't fit a multi-device
+// admin context — there is no caller-side "current" account — so vault
+// mode swaps it for a list of every live lease (account · device · time
+// remaining). Empty state nudges the admin that nobody is using the pool
+// right now, instead of the misleading "Idle" chip on the agent path.
+function VaultInUseCard({
+  accounts,
+  nowMs,
+}: {
+  accounts: Account[];
+  nowMs: number;
+}) {
+  if (accounts.length === 0) {
+    return (
+      <section className="dash-others-in-use">
+        <div className="dash-hero-eyebrow">
+          {t("dashboard.vault.in_use_title")}
+        </div>
+        <p className="text-meta">{t("dashboard.vault.in_use_empty")}</p>
+      </section>
+    );
+  }
+  return (
+    <section className="dash-others-in-use">
+      <div className="dash-hero-eyebrow">{t("dashboard.vault.in_use_title")}</div>
+      <div className="dash-others-list">
+        {accounts.map((a) => {
+          const lease = a.lease!;
+          const remaining = lease.expires_at - nowMs;
+          return (
+            <div key={a.id} className="pill leased-pill" title={a.email || ""}>
+              <strong>{a.name}</strong>
+              <span> · </span>
+              <span>{lease.device_name || lease.device_id || "—"}</span>
+              {remaining > 0 && (
+                <>
+                  <span> · </span>
+                  <span>
+                    {tf("accounts.badge.expires_in", {
+                      time: fmtRemaining(remaining),
+                    })}
+                  </span>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -666,11 +738,19 @@ function CompactRow({
   a,
   nowMs,
   isActive,
+  vaultMode = false,
 }: {
   a: Account;
   nowMs: number;
   isActive: boolean;
+  // Vault mode → derive "in use" from a.lease and surface the device
+  // name; the agent-singular `isActive` (managedAccountId match) is a
+  // no-op here since the vault admin isn't a lease holder.
+  vaultMode?: boolean;
 }) {
+  const vaultLease = vaultMode ? a.lease ?? null : null;
+  const showActiveBadge = vaultMode ? !!vaultLease : isActive;
+  const rowActive = vaultMode ? !!vaultLease : isActive;
   const peak = peakUtilization(a);
   let statusTone: Tone = "ok";
   let statusText = t("dashboard.compact.active");
@@ -692,7 +772,7 @@ function CompactRow({
   }
 
   return (
-    <div className={`compact-row ${isActive ? "active" : ""}`}>
+    <div className={`compact-row ${rowActive ? "active" : ""}`}>
       <span className="compact-avatar-wrap">
         <FoxAvatar name={a.name} size={32} />
         <span
@@ -704,7 +784,25 @@ function CompactRow({
         <div className="compact-title">
           <span className="name">{a.name}</span>
           {a.plan && <span className="pill">{a.plan}</span>}
-          {isActive && <span className="pill active-pill">{t("dashboard.hero.in_use")}</span>}
+          {showActiveBadge && (
+            vaultLease ? (
+              <span
+                className="pill leased-pill"
+                title={tf("accounts.badge.expires_in", {
+                  time: fmtRemaining(vaultLease.expires_at - nowMs),
+                })}
+              >
+                {tf("accounts.badge.in_use_by", {
+                  device:
+                    vaultLease.device_name || vaultLease.device_id || "—",
+                })}
+              </span>
+            ) : (
+              <span className="pill active-pill">
+                {t("dashboard.hero.in_use")}
+              </span>
+            )
+          )}
         </div>
         <div className="compact-sub text-meta">{statusText}</div>
       </div>

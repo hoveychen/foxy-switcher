@@ -214,6 +214,7 @@ function AccountCard({
   nowMs,
   isInUse,
   isSelected,
+  vaultMode,
   onClickCard,
   onUseNow,
   onRefresh,
@@ -226,6 +227,7 @@ function AccountCard({
   nowMs: number;
   isInUse: boolean;
   isSelected: boolean;
+  vaultMode: boolean;
   onClickCard: () => void;
   onUseNow: () => void;
   onRefresh: () => void;
@@ -241,11 +243,18 @@ function AccountCard({
       ? `${a.full_name} · ${a.email}`
       : a.email || a.full_name || "";
 
+  // Vault mode renders one combined "in use by Device X" badge for any
+  // live lease — the page is the multi-device admin surface, so the
+  // agent-singular "this is mine" branch (active-pill, no device name)
+  // would just hide which device is holding what. The agent/desktop
+  // viewer keeps the legacy split because there only one lease can be
+  // "mine" at a time and the device name is implicit.
   const fLease = foreignLease(a);
+  const vaultBadgeLease = vaultMode ? a.lease ?? null : null;
   return (
     <div
       className={`account-card ${isSelected ? "selected" : ""} ${
-        isInUse ? "active" : ""
+        isInUse && !vaultMode ? "active" : ""
       } ${fLease ? "leased-foreign" : ""}`}
       onClick={onClickCard}
       role="button"
@@ -264,23 +273,44 @@ function AccountCard({
         <div className="account-card-title">
           <div className="account-card-title-line">
             <span className="name">{a.name}</span>
-            {isInUse && (
-              <span className="pill active-pill">
-                {t("accounts.row.in_use")}
-              </span>
-            )}
-            {fLease && !isInUse && (
-              <span
-                className="pill leased-pill"
-                title={tf("accounts.badge.expires_in", {
-                  time: fmtRemaining(fLease.expires_at - nowMs),
-                })}
-              >
-                {tf("accounts.badge.in_use_by", {
-                  device: fLease.device_name || fLease.device_id || "—",
-                })}
-              </span>
-            )}
+            {vaultMode
+              ? vaultBadgeLease && (
+                  <span
+                    className="pill leased-pill"
+                    title={tf("accounts.badge.expires_in", {
+                      time: fmtRemaining(vaultBadgeLease.expires_at - nowMs),
+                    })}
+                  >
+                    {tf("accounts.badge.in_use_by", {
+                      device:
+                        vaultBadgeLease.device_name ||
+                        vaultBadgeLease.device_id ||
+                        "—",
+                    })}
+                  </span>
+                )
+              : (
+                  <>
+                    {isInUse && (
+                      <span className="pill active-pill">
+                        {t("accounts.row.in_use")}
+                      </span>
+                    )}
+                    {fLease && !isInUse && (
+                      <span
+                        className="pill leased-pill"
+                        title={tf("accounts.badge.expires_in", {
+                          time: fmtRemaining(fLease.expires_at - nowMs),
+                        })}
+                      >
+                        {tf("accounts.badge.in_use_by", {
+                          device:
+                            fLease.device_name || fLease.device_id || "—",
+                        })}
+                      </span>
+                    )}
+                  </>
+                )}
           </div>
           {ownerLine && (
             <div className="account-card-owner">{ownerLine}</div>
@@ -382,6 +412,7 @@ export function AccountsPage({
   onError,
   stale,
   disableAdminActions = false,
+  vaultMode = false,
 }: {
   accounts: Account[];
   managedAccountId: number;
@@ -404,6 +435,10 @@ export function AccountsPage({
   // UI on this page so the user isn't led to operations the agent will
   // 405. Currently driven by `about.mode === "agent"` from /api/about.
   disableAdminActions?: boolean;
+  // Vault mode → the page is the multi-device admin surface, so swap the
+  // agent-singular "Managing X" topbar status and active-pill badge for a
+  // multi-device summary + per-card lease.device_name badge.
+  vaultMode?: boolean;
 }) {
   const [loginState, setLoginState] = useState<LoginState>({ phase: "idle" });
   const [pasted, setPasted] = useState("");
@@ -499,15 +534,34 @@ export function AccountsPage({
     setLoginState({ phase: "idle" });
   }, [pasted, submitting]);
 
+  // In vault mode the topbar describes the multi-device pool — there is no
+  // single "managed" account from the admin's perspective. Counts come from
+  // the same accounts list the cards render off, so the header stays in sync
+  // with what the user is looking at without an extra round-trip.
+  const inUseCount = useMemo(
+    () => accounts.filter((a) => !!a.lease).length,
+    [accounts],
+  );
+  const topbarStatus = vaultMode
+    ? {
+        label: tf("accounts.status.summary", {
+          total: accounts.length,
+          inUse: inUseCount,
+        }),
+        tone: "muted" as const,
+      }
+    : activeAccount
+      ? {
+          label: tf("accounts.status.managing", { name: activeAccount.name }),
+          tone: "ok" as const,
+        }
+      : { label: t("accounts.status.idle"), tone: "muted" as const };
+
   return (
     <>
       <Topbar
         title={t("accounts.title")}
-        status={
-          activeAccount
-            ? { label: tf("accounts.status.managing", { name: activeAccount.name }), tone: "ok" }
-            : { label: t("accounts.status.idle"), tone: "muted" }
-        }
+        status={topbarStatus}
         autoSwitch={autoSwitch}
         onAutoSwitchToggle={onAutoSwitchToggle}
         actions={
@@ -595,7 +649,7 @@ export function AccountsPage({
               {accounts.length === 0
                 ? t("accounts.section.empty")
                 : filtered.length === accounts.length
-                  ? activeAccount
+                  ? !vaultMode && activeAccount
                     ? tf("accounts.section.total_one_active", { total: accounts.length })
                     : tf("accounts.section.total", { total: accounts.length })
                   : tf("accounts.section.filtered", {
@@ -647,6 +701,7 @@ export function AccountsPage({
                   nowMs={nowMs}
                   isInUse={a.id === managedAccountId}
                   isSelected={a.id === selectedAccountId}
+                  vaultMode={vaultMode}
                   onClickCard={() =>
                     onSelectRow(selectedAccountId === a.id ? null : a.id)
                   }
