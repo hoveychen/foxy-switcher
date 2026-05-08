@@ -322,6 +322,8 @@
   "settings.stepper.increase": "增加",
 
   "drawer.identity.in_use": "使用中",
+  "drawer.identity.leased_by": "被 {device} 占用 · {remaining}",
+  "drawer.actions.leased_by_other": "已被其他设备占用",
   "drawer.actions.in_use": "使用中",
   "drawer.actions.use_now": "立即使用",
   "drawer.actions.switching": "切换中…",
@@ -353,6 +355,7 @@
   "drawer.status.cooling_no_reset": "冷却中",
   "drawer.status.refresh_due": "需要刷新",
   "drawer.status.active": "活跃",
+  "drawer.status.leased_by_other": "被 {device} 占用 · {remaining}",
   "drawer.fmt.expired": "已过期",
 
   "modal.close": "关闭",
@@ -382,6 +385,10 @@
 
   "app.delete_account.prompt": "从池中删除此账号？",
   "app.delete_account.title": "确认删除",
+  "app.foreign_lease.delete.title": "对方正在使用",
+  "app.foreign_lease.delete.prompt": "{device} 正在使用此账号。删除会立刻终止对方会话（401 错误）。继续？",
+  "app.foreign_lease.pause.title": "对方正在使用",
+  "app.foreign_lease.pause.prompt": "{device} 正在使用此账号。暂停会驱逐对方 lease 并打断 CC 会话。继续？",
   "app.error.restart_failed": "重启失败：{error}",
 
   "admin.brand": "Foxy Vault",

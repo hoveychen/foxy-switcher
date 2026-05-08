@@ -250,6 +250,7 @@ function AccountCard({
   // viewer keeps the legacy split because there only one lease can be
   // "mine" at a time and the device name is implicit.
   const fLease = foreignLease(a);
+  const cardForeign = !!fLease;
   const vaultBadgeLease = vaultMode ? a.lease ?? null : null;
   return (
     <div
@@ -341,7 +342,18 @@ function AccountCard({
             onClick: onUseNow,
             disabled: isInUse || !isSelectable(a),
           },
-          { label: t("accounts.kebab.refresh"), onClick: onRefresh },
+          // Refresh is hidden in agent mode (cloud vault owns token
+          // rotation). Disabled when another device holds the lease so
+          // we don't 401 their live CC session.
+          ...(disableAdminActions
+            ? []
+            : [
+                {
+                  label: t("accounts.kebab.refresh"),
+                  onClick: onRefresh,
+                  disabled: cardForeign,
+                },
+              ]),
           // Pause/Resume + Delete write to vault state, hidden in
           // agent mode (admin lives on the vault web UI).
           ...(disableAdminActions

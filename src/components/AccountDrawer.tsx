@@ -26,6 +26,18 @@ function fmtResetsAt(rfc3339: string, nowMs: number): string {
 }
 
 function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
+  // Foreign lease wins over other "healthy" statuses — saying "active"
+  // when another device is actually holding it would contradict the
+  // leased-pill rendered above and confuse the user.
+  if (a.lease && !a.lease.mine) {
+    return {
+      text: tf("drawer.status.leased_by_other", {
+        device: a.lease.device_name || a.lease.device_id || "—",
+        remaining: fmtRemaining(a.lease.expires_at - nowMs),
+      }),
+      tone: "muted",
+    };
+  }
   if (a.status !== "active") return { text: t("drawer.status.paused"), tone: "muted" };
   if (a.token_expired) return { text: t("drawer.status.token_expired"), tone: "danger" };
   if (accountIsCooling(a)) {
@@ -45,9 +57,17 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
 }
 
 function isSelectable(a: Account): boolean {
+  // Foreign-leased accounts hit the leases_account_id_uniq index → 409 on
+  // AcquireLease. Mirror AccountsPage so the drawer's primary button is
+  // disabled instead of letting the user trigger an error toast.
+  if (a.lease && !a.lease.mine) return false;
   return (
     a.status === "active" && !a.token_expired && !accountIsCooling(a)
   );
+}
+
+function foreignLease(a: Account) {
+  return a.lease && !a.lease.mine ? a.lease : null;
 }
 
 function utilizationTone(pct: number): Tone {
@@ -186,6 +206,7 @@ export function AccountDrawer({
 }) {
   const status = rowStatus(account, nowMs);
   const paused = account.status !== "active";
+  const fLease = foreignLease(account);
 
   const commit = (
     which: "five_hour" | "seven_day" | "seven_day_sonnet",
@@ -212,6 +233,14 @@ export function AccountDrawer({
             )}
             {account.plan && <span className="pill">{account.plan}</span>}
             {isInUse && <span className="pill active-pill">{t("drawer.identity.in_use")}</span>}
+            {fLease && !isInUse && (
+              <span className="pill leased-pill">
+                {tf("drawer.identity.leased_by", {
+                  device: fLease.device_name || fLease.device_id || "—",
+                  remaining: fmtRemaining(fLease.expires_at - nowMs),
+                })}
+              </span>
+            )}
           </div>
           {account.email && (
             <div className="text-meta">{account.email}</div>
@@ -238,20 +267,29 @@ export function AccountDrawer({
                 <span className="spinner" aria-hidden />
                 {t("drawer.actions.switching")}
               </>
+            ) : fLease ? (
+              t("drawer.actions.leased_by_other")
             ) : isInUse ? (
               t("drawer.actions.in_use")
             ) : (
               t("drawer.actions.use_now")
             )}
           </button>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={onRefresh}
-            disabled={busy}
-          >
-            {t("drawer.actions.refresh")}
-          </button>
+          {/* Refresh is hidden in agent mode — the cloud vault owns
+              token rotation; surfacing the button here would be a
+              foot-gun (no-op or 405 depending on whitelist). Also
+              disabled when another device holds the lease, so we
+              don't 401 their live CC session. */}
+          {!disableAdminActions && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onRefresh}
+              disabled={busy || !!fLease}
+            >
+              {t("drawer.actions.refresh")}
+            </button>
+          )}
           {!disableAdminActions && (
             <>
               <button

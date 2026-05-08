@@ -322,6 +322,8 @@
   "settings.stepper.increase": "Increase",
 
   "drawer.identity.in_use": "In use",
+  "drawer.identity.leased_by": "In use by {device} · {remaining} left",
+  "drawer.actions.leased_by_other": "Held by another device",
   "drawer.actions.in_use": "In use",
   "drawer.actions.use_now": "Use now",
   "drawer.actions.switching": "Switching…",
@@ -353,6 +355,7 @@
   "drawer.status.cooling_no_reset": "cooling",
   "drawer.status.refresh_due": "refresh due",
   "drawer.status.active": "active",
+  "drawer.status.leased_by_other": "in use by {device} · {remaining} left",
   "drawer.fmt.expired": "expired",
 
   "modal.close": "Close",
@@ -382,6 +385,10 @@
 
   "app.delete_account.prompt": "Delete this account from the pool?",
   "app.delete_account.title": "Confirm delete",
+  "app.foreign_lease.delete.title": "Account is in use",
+  "app.foreign_lease.delete.prompt": "{device} is currently using this account. Deleting will end their session (401). Continue?",
+  "app.foreign_lease.pause.title": "Account is in use",
+  "app.foreign_lease.pause.prompt": "{device} is currently using this account. Pausing will evict their lease and break their CC session. Continue?",
   "app.error.restart_failed": "Restart failed: {error}",
 
   "admin.brand": "Foxy Vault",

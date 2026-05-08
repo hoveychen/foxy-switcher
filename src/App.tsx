@@ -31,6 +31,18 @@ import { t, tf } from "./i18n";
 
 const ONBOARDING_SEEN_KEY = "foxy.onboarding.seen.v1";
 
+// Tauri's ask() throws in the browser (no IPC), so anywhere this
+// shared App.tsx runs in vault web (browser) we'd silently get
+// `undefined → falsy` and the user's intent would be dropped. Fall
+// back to window.confirm() in that path.
+async function confirmAction(message: string, title: string): Promise<boolean> {
+  if (isTauriHost()) {
+    return ask(message, { title, kind: "warning" });
+  }
+  if (typeof window === "undefined" || !window.confirm) return false;
+  return window.confirm(`${title}\n\n${message}`);
+}
+
 // ROUTE_KEYS lists every route the in-app navigation surfaces — the
 // native menu's "menu:navigate" event payload validates against this
 // list. Admin routes (devices/pair/password) are included so a deep
@@ -360,8 +372,24 @@ export default function App() {
     [wrapAction],
   );
   const onTogglePause = useCallback(
-    (a: Account) =>
-      wrapAction(a.id, () => apiClient.setPaused(a.id, a.status === "active")),
+    async (a: Account) => {
+      // Going-to-pause on a foreign-leased account evicts the other
+      // device's lease and 401s their CC session. Resume is harmless
+      // (the other device still holds the lease), so only confirm
+      // when transitioning active → paused.
+      const goingToPause = a.status === "active";
+      const fLease = a.lease && !a.lease.mine ? a.lease : null;
+      if (goingToPause && fLease) {
+        const ok = await confirmAction(
+          tf("app.foreign_lease.pause.prompt", {
+            device: fLease.device_name || fLease.device_id || "—",
+          }),
+          t("app.foreign_lease.pause.title"),
+        );
+        if (!ok) return;
+      }
+      await wrapAction(a.id, () => apiClient.setPaused(a.id, goingToPause));
+    },
     [wrapAction],
   );
   const onSetThresholds = useCallback(
@@ -371,15 +399,26 @@ export default function App() {
   );
   const onDelete = useCallback(
     async (id: number) => {
-      const ok = await ask(t("app.delete_account.prompt"), {
-        title: t("app.delete_account.title"),
-        kind: "warning",
-      });
+      // Surface a sharper warning for foreign-leased accounts: deleting
+      // them yanks the row out from under the other device mid-session.
+      const target = accounts.find((a) => a.id === id);
+      const fLease = target?.lease && !target.lease.mine ? target.lease : null;
+      const ok = fLease
+        ? await confirmAction(
+            tf("app.foreign_lease.delete.prompt", {
+              device: fLease.device_name || fLease.device_id || "—",
+            }),
+            t("app.foreign_lease.delete.title"),
+          )
+        : await confirmAction(
+            t("app.delete_account.prompt"),
+            t("app.delete_account.title"),
+          );
       if (!ok) return;
       setSelectedAccountId((curr) => (curr === id ? null : curr));
       await wrapAction(id, () => apiClient.deleteAccount(id));
     },
-    [wrapAction],
+    [accounts, wrapAction],
   );
 
   const onAutoSwitchToggle = useCallback(() => {
