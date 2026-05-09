@@ -13,12 +13,14 @@
     "windows": [
       {
         "title": "FoxySwitcher",
-        "width": 760,
-        "height": 640,
+        "width": 1200,
+        "height": 800,
         "minWidth": 560,
         "minHeight": 420,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {

@@ -1593,3 +1593,72 @@
 .trend-chart {
   cursor: crosshair;
 }
+
+/* ─── Frameless Tauri window ───────────────────────────────
+   tauri.conf.json sets titleBarStyle:Overlay/hiddenTitle on macOS
+   and lib.rs runs decorations:false on Windows. The 28px strip
+   below is the only way the user can drag the window in either
+   path; html.tauri-host scopes everything so plain-browser hosts
+   (vault web UI) keep their normal layout. */
+
+.tauri-titlebar {
+  display: none;
+}
+
+html.tauri-host .tauri-titlebar {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  z-index: 100;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Push the brand below the macOS traffic lights (or the Windows
+   drag strip) so the Foxy Switcher mark is never half-occluded.
+   var(--space-5) is the existing 10px sidebar inset; +28px clears
+   the drag strip. */
+html.tauri-host .sidebar {
+  padding-top: calc(var(--space-5) + 28px);
+}
+
+/* The page topbar (52px) sits inside .app-main as a sticky
+   element. Bumping its sticky offset to 28px keeps it from
+   sliding under the drag strip on scroll, and the matching
+   .app-main padding-top puts it below the strip on first paint
+   too. */
+html.tauri-host .app-main {
+  padding-top: 28px;
+}
+
+html.tauri-host .topbar {
+  top: 28px;
+}
+
+/* Windows resize handles — invisible hit zones layered above the drag
+   strip (z-index 100) so the corners always win over drag. Hidden by
+   default; only visible inside a Tauri Windows host where lib.rs has
+   stripped native decorations. */
+.tauri-resize {
+  display: none;
+}
+
+html.tauri-host.os-windows .tauri-resize {
+  display: block;
+  position: fixed;
+  z-index: 200;
+  background: transparent;
+}
+
+.tauri-resize-n  { top: 0; left: 0; right: 0; height: 4px; cursor: ns-resize; }
+.tauri-resize-s  { bottom: 0; left: 0; right: 0; height: 4px; cursor: ns-resize; }
+.tauri-resize-w  { top: 0; bottom: 0; left: 0; width: 4px; cursor: ew-resize; }
+.tauri-resize-e  { top: 0; bottom: 0; right: 0; width: 4px; cursor: ew-resize; }
+.tauri-resize-nw { top: 0; left: 0;  width: 8px; height: 8px; cursor: nwse-resize; }
+.tauri-resize-ne { top: 0; right: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+.tauri-resize-sw { bottom: 0; left: 0;  width: 8px; height: 8px; cursor: nesw-resize; }
+.tauri-resize-se { bottom: 0; right: 0; width: 8px; height: 8px; cursor: nwse-resize; }

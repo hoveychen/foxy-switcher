@@ -308,6 +308,10 @@ fn json_escape(s: &str) -> String {
 // The Restart Daemon item is enabled only when this Tauri instance owns the
 // sidecar — the daemon mode is fixed at spawn time, so a setup-time check is
 // sufficient. Attached daemons keep the disconnect-banner Retry path instead.
+//
+// Only registered on macOS — on Windows the same menu would render as an
+// in-window strip, which we deliberately avoid (see run() below).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let app_name = app.package_info().name.clone();
 
@@ -482,6 +486,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 // emitted to the frontend via Tauri events so App.tsx owns the actual page
 // state — same pattern the in-app keyboard shortcuts already use, just
 // driven from the OS menu instead of webview keydown.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id.as_ref() {
         "menu.settings" => emit_navigate(app, "settings"),
@@ -579,7 +584,7 @@ fn install_signal_handler(handle: AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
@@ -595,9 +600,20 @@ pub fn run() {
             MacosLauncher::AppleScript,
             Some(vec!["--start-minimized"]),
         ))
-        .manage(ServerState::default())
+        .manage(ServerState::default());
+
+    // macOS routes app menus into the system menubar at the top of the
+    // screen, where they belong. Windows / Linux would render the same
+    // menu as an in-window strip below the title bar — we'd rather not
+    // see that, especially since Windows also runs decorations:false
+    // (see setup()) and the strip would look orphaned. Tray-driven
+    // navigation handles the few menu actions that matter cross-platform.
+    #[cfg(target_os = "macos")]
+    let builder = builder
         .menu(|h| build_app_menu(h))
-        .on_menu_event(handle_menu_event)
+        .on_menu_event(handle_menu_event);
+
+    builder
         .invoke_handler(tauri::generate_handler![
             get_server_port,
             get_daemon_mode,
@@ -615,6 +631,16 @@ pub fn run() {
             let handle = app.handle().clone();
             sidecar::spawn(&handle)?;
             install_signal_handler(app.handle().clone());
+
+            // Windows lacks macOS's titleBarStyle:Overlay equivalent, so we
+            // strip decorations entirely here. The frontend renders a 28px
+            // data-tauri-drag-region strip across the top of AppShell so
+            // the user can still drag the window; close/minimize fall back
+            // to the tray (consistent with the existing hide-on-close).
+            #[cfg(target_os = "windows")]
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_decorations(false);
+            }
 
             // Tray-only launch: when the autostart entry fires, it passes
             // --start-minimized so we know to hide the window. Manual launches
