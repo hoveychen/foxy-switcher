@@ -1597,9 +1597,20 @@
 /* ─── Frameless Tauri window ───────────────────────────────
    tauri.conf.json sets titleBarStyle:Overlay/hiddenTitle on macOS
    and lib.rs runs decorations:false on Windows. The 28px strip
-   below is the only way the user can drag the window in either
-   path; html.tauri-host scopes everything so plain-browser hosts
-   (vault web UI) keep their normal layout. */
+   below is how the user drags the window in either path;
+   html.tauri-host scopes everything so plain-browser hosts
+   (vault web UI) keep their normal layout.
+
+   Two non-obvious tricks (lifted from netferry / claude-fleet
+   after `data-tauri-drag-region` alone refused to drag on macOS):
+   - `-webkit-app-region: drag` is set explicitly in CSS rather
+     than relying on Tauri's drag.js shim. WebKit/WebView2 honor
+     this at hit-test time, above the JS event layer.
+   - `pointer-events: none` lets clicks pass through to the
+     topbar / banners underneath, so the bar can overlay UI
+     without stealing the auto-switch toggle's mousedown. The
+     drag still fires because -webkit-app-region is evaluated
+     before pointer-events. */
 
 .tauri-titlebar {
   display: none;
@@ -1614,6 +1625,8 @@ html.tauri-host .tauri-titlebar {
   height: 28px;
   z-index: 100;
   background: transparent;
+  -webkit-app-region: drag;
+  pointer-events: none;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -1621,22 +1634,12 @@ html.tauri-host .tauri-titlebar {
 /* Push the brand below the macOS traffic lights (or the Windows
    drag strip) so the Foxy Switcher mark is never half-occluded.
    var(--space-5) is the existing 10px sidebar inset; +28px clears
-   the drag strip. */
+   the drag strip. The topbar / banners stay at y=0 because the
+   drag bar is pointer-events:none — no padding-top on .app-main
+   is needed (and removing it is what un-pushes the dashboard
+   topbar so the auto-switch row sits flush with the window top). */
 html.tauri-host .sidebar {
   padding-top: calc(var(--space-5) + 28px);
-}
-
-/* The page topbar (52px) sits inside .app-main as a sticky
-   element. Bumping its sticky offset to 28px keeps it from
-   sliding under the drag strip on scroll, and the matching
-   .app-main padding-top puts it below the strip on first paint
-   too. */
-html.tauri-host .app-main {
-  padding-top: 28px;
-}
-
-html.tauri-host .topbar {
-  top: 28px;
 }
 
 /* Windows resize handles — invisible hit zones layered above the drag
