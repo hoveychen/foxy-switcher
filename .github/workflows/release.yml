@@ -75,15 +75,10 @@ jobs:
           ## 📦 Install
 
           ### macOS — Universal .pkg (signed & notarized, Apple Silicon + Intel)
-          \`\`\`
-          curl -LO https://github.com/$REPO/releases/download/$REF_NAME/FoxySwitcher_${VERSION}_universal.pkg
-          open FoxySwitcher_${VERSION}_universal.pkg
-          \`\`\`
+          **[⬇ Download FoxySwitcher_${VERSION}_universal.pkg](https://github.com/$REPO/releases/download/$REF_NAME/FoxySwitcher_${VERSION}_universal.pkg)** — open the .pkg to install.
 
           ### Windows — Signed .msi
-          \`\`\`
-          curl -LO https://github.com/$REPO/releases/download/$REF_NAME/FoxySwitcher_${VERSION}_x64_en-US.msi
-          \`\`\`
+          **[⬇ Download FoxySwitcher_${VERSION}_x64_en-US.msi](https://github.com/$REPO/releases/download/$REF_NAME/FoxySwitcher_${VERSION}_x64_en-US.msi)** — double-click the .msi to install.
 
           ### Linux — Static binary (TUI + embedded vault webapp)
           \`\`\`
