@@ -61,7 +61,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
 
   return (
     <div className="admin-content">
-      <div className="admin-page">
+      <div className="admin-page admin-page--wide">
         <div>
           <h1 className="admin-page__title">{t("admin.devices.title")}</h1>
           <p className="admin-page__subtitle">{t("admin.devices.subtitle")}</p>
