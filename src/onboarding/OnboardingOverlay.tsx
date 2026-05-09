@@ -94,16 +94,24 @@ export function OnboardingOverlay({ onDismiss }: { onDismiss: () => void }) {
               device_id: out.device_id,
               device_token: out.device_token,
             });
-            // Restart so detectModeFromConfig promotes the daemon to
-            // modeAgent on the next launch. The cachedPort is updated
-            // in api.ts so the next api() call hits the new sidecar.
-            await restartDaemon();
           } catch (e) {
             setErrorMsg(
               `${t("pair.error.save_failed")}: ${e instanceof Error ? e.message : String(e)}`,
             );
             setPhase("cloud-input");
             return;
+          }
+          // Restart so detectModeFromConfig promotes the daemon to
+          // modeAgent on the next launch. Swallow errors — the config
+          // is already saved on disk, so a failed restart (e.g. when
+          // the sidecar was attached, not owned, on Windows with two
+          // GUI instances) just delays agent mode until the next
+          // manual relaunch instead of nullifying the pairing.
+          try {
+            await restartDaemon();
+          } catch {
+            // intentional: don't surface restart failure over the
+            // success state. agent-config.json is saved either way.
           }
           onDismiss();
           return;

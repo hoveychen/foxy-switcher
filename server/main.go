@@ -175,6 +175,13 @@ type daemonOpts struct {
 // port file remove, credential restore). ready is invoked once the listener
 // is bound and the port file written; pass nil if you don't need the signal.
 func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error {
+	// quit is the cancel hook /api/quit fires. We wrap the inbound ctx so the
+	// daemon's existing shutdown-on-ctx.Done plumbing (httpSrv.Shutdown,
+	// store.Close, port file removal) works the same whether the trigger is
+	// SIGTERM, parent-pid death, or a Tauri-initiated graceful quit.
+	ctx, quit := context.WithCancel(ctx)
+	defer quit()
+
 	out := opts.LogOutput
 	if out == nil {
 		out = os.Stderr
@@ -377,6 +384,12 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	rootMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	// /api/quit is intentionally registered on rootMux (above the
+	// catch-all server.Handler() and outside vault-mode BearerAuth) so
+	// the desktop sidecar can ask a daemon it doesn't own to gracefully
+	// stop without holding a device token. Loopback-gated; see
+	// loopbackOnly + quitHandler in quit.go.
+	rootMux.HandleFunc("POST /api/quit", loopbackOnly(quitHandler(logger, quit)))
 	rootMux.Handle("/", server.Handler())
 	httpSrv := &http.Server{
 		Handler:           rootMux,

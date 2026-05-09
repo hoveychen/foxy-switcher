@@ -30,6 +30,11 @@ import (
 // (modulo /api/cred/status which the agent owns) so the existing Tauri /
 // TUI clients see the same surface they always have.
 func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error {
+	// Wrap ctx so /api/quit can cancel the same plumbing SIGTERM uses.
+	// Same rationale as runDaemon — see comment there.
+	ctx, quit := context.WithCancel(ctx)
+	defer quit()
+
 	out := opts.LogOutput
 	if out == nil {
 		out = os.Stderr
@@ -134,6 +139,10 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	// /api/quit lets the desktop sidecar gracefully stop a daemon it
+	// doesn't own (e.g. the autostart sibling that's holding the port
+	// file from a stale launch). Loopback-gated; see quit.go.
+	mux.HandleFunc("POST /api/quit", loopbackOnly(quitHandler(logger, quit)))
 
 	// Lease-friendly routes proxy through to the vault's /agent/v1/api/*
 	// surface (the bearer-only path the deployment whitelists past any

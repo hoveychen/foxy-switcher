@@ -149,19 +149,29 @@ fn spawn_into(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
-// restart performs a graceful SIGTERM + respawn. Refuses when the current
-// daemon was attached (we don't own its lifecycle, so killing it would harm
-// the TUI / manual `go run .` user that started it). Returns the new port,
-// or an error string the frontend can show in the disconnect banner.
+// restart performs a graceful stop + respawn. Owned daemons get SIGTERM via
+// shutdown(); attached daemons get POSTed /api/quit so they run the same
+// graceful path from the inside. Either way, once the old daemon stops
+// answering /healthz we spawn a fresh sidecar that this process owns —
+// after a successful pair flow, that new daemon reads agent-config.json
+// and boots in modeAgent. Returns the new port, or an error string the
+// frontend can show in the disconnect banner.
 pub fn restart(app: &AppHandle) -> Result<u16, String> {
     let owned = app
         .try_state::<Arc<ChildHandle>>()
         .map(|h| h.0.lock().unwrap().is_some())
         .unwrap_or(false);
-    if !owned {
-        return Err("Daemon was attached, not owned — restart it externally.".into());
+    if owned {
+        shutdown(app);
+    } else {
+        let port = app
+            .try_state::<ServerState>()
+            .and_then(|s| *s.port.lock().unwrap())
+            .ok_or_else(|| "no cached daemon port; cannot ask remote daemon to quit".to_string())?;
+        request_remote_quit(port).map_err(|e| format!("/api/quit: {e}"))?;
+        wait_for_daemon_death(port, Duration::from_secs(5))
+            .map_err(|e| format!("waiting for daemon to exit: {e}"))?;
     }
-    shutdown(app);
     if let Some(state) = app.try_state::<ServerState>() {
         *state.port.lock().unwrap() = None;
     }
@@ -308,6 +318,59 @@ fn probe_healthz(port: u16) -> bool {
         None => return false,
     };
     matches!(parts.next(), Some("200"))
+}
+
+// request_remote_quit POSTs /api/quit to a daemon we don't own. The
+// daemon's handler is loopback-gated (see server/quit.go) and triggers the
+// same context cancel SIGTERM uses, so the daemon runs its full defer
+// chain (port file removal, store close, cred restore). Used by restart()
+// in attached mode — see the comment there.
+//
+// Same raw-TCP HTTP/1.0 approach as probe_healthz: this is on the GUI
+// restart path, must finish in well under a second, and only ever talks
+// to 127.0.0.1.
+fn request_remote_quit(port: u16) -> Result<(), String> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))
+        .map_err(|e| format!("connect: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| format!("set read timeout: {e}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| format!("set write timeout: {e}"))?;
+    stream
+        .write_all(b"POST /api/quit HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n")
+        .map_err(|e| format!("write: {e}"))?;
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).map_err(|e| format!("read: {e}"))?;
+    if n == 0 {
+        return Err("empty response".into());
+    }
+    let head = std::str::from_utf8(&buf[..n]).map_err(|e| format!("utf8: {e}"))?;
+    let mut parts = head.split_whitespace();
+    let _ = parts.next(); // HTTP/1.x
+    match parts.next() {
+        Some("202") | Some("200") => Ok(()),
+        Some(code) => Err(format!("unexpected status {code}")),
+        None => Err("malformed response".into()),
+    }
+}
+
+// wait_for_daemon_death polls /healthz until it stops answering or until
+// deadline elapses. Used by restart() to confirm a remote daemon we asked
+// to quit has actually gone away before we spawn its replacement —
+// otherwise spawn_into's try_attach probe would see the dying daemon and
+// re-attach instead of spawning fresh.
+fn wait_for_daemon_death(port: u16, deadline: Duration) -> Result<(), String> {
+    let until = Instant::now() + deadline;
+    while Instant::now() < until {
+        if !probe_healthz(port) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err("daemon still answering /healthz".into())
 }
 
 // rediscover_port is the GUI's recovery path for "the daemon I attached to
