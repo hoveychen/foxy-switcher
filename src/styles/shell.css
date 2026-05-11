@@ -1601,16 +1601,22 @@
    html.tauri-host scopes everything so plain-browser hosts
    (vault web UI) keep their normal layout.
 
-   Two non-obvious tricks (lifted from netferry / claude-fleet
-   after `data-tauri-drag-region` alone refused to drag on macOS):
-   - `-webkit-app-region: drag` is set explicitly in CSS rather
-     than relying on Tauri's drag.js shim. WebKit/WebView2 honor
-     this at hit-test time, above the JS event layer.
-   - `pointer-events: none` lets clicks pass through to the
-     topbar / banners underneath, so the bar can overlay UI
-     without stealing the auto-switch toggle's mousedown. The
-     drag still fires because -webkit-app-region is evaluated
-     before pointer-events. */
+   How dragging actually works here (after two wrong tries):
+   - `-webkit-app-region: drag` is set in CSS rather than trusted
+     to Tauri's drag.js shim. WebKit / WebView2 honor it at the
+     OS hit-test layer.
+   - `pointer-events: none` is NOT used. It was tempting because
+     it lets clicks fall through to underlying buttons, but it
+     also makes the browser skip the element during hit-testing
+     — and -webkit-app-region is read from the hit-tested
+     element, so the OS never sees drag and mousedown falls into
+     the topbar text below (which then starts a text selection,
+     hence the "drag turns into selection cursor" symptom).
+   - Interactive controls (button / a / input / select / textarea
+     / label / [role="button"]) are bumped to z-index:200 with
+     -webkit-app-region:no-drag, so they sit above the z-index:100
+     drag bar and the OS treats clicks on them as clicks, not
+     drag. This is the pattern netferry uses in production. */
 
 .tauri-titlebar {
   display: none;
@@ -1626,18 +1632,30 @@ html.tauri-host .tauri-titlebar {
   z-index: 100;
   background: transparent;
   -webkit-app-region: drag;
-  pointer-events: none;
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* Bump every interactive control above the z-index:100 drag bar
+   and mark it as a no-drag region. Without this, buttons in the
+   top 28px (the auto-switch toggle, banner action buttons) get
+   swallowed by the drag bar's hit-test. */
+html.tauri-host button,
+html.tauri-host a,
+html.tauri-host input,
+html.tauri-host select,
+html.tauri-host textarea,
+html.tauri-host label,
+html.tauri-host [role="button"] {
+  position: relative;
+  z-index: 200;
+  -webkit-app-region: no-drag;
 }
 
 /* Push the brand below the macOS traffic lights (or the Windows
    drag strip) so the Foxy Switcher mark is never half-occluded.
    var(--space-5) is the existing 10px sidebar inset; +28px clears
-   the drag strip. The topbar / banners stay at y=0 because the
-   drag bar is pointer-events:none — no padding-top on .app-main
-   is needed (and removing it is what un-pushes the dashboard
-   topbar so the auto-switch row sits flush with the window top). */
+   the drag strip. */
 html.tauri-host .sidebar {
   padding-top: calc(var(--space-5) + 28px);
 }
