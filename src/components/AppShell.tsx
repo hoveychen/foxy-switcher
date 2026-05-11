@@ -69,23 +69,24 @@ export function AppShell({
   const onToggleCollapse = useCallback(() => setCollapsed((v) => !v), []);
 
   return (
-    <div
-      className={`app-shell ${drawer ? "has-drawer" : ""} ${
-        collapsed ? "sidebar-collapsed" : ""
-      }`}
-    >
-      {/* Frameless top drag strip. macOS keeps the traffic lights via
-          titleBarStyle:Overlay; Windows runs decorations:false (lib.rs
-          setup) and would otherwise have no way to move the window.
-          The element only renders inside Tauri — see html.tauri-host
-          gate in shell.css to keep browser-mode unaffected. */}
+    <>
+      {/* Frameless top drag strip + Windows resize handles.
+          They MUST be siblings of `.app-shell`, not nested inside it.
+          The grid container holds `.sidebar` (position:sticky;
+          height:100vh) which establishes a stacking context covering
+          the left 220×100vh — including the top-left of the drag
+          strip. With the bar nested inside the same grid, hit-testing
+          for the top-left 220×28px lands on the sticky sidebar and
+          `-webkit-app-region: drag` is never read (the window simply
+          won't drag, even though the bar paints fine).
+          netferry / claude-fleet both hoist their drag bar to a root
+          sibling for exactly this reason. */}
       <div className="tauri-titlebar" data-tauri-drag-region />
-      {/* Windows resize handles. decorations:false strips the OS-drawn
-          resize border, so we paint our own: 4 edges + 4 corners. CSS
-          gates visibility on html.tauri-host.os-windows; on macOS the
-          OS chrome already provides resize, so they stay hidden there.
-          mousedown hands the drag loop off to Tauri's startResizeDragging
-          so the user gets the native cursor + behavior. */}
+      {/* Windows resize handles — same reasoning. CSS gates visibility
+          on html.tauri-host.os-windows; on macOS the OS chrome already
+          provides resize, so they stay hidden there. mousedown hands
+          the drag loop off to Tauri's startResizeDragging so the user
+          gets the native cursor + behavior. */}
       <div
         className="tauri-resize tauri-resize-n"
         onMouseDown={(e) => {
@@ -142,18 +143,24 @@ export function AppShell({
           void startResize("SouthEast");
         }}
       />
-      <Sidebar
-        current={current}
-        onNavigate={onNavigate}
-        daemonOk={daemonOk}
-        collapsed={collapsed}
-        onToggleCollapse={onToggleCollapse}
-        showAdminNav={showAdminNav}
-        onLogout={onAdminLogout}
-        hideDaemonStatus={hideDaemonStatus}
-      />
-      <main className="app-main">{children}</main>
-      {drawer}
-    </div>
+      <div
+        className={`app-shell ${drawer ? "has-drawer" : ""} ${
+          collapsed ? "sidebar-collapsed" : ""
+        }`}
+      >
+        <Sidebar
+          current={current}
+          onNavigate={onNavigate}
+          daemonOk={daemonOk}
+          collapsed={collapsed}
+          onToggleCollapse={onToggleCollapse}
+          showAdminNav={showAdminNav}
+          onLogout={onAdminLogout}
+          hideDaemonStatus={hideDaemonStatus}
+        />
+        <main className="app-main">{children}</main>
+        {drawer}
+      </div>
+    </>
   );
 }
