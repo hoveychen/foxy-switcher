@@ -1,15 +1,33 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Sidebar, type Route } from "./Sidebar";
-import { Icon } from "./Icon";
-import {
-  ICON_WIN_MINIMIZE,
-  ICON_WIN_MAXIMIZE,
-  ICON_WIN_RESTORE,
-  ICON_X,
-} from "./icons";
 
 const LS_COLLAPSED_KEY = "fx.sidebar.collapsed";
+
+// Win11 caption-button glyphs. Each path uses a 10x10 viewBox so the
+// rendered stroke and glyph size match Windows native (10px icon area,
+// 1px stroke). Going through the shared Icon component would force a
+// 16x16 viewBox and the glyph would shrink to ~5px with ~0.6px stroke.
+const CaptionMinimize = () => (
+  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden>
+    <path d="M0 5h10" />
+  </svg>
+);
+const CaptionMaximize = () => (
+  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden>
+    <path d="M0.5 0.5h9v9h-9z" />
+  </svg>
+);
+const CaptionRestore = () => (
+  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden>
+    <path d="M2.5 2.5h7v7h-7z M2.5 2.5V0.5h7v7h-2" />
+  </svg>
+);
+const CaptionClose = () => (
+  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="square" aria-hidden>
+    <path d="M0.5 0.5l9 9 M9.5 0.5l-9 9" />
+  </svg>
+);
 
 // startResize hands the mouse off to Tauri so the OS can drive the
 // resize loop natively. Only fired by the Windows-only resize handles
@@ -167,7 +185,7 @@ export function AppShell({
           aria-label="Minimize"
           title="Minimize"
         >
-          <Icon d={ICON_WIN_MINIMIZE} size={10} strokeWidth={1} />
+          <CaptionMinimize />
         </button>
         <button
           type="button"
@@ -176,11 +194,7 @@ export function AppShell({
           aria-label={maximized ? "Restore" : "Maximize"}
           title={maximized ? "Restore" : "Maximize"}
         >
-          <Icon
-            d={maximized ? ICON_WIN_RESTORE : ICON_WIN_MAXIMIZE}
-            size={10}
-            strokeWidth={1}
-          />
+          {maximized ? <CaptionRestore /> : <CaptionMaximize />}
         </button>
         <button
           type="button"
@@ -189,7 +203,7 @@ export function AppShell({
           aria-label="Close"
           title="Close"
         >
-          <Icon d={ICON_X} size={10} strokeWidth={1} />
+          <CaptionClose />
         </button>
       </div>
       {/* Windows resize handles — same reasoning. CSS gates visibility

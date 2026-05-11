@@ -1667,6 +1667,56 @@ html.tauri-host.os-linux .sidebar {
   padding-top: 28px;
 }
 
+/* Main column needs the same 28px clear at the top so the topbar sits
+   below the drag strip instead of being painted under it; without
+   this, topbar-title (right column) sits at y=0 while the sidebar
+   brand sits at y=28 and the two stop aligning. The topbar's sticky
+   anchor also moves to top:28px so it parks below the drag bar when
+   the page scrolls. */
+html.tauri-host .app-main {
+  padding-top: 28px;
+}
+
+html.tauri-host .topbar {
+  top: 28px;
+}
+
+/* Windows caption buttons live in the top-right 138px of the drag
+   strip; reserve that gutter on the topbar so topbar-actions ("auto"
+   toggle etc.) stop sliding under the buttons. macOS gets no caption
+   buttons (native traffic lights are top-left, far from topbar-actions),
+   so no gutter needed there. */
+html.tauri-host.os-windows .topbar {
+  padding-right: calc(var(--space-10) + 138px);
+}
+
+/* Replace WebView2's default Win11 scrollbar (wide, white, has step
+   buttons) with a thin overlay-style track that matches the rest of
+   the chrome. WebView2 is Chromium-based, so the ::-webkit-scrollbar
+   selectors take effect. Scoped to tauri-host so the cloud-vault web
+   UI keeps the browser's native scrollbar. */
+html.tauri-host ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+html.tauri-host ::-webkit-scrollbar-track {
+  background: transparent;
+}
+html.tauri-host ::-webkit-scrollbar-thumb {
+  background: var(--separator);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 8px;
+}
+html.tauri-host ::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+html.tauri-host ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* Windows resize handles — invisible hit zones layered above the drag
    strip (z-index 100) so the corners always win over drag. Hidden by
    default; only visible inside a Tauri Windows host where lib.rs has

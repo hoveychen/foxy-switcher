@@ -34,7 +34,3 @@ export const ICON_LINK =
   "M6.5 9.5L9.5 6.5 M5 11a2.5 2.5 0 0 1 0-3.5l1-1a2.5 2.5 0 0 1 3.5 3.5 M11 5a2.5 2.5 0 0 1 0 3.5l-1 1a2.5 2.5 0 0 1-3.5-3.5";
 export const ICON_KEY =
   "M10 5.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z M9.5 6.5l4 4 M11.5 8.5l1 1 M12 11l1 1";
-
-export const ICON_WIN_MINIMIZE = "M3 11h10";
-export const ICON_WIN_MAXIMIZE = "M3.5 3.5h9v9h-9z";
-export const ICON_WIN_RESTORE = "M5.5 5.5h7v7h-7z M5.5 5.5V3.5h7v7h-2";
