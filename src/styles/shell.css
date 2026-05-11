@@ -1652,12 +1652,19 @@ html.tauri-host [role="button"] {
   -webkit-app-region: no-drag;
 }
 
-/* Push the brand below the macOS traffic lights (or the Windows
-   drag strip) so the Foxy Switcher mark is never half-occluded.
-   var(--space-5) is the existing 10px sidebar inset; +28px clears
-   the drag strip. */
-html.tauri-host .sidebar {
+/* Push the brand below the macOS traffic lights / the Windows drag
+   strip so the Foxy Switcher mark is never half-occluded. var(--space-5)
+   is the existing 10px sidebar inset; macOS needs the extra 10px on
+   top of the 28px drag strip as breathing room around the traffic
+   lights, Windows just needs the 28px clear (no traffic lights to
+   clear, and the right-side caption buttons fill the same band). */
+html.tauri-host.os-macos .sidebar {
   padding-top: calc(var(--space-5) + 28px);
+}
+
+html.tauri-host.os-windows .sidebar,
+html.tauri-host.os-linux .sidebar {
+  padding-top: 28px;
 }
 
 /* Windows resize handles — invisible hit zones layered above the drag
@@ -1683,3 +1690,60 @@ html.tauri-host.os-windows .tauri-resize {
 .tauri-resize-ne { top: 0; right: 0; width: 8px; height: 8px; cursor: nesw-resize; }
 .tauri-resize-sw { bottom: 0; left: 0;  width: 8px; height: 8px; cursor: nesw-resize; }
 .tauri-resize-se { bottom: 0; right: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+
+/* ─── Windows caption buttons (Win11 Fluent style) ──────────
+   Min / Max / Close laid out in the top-right inside the 28px drag
+   strip. Hidden by default; only visible on html.tauri-host.os-windows
+   because macOS keeps native traffic lights and browser mode has its
+   own chrome. Sized 46×28 (Win11 convention), flush-rectangle (no
+   border-radius), flat — hover paints a subtle gray for min/max and
+   the platform red for close. */
+.tauri-caption-buttons {
+  display: none;
+}
+
+html.tauri-host.os-windows .tauri-caption-buttons {
+  display: flex;
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 28px;
+  z-index: 200;
+  -webkit-app-region: no-drag;
+}
+
+.tauri-caption-btn {
+  width: 46px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  color: var(--text-secondary);
+  cursor: default;
+  transition: background var(--motion-quick), color var(--motion-quick);
+  -webkit-app-region: no-drag;
+}
+
+.tauri-caption-btn:hover {
+  background: var(--bg-overlay);
+  color: var(--text-primary);
+}
+
+.tauri-caption-btn:active {
+  background: var(--separator);
+}
+
+.tauri-caption-close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+
+.tauri-caption-close:active {
+  background: #b22a1c;
+  color: #ffffff;
+}

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Sidebar, type Route } from "./Sidebar";
+import { Icon } from "./Icon";
+import {
+  ICON_WIN_MINIMIZE,
+  ICON_WIN_MAXIMIZE,
+  ICON_WIN_RESTORE,
+  ICON_X,
+} from "./icons";
 
 const LS_COLLAPSED_KEY = "fx.sidebar.collapsed";
 
@@ -26,6 +33,36 @@ async function startResize(direction: ResizeDirection) {
   } catch {
     // Browser mode (vault Web UI) — handles aren't visible there, so
     // this only runs if someone toggles the CSS class. Fail silently.
+  }
+}
+
+// Windows-only caption-button actions. Each lazily imports the window
+// module so browser builds don't pull it in; close goes through the
+// existing CloseRequested -> hide-to-tray path in lib.rs.
+async function captionMinimize() {
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().minimize();
+  } catch {
+    /* no-op outside Tauri */
+  }
+}
+
+async function captionToggleMaximize() {
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().toggleMaximize();
+  } catch {
+    /* no-op outside Tauri */
+  }
+}
+
+async function captionClose() {
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().close();
+  } catch {
+    /* no-op outside Tauri */
   }
 }
 
@@ -57,6 +94,7 @@ export function AppShell({
   hideDaemonStatus?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState<boolean>(readInitialCollapsed);
+  const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
     try {
@@ -65,6 +103,38 @@ export function AppShell({
       // ignore: persistence is best-effort
     }
   }, [collapsed]);
+
+  // Keep the max / restore caption-button glyph in sync with the actual
+  // window state. Resize fires for both user drags and toggleMaximize;
+  // we also seed once on mount for the case where the window opens
+  // maximized. Listener is no-op in browser mode (window module is
+  // lazy-loaded and isMaximized throws there).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const w = getCurrentWindow();
+        const seed = await w.isMaximized();
+        if (!cancelled) setMaximized(seed);
+        unlisten = await w.onResized(async () => {
+          try {
+            const m = await w.isMaximized();
+            if (!cancelled) setMaximized(m);
+          } catch {
+            /* ignore transient errors */
+          }
+        });
+      } catch {
+        /* browser mode — caption buttons are hidden anyway */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   const onToggleCollapse = useCallback(() => setCollapsed((v) => !v), []);
 
@@ -82,6 +152,46 @@ export function AppShell({
           netferry / claude-fleet both hoist their drag bar to a root
           sibling for exactly this reason. */}
       <div className="tauri-titlebar" data-tauri-drag-region />
+      {/* Windows caption buttons (min / max / close). Sit in the top-right
+          inside the 28px drag strip; CSS gates visibility on
+          html.tauri-host.os-windows so macOS keeps its native traffic
+          lights. Each button is no-drag and z-index 200 so the OS
+          treats clicks as clicks, not as drag handoff. Close goes
+          through CloseRequested -> hide-to-tray (lib.rs) so the sidecar
+          stays alive; the tray menu still owns real quit. */}
+      <div className="tauri-caption-buttons" aria-hidden={false}>
+        <button
+          type="button"
+          className="tauri-caption-btn tauri-caption-min"
+          onClick={captionMinimize}
+          aria-label="Minimize"
+          title="Minimize"
+        >
+          <Icon d={ICON_WIN_MINIMIZE} size={10} strokeWidth={1} />
+        </button>
+        <button
+          type="button"
+          className="tauri-caption-btn tauri-caption-max"
+          onClick={captionToggleMaximize}
+          aria-label={maximized ? "Restore" : "Maximize"}
+          title={maximized ? "Restore" : "Maximize"}
+        >
+          <Icon
+            d={maximized ? ICON_WIN_RESTORE : ICON_WIN_MAXIMIZE}
+            size={10}
+            strokeWidth={1}
+          />
+        </button>
+        <button
+          type="button"
+          className="tauri-caption-btn tauri-caption-close"
+          onClick={captionClose}
+          aria-label="Close"
+          title="Close"
+        >
+          <Icon d={ICON_X} size={10} strokeWidth={1} />
+        </button>
+      </div>
       {/* Windows resize handles — same reasoning. CSS gates visibility
           on html.tauri-host.os-windows; on macOS the OS chrome already
           provides resize, so they stay hidden there. mousedown hands
