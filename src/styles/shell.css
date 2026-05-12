@@ -1007,7 +1007,14 @@
     right: 0;
     top: 0;
     width: 420px;
-    z-index: 30;
+    /* The tauri-host rule below bumps every <button>/<input>/[role="button"]
+       to z-index 200 so they win the hit-test against the z-index:100 drag
+       strip. Account cards carry role="button", which means in this narrow
+       mode they paint above any drawer that's below 200 — the cards "show
+       through" because they're literally above the drawer's white box, not
+       because the drawer is translucent. Park the drawer above 200 so it
+       reclaims the right edge of the page. */
+    z-index: 250;
     box-shadow: var(--shadow-modal);
   }
 }
