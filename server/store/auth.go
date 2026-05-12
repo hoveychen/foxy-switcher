@@ -204,6 +204,24 @@ func (s *Store) TouchDevice(ctx context.Context, id string) error {
 	return err
 }
 
+// UpdateDeviceName changes the display name an admin sees in the Devices
+// page. Returns ErrNotFound when no row matches so the handler can 404.
+func (s *Store) UpdateDeviceName(ctx context.Context, id, name string) error {
+	if id == "" || name == "" {
+		return fmt.Errorf("id and name required")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE devices SET name = ? WHERE id = ?`, name, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListDevices returns every paired device, newest first.
 func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	rows, err := s.db.QueryContext(ctx,

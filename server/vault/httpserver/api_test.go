@@ -181,6 +181,62 @@ func TestAPIDevices_ListAndRevoke(t *testing.T) {
 	}
 }
 
+// TestAPIDevices_Rename covers the admin-rename surface: a logged-in
+// admin can PATCH-style update the display name, unknown ids 404, blank
+// names 400, and the new name is persisted to the store.
+func TestAPIDevices_Rename(t *testing.T) {
+	f := newAuthFixture(t)
+	ctx := context.Background()
+	hash, _ := vaultauth.HashPassword("pw")
+	_ = f.st.SetPasswordHash(ctx, hash)
+
+	d := store.Device{ID: vaultauth.NewID(), Name: "old", TokenHash: vaultauth.HashToken(vaultauth.NewToken())}
+	_ = f.st.InsertDevice(ctx, d)
+
+	jar := newCookieJar(t)
+	resp := postJSON(t, f.server.URL+"/admin/api/login", jar, map[string]string{"password": "pw"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: %s", resp.Status)
+	}
+
+	// Happy path: 204 + name updated in store.
+	resp = postJSON(t, f.server.URL+"/admin/api/devices/rename", jar, map[string]string{"id": d.ID, "name": "  new-name  "})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("rename: got %s want 204", resp.Status)
+	}
+	got, err := f.st.FindDeviceByTokenHash(ctx, d.TokenHash)
+	if err != nil {
+		t.Fatalf("find after rename: %v", err)
+	}
+	if got.Name != "new-name" {
+		t.Errorf("name after rename: got %q want %q (whitespace should be trimmed)", got.Name, "new-name")
+	}
+
+	// Unknown id → 404.
+	resp = postJSON(t, f.server.URL+"/admin/api/devices/rename", jar, map[string]string{"id": "missing", "name": "x"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown id: got %s want 404", resp.Status)
+	}
+
+	// Blank name → 400.
+	resp = postJSON(t, f.server.URL+"/admin/api/devices/rename", jar, map[string]string{"id": d.ID, "name": "   "})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("blank name: got %s want 400", resp.Status)
+	}
+
+	// Over-length name → 400.
+	long := strings.Repeat("x", deviceNameMaxLen+1)
+	resp = postJSON(t, f.server.URL+"/admin/api/devices/rename", jar, map[string]string{"id": d.ID, "name": long})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("over-length name: got %s want 400", resp.Status)
+	}
+}
+
 // TestAPIDevices_WithLease pins the multi-device-lease-visibility
 // extension to /admin/api/devices: each device row carries an optional
 // current_lease field naming the account it currently holds. Devices

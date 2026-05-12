@@ -5,10 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/hoveychen/foxy-switcher/server/store"
 	vaultauth "github.com/hoveychen/foxy-switcher/server/vault/auth"
 )
+
+// deviceNameMaxLen caps the user-supplied rename payload. The store column
+// is TEXT with no DB-level limit, but the Devices table needs to render the
+// value in a fixed-width cell; clamping at 64 keeps the UI sane and any
+// over-eager paste from filling the DB with megabytes.
+const deviceNameMaxLen = 64
 
 // RegisterAPIRoutes mounts the JSON surface that the SPA admin web UI
 // (mounted at /admin/* by the embedded React bundle) talks to. The
@@ -32,6 +39,7 @@ func (s *Server) RegisterAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/api/logout", s.requireSessionJSON(s.handleAPILogout))
 	mux.HandleFunc("GET /admin/api/devices", s.requireSessionJSON(s.handleAPIDevicesList))
 	mux.HandleFunc("POST /admin/api/devices/revoke", s.requireSessionJSON(s.handleAPIDevicesRevoke))
+	mux.HandleFunc("POST /admin/api/devices/rename", s.requireSessionJSON(s.handleAPIDevicesRename))
 	mux.HandleFunc("GET /admin/api/pair", s.requireSessionJSON(s.handleAPIPairLookup))
 	mux.HandleFunc("POST /admin/api/pair", s.requireSessionJSON(s.handleAPIPairResolve))
 	mux.HandleFunc("POST /admin/api/password", s.requireSessionJSON(s.handleAPIPassword))
@@ -264,6 +272,41 @@ func (s *Server) handleAPIDevicesRevoke(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := s.st.DeleteDevice(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type apiRenameReq struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (s *Server) handleAPIDevicesRename(w http.ResponseWriter, r *http.Request) {
+	var req apiRenameReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("id required"))
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, errors.New("name required"))
+		return
+	}
+	if len(name) > deviceNameMaxLen {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("name too long (max %d)", deviceNameMaxLen))
+		return
+	}
+	if err := s.st.UpdateDeviceName(r.Context(), req.ID, name); err != nil {
+		if notFoundIs(err) {
+			writeError(w, http.StatusNotFound, errors.New("device not found"))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

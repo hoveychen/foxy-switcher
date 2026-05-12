@@ -105,6 +105,11 @@ export const adminApi = {
       method: "POST",
       body: JSON.stringify({ id }),
     }),
+  renameDevice: (id: string, name: string) =>
+    request<void>("/admin/api/devices/rename", {
+      method: "POST",
+      body: JSON.stringify({ id, name }),
+    }),
   lookupPair: (code: string) =>
     request<AdminPairLookup>(
       `/admin/api/pair?code=${encodeURIComponent(code)}`,

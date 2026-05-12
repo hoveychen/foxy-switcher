@@ -75,6 +75,41 @@ func TestDeviceMetaRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUpdateDeviceName covers the admin-rename path: changing a row's
+// display name should be reflected in subsequent reads, unknown ids should
+// surface as ErrNotFound (so the handler can 404), and empty input should
+// be rejected at the store boundary.
+func TestUpdateDeviceName(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	dev := Device{ID: "dev-1", Name: "old-name", TokenHash: "hash-1"}
+	if err := st.InsertDevice(ctx, dev); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+
+	if err := st.UpdateDeviceName(ctx, "dev-1", "new-name"); err != nil {
+		t.Fatalf("UpdateDeviceName: %v", err)
+	}
+	got, err := st.FindDeviceByTokenHash(ctx, "hash-1")
+	if err != nil {
+		t.Fatalf("FindDeviceByTokenHash: %v", err)
+	}
+	if got.Name != "new-name" {
+		t.Fatalf("name not updated: got %q want %q", got.Name, "new-name")
+	}
+
+	if err := st.UpdateDeviceName(ctx, "missing", "x"); err != ErrNotFound {
+		t.Fatalf("unknown id: got err=%v want ErrNotFound", err)
+	}
+	if err := st.UpdateDeviceName(ctx, "", "x"); err == nil {
+		t.Fatalf("empty id: expected error")
+	}
+	if err := st.UpdateDeviceName(ctx, "dev-1", ""); err == nil {
+		t.Fatalf("empty name: expected error")
+	}
+}
+
 // TestPairingMetaPropagates verifies that meta supplied at InsertPairing
 // time survives until FindPairingByNonce reads it back — the path
 // handlePairPoll uses to copy meta from pairings into devices when a

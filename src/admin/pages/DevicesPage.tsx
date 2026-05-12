@@ -15,10 +15,18 @@ function formatRelative(ts: number): string {
   return tf("admin.devices.d_ago", { n: Math.floor(diff / 86_400_000) });
 }
 
+// deviceNameMaxLen mirrors the server-side cap so the input can't submit a
+// value the backend will 400. Keep in sync with deviceNameMaxLen in
+// server/vault/httpserver/api.go.
+const deviceNameMaxLen = 64;
+
 export function DevicesPage({ onUnauthorized }: Props) {
   const [devices, setDevices] = useState<AdminDevice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
 
   async function load() {
     setError(null);
@@ -59,6 +67,42 @@ export function DevicesPage({ onUnauthorized }: Props) {
     }
   }
 
+  function startEdit(d: AdminDevice) {
+    setEditingId(d.id);
+    setEditingName(d.name);
+    setError(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditingName("");
+  }
+
+  async function saveEdit(d: AdminDevice) {
+    const trimmed = editingName.trim();
+    if (!trimmed || trimmed === d.name) {
+      cancelEdit();
+      return;
+    }
+    setSavingId(d.id);
+    setError(null);
+    try {
+      await adminApi.renameDevice(d.id, trimmed);
+      setDevices((cur) =>
+        cur ? cur.map((x) => (x.id === d.id ? { ...x, name: trimmed } : x)) : cur,
+      );
+      cancelEdit();
+    } catch (err) {
+      if (err instanceof AdminApiError && err.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      setError(t("admin.devices.error.rename"));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   return (
     <div className="admin-content">
       <div className="admin-page admin-page--wide">
@@ -87,46 +131,109 @@ export function DevicesPage({ onUnauthorized }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {devices.map((d) => (
-                  <tr key={d.id}>
-                    <td>
-                      {d.name}
-                      {d.hostname && d.hostname !== d.name && (
-                        <span className="admin-table__sub">{d.hostname}</span>
-                      )}
-                    </td>
-                    <td>
-                      {d.current_lease
-                        ? d.current_lease.account_name ||
-                          `#${d.current_lease.account_id}`
-                        : "—"}
-                    </td>
-                    <td>
-                      {d.os || "—"}
-                      {d.os_version ? ` ${d.os_version}` : ""}
-                    </td>
-                    <td>{d.arch || "—"}</td>
-                    <td>
-                      {d.app_version || "—"}
-                      {d.client_type ? ` (${d.client_type})` : ""}
-                    </td>
-                    <td>{formatRelative(d.created_at)}</td>
-                    <td>{formatRelative(d.last_seen_at)}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="admin-button admin-button--danger"
-                        onClick={() => revoke(d)}
-                        disabled={revokingId === d.id}
-                        aria-busy={revokingId === d.id}
-                      >
-                        {revokingId === d.id
-                          ? t("admin.devices.revoking")
-                          : t("admin.devices.revoke")}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {devices.map((d) => {
+                  const isEditing = editingId === d.id;
+                  const isSaving = savingId === d.id;
+                  return (
+                    <tr key={d.id}>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            className="admin-input"
+                            value={editingName}
+                            onChange={(e) => setEditingName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void saveEdit(d);
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelEdit();
+                              }
+                            }}
+                            autoFocus
+                            maxLength={deviceNameMaxLen}
+                            placeholder={t("admin.devices.rename_placeholder")}
+                            disabled={isSaving}
+                          />
+                        ) : (
+                          <>
+                            {d.name}
+                            {d.hostname && d.hostname !== d.name && (
+                              <span className="admin-table__sub">{d.hostname}</span>
+                            )}
+                          </>
+                        )}
+                      </td>
+                      <td>
+                        {d.current_lease
+                          ? d.current_lease.account_name ||
+                            `#${d.current_lease.account_id}`
+                          : "—"}
+                      </td>
+                      <td>
+                        {d.os || "—"}
+                        {d.os_version ? ` ${d.os_version}` : ""}
+                      </td>
+                      <td>{d.arch || "—"}</td>
+                      <td>
+                        {d.app_version || "—"}
+                        {d.client_type ? ` (${d.client_type})` : ""}
+                      </td>
+                      <td>{formatRelative(d.created_at)}</td>
+                      <td>{formatRelative(d.last_seen_at)}</td>
+                      <td>
+                        <span className="admin-actions" style={{ justifyContent: "flex-end" }}>
+                          {isEditing ? (
+                            <>
+                              <button
+                                type="button"
+                                className="admin-button admin-button--primary"
+                                onClick={() => void saveEdit(d)}
+                                disabled={isSaving}
+                                aria-busy={isSaving}
+                              >
+                                {isSaving
+                                  ? t("admin.devices.renaming")
+                                  : t("admin.devices.rename_save")}
+                              </button>
+                              <button
+                                type="button"
+                                className="admin-button"
+                                onClick={cancelEdit}
+                                disabled={isSaving}
+                              >
+                                {t("admin.devices.rename_cancel")}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="admin-button"
+                                onClick={() => startEdit(d)}
+                                disabled={editingId !== null || revokingId === d.id}
+                              >
+                                {t("admin.devices.rename")}
+                              </button>
+                              <button
+                                type="button"
+                                className="admin-button admin-button--danger"
+                                onClick={() => revoke(d)}
+                                disabled={revokingId === d.id || editingId !== null}
+                                aria-busy={revokingId === d.id}
+                              >
+                                {revokingId === d.id
+                                  ? t("admin.devices.revoking")
+                                  : t("admin.devices.revoke")}
+                              </button>
+                            </>
+                          )}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
