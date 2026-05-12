@@ -885,7 +885,8 @@
   position: sticky;
   top: 0;
   height: 100vh;
-  background: var(--bg-card);
+  background-color: var(--bg-card);
+  isolation: isolate;
   border-left: 0.5px solid var(--separator);
   display: flex;
   flex-direction: column;
@@ -893,8 +894,8 @@
 }
 
 @keyframes drawer-in {
-  from { transform: translateX(20px); opacity: 0; }
-  to   { transform: translateX(0);    opacity: 1; }
+  from { transform: translateX(20px); }
+  to   { transform: translateX(0); }
 }
 
 .drawer-header {
