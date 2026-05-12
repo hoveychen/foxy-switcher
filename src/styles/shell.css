@@ -1667,18 +1667,16 @@ html.tauri-host.os-linux .sidebar {
   padding-top: 28px;
 }
 
-/* Main column needs the same 28px clear at the top so the topbar sits
-   below the drag strip instead of being painted under it; without
-   this, topbar-title (right column) sits at y=0 while the sidebar
-   brand sits at y=28 and the two stop aligning. The topbar's sticky
-   anchor also moves to top:28px so it parks below the drag bar when
-   the page scrolls. */
-html.tauri-host .app-main {
-  padding-top: 28px;
-}
-
+/* Grow the topbar so it absorbs the 28px drag strip instead of leaving
+   a transparent gap above it. With top:0 sticky (the default) and a
+   28px padding-top, topbar's bg-topbar covers viewport y=0..80 — the
+   activity list / dashboard cards can no longer scroll through the
+   strip. Inner content (title, status, actions) stays in the bottom
+   52px of the border-box so its vertical center sits within ~4px of
+   the sidebar brand row. */
 html.tauri-host .topbar {
-  top: 28px;
+  height: 80px;
+  padding-top: 28px;
 }
 
 /* Windows caption buttons live in the top-right 138px of the drag
@@ -1690,30 +1688,41 @@ html.tauri-host.os-windows .topbar {
   padding-right: calc(var(--space-10) + 138px);
 }
 
-/* Replace WebView2's default Win11 scrollbar (wide, white, has step
+/* Replace WebView2's default Win11 scrollbar (wide, white, with step
    buttons) with a thin overlay-style track that matches the rest of
    the chrome. WebView2 is Chromium-based, so the ::-webkit-scrollbar
-   selectors take effect. Scoped to tauri-host so the cloud-vault web
-   UI keeps the browser's native scrollbar. */
-html.tauri-host ::-webkit-scrollbar {
+   selectors take effect. Both `html.tauri-host` (descendant scrollbars)
+   and `html.tauri-host::-webkit-scrollbar` (the document scrollbar
+   itself) are required — without the latter the chunky Win default
+   wins on the viewport. Browser builds at the cloud-vault origin are
+   not scoped under tauri-host, so they keep the platform default. */
+html.tauri-host {
+  scrollbar-width: thin;
+  scrollbar-color: var(--separator) transparent;
+}
+html.tauri-host ::-webkit-scrollbar,
+html.tauri-host::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
-html.tauri-host ::-webkit-scrollbar-track {
+html.tauri-host ::-webkit-scrollbar-track,
+html.tauri-host::-webkit-scrollbar-track {
   background: transparent;
 }
-html.tauri-host ::-webkit-scrollbar-thumb {
+html.tauri-host ::-webkit-scrollbar-thumb,
+html.tauri-host::-webkit-scrollbar-thumb {
   background: var(--separator);
   border: 2px solid transparent;
   background-clip: padding-box;
   border-radius: 8px;
 }
-html.tauri-host ::-webkit-scrollbar-thumb:hover {
+html.tauri-host ::-webkit-scrollbar-thumb:hover,
+html.tauri-host::-webkit-scrollbar-thumb:hover {
   background: var(--text-tertiary);
   background-clip: padding-box;
-  border: 2px solid transparent;
 }
-html.tauri-host ::-webkit-scrollbar-corner {
+html.tauri-host ::-webkit-scrollbar-corner,
+html.tauri-host::-webkit-scrollbar-corner {
   background: transparent;
 }
 
