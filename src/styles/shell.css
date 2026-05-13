@@ -1670,29 +1670,29 @@ html.tauri-host :is(.topbar, .sidebar) :is(
   -webkit-app-region: no-drag;
 }
 
-/* Push the brand below the macOS traffic lights / the Windows drag
-   strip so the Foxy Switcher mark is never half-occluded. var(--space-5)
-   is the existing 10px sidebar inset; macOS needs the extra 10px on
-   top of the 28px drag strip as breathing room around the traffic
-   lights, Windows just needs the 28px clear (no traffic lights to
-   clear, and the right-side caption buttons fill the same band). */
+/* Push the brand below the macOS traffic lights so the Foxy Switcher
+   mark is never half-occluded. var(--space-5) is the existing 10px
+   sidebar inset; macOS needs the extra 28px on top as breathing room
+   below the traffic lights. Windows / Linux have no native chrome in
+   the top band (caption buttons live at top-right inside the
+   .tauri-titlebar drag overlay), so the brand can sit at its normal
+   y=10ish — the transparent z:100 drag strip still wins hit-tests over
+   the non-interactive brand text so window drag from the top works. */
 html.tauri-host.os-macos .sidebar {
   padding-top: calc(var(--space-5) + 28px);
 }
 
-html.tauri-host.os-windows .sidebar,
-html.tauri-host.os-linux .sidebar {
-  padding-top: 28px;
-}
-
-/* Grow the topbar so it absorbs the 28px drag strip instead of leaving
-   a transparent gap above it. With top:0 sticky (the default) and a
-   28px padding-top, topbar's bg-topbar covers viewport y=0..80 — the
-   activity list / dashboard cards can no longer scroll through the
-   strip. Inner content (title, status, actions) stays in the bottom
-   52px of the border-box so its vertical center sits within ~4px of
-   the sidebar brand row. */
-html.tauri-host .topbar {
+/* macOS keeps native traffic lights at top-left, so the topbar bg has to
+   sit below them: grow to 80px + padding-top:28px so the title row lives
+   in the bottom 52px (clear of the lights) and bg-topbar still masks
+   anything scrolling under y=0..80. Windows / Linux have no native chrome
+   in that band — caption buttons live at top-right and are no-drag z:200
+   so they sit above the transparent .tauri-titlebar drag overlay — so the
+   topbar stays at its default 52px and the title row sits at y=0..52.
+   The drag overlay still passes hit-tests for window drag because it's
+   z:100 over the non-interactive title text (z:auto); interactive controls
+   keep their z:200 / no-drag treatment. */
+html.tauri-host.os-macos .topbar {
   height: 80px;
   padding-top: 28px;
 }
