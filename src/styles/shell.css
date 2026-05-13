@@ -1644,17 +1644,23 @@ html.tauri-host .tauri-titlebar {
   -webkit-user-select: none;
 }
 
-/* Bump every interactive control above the z-index:100 drag bar
-   and mark it as a no-drag region. Without this, buttons in the
-   top 28px (the auto-switch toggle, banner action buttons) get
-   swallowed by the drag bar's hit-test. */
-html.tauri-host button,
-html.tauri-host a,
-html.tauri-host input,
-html.tauri-host select,
-html.tauri-host textarea,
-html.tauri-host label,
-html.tauri-host [role="button"] {
+/* Bump every interactive control in the top strip (topbar + sidebar
+   header) above the z-index:100 drag bar and mark it as a no-drag
+   region. Without this, the auto-switch toggle / banner action
+   buttons / sidebar collapse get swallowed by the drag bar's
+   hit-test in their first 28px. Scoping to .topbar / .sidebar
+   keeps the rule from leaking into overlays (e.g. .onboarding-skip
+   loses its position:absolute) or making every page button float
+   above an overlay backdrop (z-index 70). */
+html.tauri-host :is(.topbar, .sidebar) :is(
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  label,
+  [role="button"]
+) {
   position: relative;
   z-index: 200;
   -webkit-app-region: no-drag;
@@ -1773,7 +1779,14 @@ html.tauri-host.os-windows .tauri-caption-buttons {
   display: flex;
   position: fixed;
   top: 0;
-  right: 0;
+  /* Anchor to the OS window's true right edge, not the viewport's inner
+     right edge. `right: 0` on a fixed element is measured against the
+     initial containing block, which excludes the html-level scrollbar
+     gutter — once the page is tall enough to show that 10px scrollbar
+     the buttons slide left by 10px. `100vw` includes the gutter while
+     `100%` does not, so the difference equals scrollbar-width (0 when
+     no scrollbar is present, -10px when it is). */
+  right: calc(100% - 100vw);
   height: 28px;
   z-index: 200;
   -webkit-app-region: no-drag;
