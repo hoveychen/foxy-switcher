@@ -1635,7 +1635,11 @@ html.tauri-host .tauri-titlebar {
   position: fixed;
   top: 0;
   left: 0;
-  right: 0;
+  /* Anchor to the OS window's true right edge — see the caption-buttons
+     rule below for the calc trick rationale. Without this, once the
+     html-level scrollbar appears the drag strip ends 10px short of the
+     window edge, leaving a thin non-draggable column at top-right. */
+  right: calc(100% - 100vw);
   height: 28px;
   z-index: 100;
   background: transparent;
@@ -1758,7 +1762,12 @@ html.tauri-host.os-windows .tauri-resize {
 .tauri-resize-n  { top: 0; left: 0; right: 0; height: 4px; cursor: ns-resize; }
 .tauri-resize-s  { bottom: 0; left: 0; right: 0; height: 4px; cursor: ns-resize; }
 .tauri-resize-w  { top: 0; bottom: 0; left: 0; width: 4px; cursor: ew-resize; }
-.tauri-resize-e  { top: 0; bottom: 0; right: 0; width: 4px; cursor: ew-resize; }
+/* `right: calc(100% - 100vw)` instead of `right: 0` so the east resize
+   strip stays glued to the OS window's right edge even when the html-level
+   scrollbar shrinks the viewport's inner right edge by ~10px. Same trick
+   as .tauri-caption-buttons / .tauri-titlebar — see those rules for the
+   long-form rationale. */
+.tauri-resize-e  { top: 0; bottom: 0; right: calc(100% - 100vw); width: 4px; cursor: ew-resize; }
 .tauri-resize-nw { top: 0; left: 0;  width: 8px; height: 8px; cursor: nwse-resize; }
 .tauri-resize-ne { top: 0; right: 0; width: 8px; height: 8px; cursor: nesw-resize; }
 .tauri-resize-sw { bottom: 0; left: 0;  width: 8px; height: 8px; cursor: nesw-resize; }
