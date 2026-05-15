@@ -17,6 +17,7 @@ import {
 import { adminApi, type AdminMe } from "./admin/api";
 import { AppShell } from "./components/AppShell";
 import { AccountDrawer } from "./components/AccountDrawer";
+import { UpdateNotice } from "./components/UpdateNotice";
 import type { Route } from "./components/Sidebar";
 import { notifyForEvents } from "./notify";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -566,6 +567,7 @@ export default function App() {
         ) : undefined
       }
     >
+      <UpdateNotice />
       {!daemonOk && (
         <div className="banner banner-disconnect">
           <div className="banner-body">

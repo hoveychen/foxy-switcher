@@ -12,6 +12,7 @@
 // a chance to run its cleanup defers — see the comment there.
 
 mod sidecar;
+mod version_check;
 
 use std::sync::{Arc, Mutex};
 
@@ -108,6 +109,17 @@ fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+// check_app_version probes GitHub Releases for a newer tag, with a 1-day
+// cache on disk so the startup hit is rate-limit-friendly. `force=true` skips
+// the cache — wired to the macOS Help → "Check for Updates" menu item and
+// the Settings → "Check now" button so manual triggers always go to the
+// network. Returns empty strings on network failure; the React side treats
+// that as "no update" and shows nothing.
+#[tauri::command]
+fn check_app_version(force: Option<bool>) -> version_check::VersionCheckResult {
+    version_check::check_app_version(force.unwrap_or(false))
 }
 
 // data_dir_path returns the resolved ~/.foxy-switcher so the Settings page
@@ -463,9 +475,18 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         true,
         None::<&str>,
     )?;
+    let check_updates = MenuItem::with_id(
+        app,
+        "menu.help.check_updates",
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
     let help_submenu = SubmenuBuilder::new(app, "Help")
         .item(&docs)
         .item(&issue)
+        .separator()
+        .item(&check_updates)
         .build()?;
 
     let menu = Menu::with_items(
@@ -526,6 +547,10 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
             let _ = app
                 .opener()
                 .open_url(format!("{REPO_URL}/issues"), None::<&str>);
+        }
+        "menu.help.check_updates" => {
+            show_main(app);
+            let _ = app.emit("menu:check-updates", ());
         }
         _ => {}
     }
@@ -625,7 +650,8 @@ pub fn run() {
             open_external_url,
             save_agent_config,
             clear_agent_config,
-            get_device_info
+            get_device_info,
+            check_app_version
         ])
         .setup(|app| {
             let handle = app.handle().clone();

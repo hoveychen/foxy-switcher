@@ -501,6 +501,27 @@ export const openExternal = async (url: string): Promise<void> => {
   }
 };
 
+// VersionCheckResult mirrors the Rust struct in src-tauri/src/version_check.rs.
+// `latest_version` is empty when the GitHub fetch failed; the UI treats that
+// as "no update" and renders nothing.
+export interface VersionCheckResult {
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+  release_url: string;
+}
+
+// checkAppVersion asks the Rust side to consult the GitHub Releases API
+// (with a 1-day on-disk cache). `force=true` bypasses the cache — used by
+// the Help → Check for Updates menu and the Settings "Check now" button so
+// manual triggers always go to the network. In a browser host there is no
+// updater story (the vault server delivers its own bundle on refresh), so
+// we return null and callers skip the banner.
+export const checkAppVersion = async (force = false): Promise<VersionCheckResult | null> => {
+  if (!inTauri) return null;
+  return invoke<VersionCheckResult>("check_app_version", { force });
+};
+
 // VaultDevice is the wire shape /api/devices returns. Mirrors deviceView
 // in server/httpapi/routes.go. Hostname/OS/Model/etc. are empty for
 // devices paired before the device-meta migration shipped.

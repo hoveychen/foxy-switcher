@@ -20,6 +20,7 @@ import {
   revealDataDir,
 } from "../api";
 import { Locale, getLocaleOverride, setLocaleOverride, t, tf } from "../i18n";
+import { AUTO_UPDATE_CHECK_KEY } from "../components/UpdateNotice";
 
 type Policy = "lru" | "lowest" | "rr";
 
@@ -106,6 +107,16 @@ export function SettingsPage({
   const [dataDir, setDataDir] = useState<string | null>(null);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [revealBusy, setRevealBusy] = useState(false);
+  // Update-check auto-run toggle is mirrored to localStorage on every flip;
+  // UpdateNotice reads the same key on mount. Default "true" means a brand
+  // new install will check once at first launch.
+  const [autoUpdateCheck, setAutoUpdateCheck] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(AUTO_UPDATE_CHECK_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
   const [about, setAbout] = useState<AboutResponse | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
@@ -304,6 +315,62 @@ export function SettingsPage({
                 {t("settings.data_dir.reveal")}
               </button>
             </div>
+            )}
+
+            {tauriHost && (
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <div className="settings-row-label">{t("settings.update.auto.label")}</div>
+                  <div className="settings-row-sub text-meta">
+                    {t("settings.update.auto.sub")}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoUpdateCheck}
+                  aria-label={t("settings.update.auto.aria")}
+                  className={`toggle ${autoUpdateCheck ? "on" : "off"}`}
+                  onClick={() => {
+                    const next = !autoUpdateCheck;
+                    setAutoUpdateCheck(next);
+                    try {
+                      localStorage.setItem(
+                        AUTO_UPDATE_CHECK_KEY,
+                        next ? "true" : "false",
+                      );
+                    } catch {
+                      // ignore — preference just won't persist across
+                      // launches in this sandboxed storage env
+                    }
+                  }}
+                >
+                  <span className="toggle-thumb" aria-hidden />
+                </button>
+              </div>
+            )}
+
+            {tauriHost && (
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <div className="settings-row-label">{t("settings.update.check_now.label")}</div>
+                  <div className="settings-row-sub text-meta">
+                    {t("settings.update.check_now.sub")}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    // UpdateNotice listens for this DOM event and runs a
+                    // forced check; routing through the event keeps banner
+                    // state in one place instead of duplicating it here.
+                    window.dispatchEvent(new Event("foxy:check-updates"));
+                  }}
+                >
+                  {t("settings.update.check_now.button")}
+                </button>
+              </div>
             )}
 
             <div className="settings-row">

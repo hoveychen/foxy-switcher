@@ -1492,6 +1492,12 @@
   border: 0.5px solid var(--warn-soft);
 }
 
+.banner-update {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  border: 0.5px solid var(--accent-soft);
+}
+
 .banner-body {
   display: flex;
   flex-direction: column;
