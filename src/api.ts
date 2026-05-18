@@ -607,6 +607,7 @@ export const apiClient = {
       managed_account_id: number;
       native_backup_present: boolean;
       injected_at: number;
+      marker_state: "intact" | "overwritten" | "missing" | "sidecar-missing" | "unknown" | "";
     }>("/api/cred/status"),
 
   getAutoSwitch: () => api<AutoSwitchSettings>("/api/auto-switch"),

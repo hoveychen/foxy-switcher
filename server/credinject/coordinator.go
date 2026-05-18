@@ -474,6 +474,7 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 			fmt.Sprintf("Build OAuth blob failed: %v", err))
 		return
 	}
+	blob, markerID, markerOK := injectFoxyMarker(blob)
 	if err := c.backend.WriteOAuthBlob(blob); err != nil {
 		c.logger.Printf("[credinject] write OAuth blob (account %d): %v", a.ID, err)
 		c.bus.EmitError(activity.TypeCredFailed, a.ID,
@@ -503,6 +504,19 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 		InjectedAt: c.clock().UnixMilli(),
 	}); err != nil {
 		c.logger.Printf("[credinject] persist state: %v", err)
+	}
+	if markerOK {
+		c.recordMarkerSidecar(a.ID, markerID)
+		// Best-effort race tripwire: we just wrote, so the marker should
+		// match its sidecar. Anything else means another writer (Claude
+		// Code, IDE, hand edit) clobbered the file between WriteOAuthBlob
+		// and Stat. Surface it in logs without failing the inject — the
+		// reverse-sync loop will pick the rotated tokens up shortly.
+		if state, vErr := c.VerifyMarker(); vErr != nil {
+			c.logger.Printf("[credinject] verify marker post-inject (account %d): %v", a.ID, vErr)
+		} else if state != MarkerStateIntact {
+			c.logger.Printf("[credinject] verify marker post-inject (account %d): %s — external writer raced our inject", a.ID, state)
+		}
 	}
 
 	if prev == a.ID {
@@ -754,6 +768,11 @@ func (c *Coordinator) RestoreOnShutdown() error {
 // backend. Missing snapshot → blank both items (the user can re-login through
 // Claude Code's normal flow). Always idempotent.
 func (c *Coordinator) restoreLocked() error {
+	// Whatever path we take, the marker sidecar describes a foxy inject that
+	// no longer applies. Clear it so VerifyMarker doesn't later report Intact
+	// against the user's restored native blob (which never carries a marker).
+	defer func() { _ = clearLastWrite(c.dataDir) }()
+
 	bf, ok, err := readBackup(c.dataDir)
 	if err != nil {
 		return err
@@ -788,10 +807,16 @@ func (c *Coordinator) restoreLocked() error {
 
 // Status describes the coordinator's current state for the /api/cred/status
 // route. Reads are mutex-protected; the JSON shape is part of the public API.
+//
+// MarkerState carries VerifyMarker's verdict so the frontend / TUI can
+// distinguish "foxy's last inject is still authoritative" from "Claude Code
+// rewrote it" without parsing log lines. Empty string is reserved for the
+// nil-Coordinator path (vault mode) — callers treat empty as "not applicable".
 type Status struct {
-	ManagedAccountID    int64 `json:"managed_account_id"`
-	NativeBackupPresent bool  `json:"native_backup_present"`
-	InjectedAt          int64 `json:"injected_at"`
+	ManagedAccountID    int64  `json:"managed_account_id"`
+	NativeBackupPresent bool   `json:"native_backup_present"`
+	InjectedAt          int64  `json:"injected_at"`
+	MarkerState         string `json:"marker_state"`
 }
 
 // DeviceID returns this Coordinator's stable identity used in lease
@@ -819,10 +844,116 @@ func (c *Coordinator) Status() Status {
 		injectedAt = st.InjectedAt
 	}
 	_, hasBackup, _ := readBackup(c.dataDir)
+	markerState, _ := c.VerifyMarker()
 	return Status{
 		ManagedAccountID:    id,
 		NativeBackupPresent: hasBackup,
 		InjectedAt:          injectedAt,
+		MarkerState:         markerState.String(),
+	}
+}
+
+// MarkerState describes whether the on-disk credentials file still carries
+// the foxy marker recorded in the sidecar. Used by /api/cred/status and
+// agent-side debugging to tell foxy-issued state apart from state Claude
+// Code rewrote on top (logout, token refresh, IDE rewrite).
+type MarkerState int
+
+const (
+	// MarkerStateUnknown is the zero value and is only returned alongside a
+	// non-nil error. Callers must check err first.
+	MarkerStateUnknown MarkerState = iota
+	// MarkerStateIntact means the marker in .credentials.json matches the
+	// sidecar's MarkerID — foxy's last inject is still authoritative.
+	MarkerStateIntact
+	// MarkerStateOverwritten means the credentials file exists but its
+	// marker is missing or differs from the sidecar. Claude Code wrote
+	// over our blob (logout, token refresh, IDE rewrite).
+	MarkerStateOverwritten
+	// MarkerStateMissing means the credentials file is gone. User logged
+	// out, or some cleanup script deleted it.
+	MarkerStateMissing
+	// MarkerStateSidecarMissing means foxy has no last-write record on disk
+	// — either nothing was ever injected via this dataDir, or the backend
+	// doesn't support marker bookkeeping (macOS Keychain). Either way, the
+	// answer is "not determinable", not a verdict on the credentials file.
+	MarkerStateSidecarMissing
+)
+
+// String renders MarkerState as a short tag for structured logs.
+func (s MarkerState) String() string {
+	switch s {
+	case MarkerStateIntact:
+		return "intact"
+	case MarkerStateOverwritten:
+		return "overwritten"
+	case MarkerStateMissing:
+		return "missing"
+	case MarkerStateSidecarMissing:
+		return "sidecar-missing"
+	default:
+		return "unknown"
+	}
+}
+
+// VerifyMarker compares the __foxy_marker in the on-disk credentials file
+// against the sidecar's MarkerID. Errors only on unexpected I/O failure
+// (a read that isn't "file not found"); the four-state result is returned
+// alongside a nil error for every expected case so callers can switch on
+// it cleanly.
+func (c *Coordinator) VerifyMarker() (MarkerState, error) {
+	path := credentialsFilePath(c.backend)
+	if path == "" {
+		return MarkerStateSidecarMissing, nil
+	}
+	lw, lwOk, err := readLastWrite(c.dataDir)
+	if err != nil {
+		return MarkerStateUnknown, fmt.Errorf("read sidecar: %w", err)
+	}
+	if !lwOk {
+		return MarkerStateSidecarMissing, nil
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return MarkerStateMissing, nil
+		}
+		return MarkerStateUnknown, fmt.Errorf("read credentials: %w", err)
+	}
+	inFile := extractMarker(blob)
+	if inFile != "" && inFile == lw.MarkerID {
+		return MarkerStateIntact, nil
+	}
+	return MarkerStateOverwritten, nil
+}
+
+// recordMarkerSidecar persists the marker sidecar after a successful inject.
+// Stats the credentials file to capture mtime/size — best-effort: a stat
+// failure (Linux/Windows fileBackend should always succeed, but the call is
+// cheap and surfaced as a log line if it doesn't) leaves the sidecar absent
+// so VerifyMarker reports SidecarMissing rather than a stale match. macOS
+// Keychain backend doesn't satisfy pathReporter; the empty path short-circuits
+// here and no sidecar is written.
+func (c *Coordinator) recordMarkerSidecar(accountID int64, markerID string) {
+	path := credentialsFilePath(c.backend)
+	if path == "" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		c.logger.Printf("[credinject] marker sidecar: stat %s: %v", path, err)
+		return
+	}
+	lw := lastWriteFile{
+		MarkerID:        markerID,
+		AccountID:       accountID,
+		WrittenAt:       c.clock().UnixMilli(),
+		CredentialsPath: path,
+		MTimeNanos:      info.ModTime().UnixNano(),
+		Size:            info.Size(),
+	}
+	if err := writeLastWrite(c.dataDir, lw); err != nil {
+		c.logger.Printf("[credinject] marker sidecar: write: %v", err)
 	}
 }
 

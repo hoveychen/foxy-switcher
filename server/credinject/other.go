@@ -35,6 +35,13 @@ type fileBackend struct {
 	configPath      string
 }
 
+// CredentialsPath exposes the on-disk file the OAuth blob lives in. Satisfies
+// the credinject.pathReporter probe so coordinator's marker bookkeeping can
+// Stat the file right after a write.
+func (b *fileBackend) CredentialsPath() string {
+	return b.credentialsPath
+}
+
 func (b *fileBackend) ReadOAuthBlob() ([]byte, bool, error) {
 	data, err := os.ReadFile(b.credentialsPath)
 	if err != nil {

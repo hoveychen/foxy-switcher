@@ -94,12 +94,14 @@ export function SettingsPage({
   onAutoSwitchChange,
   settings,
   onSettingsChange,
+  markerState,
 }: {
   autoSwitch?: { enabled: boolean; policy: Policy };
   onAutoSwitchToggle?: () => void;
   onAutoSwitchChange?: (v: { enabled: boolean; policy: Policy }) => void;
   settings: Settings;
   onSettingsChange: (patch: Partial<Settings>) => void;
+  markerState?: string;
 }) {
   const [daemonMode, setDaemonMode] = useState<DaemonMode | null>(null);
   const [daemonPort, setDaemonPort] = useState<number | null>(null);
@@ -534,6 +536,28 @@ export function SettingsPage({
               >
                 <span className="toggle-thumb" aria-hidden />
               </button>
+            </div>
+
+            <div className="settings-row">
+              <div className="settings-row-text">
+                <div className="settings-row-label">
+                  {t("settings.marker_state.label")}
+                </div>
+                <div className="settings-row-sub text-meta">
+                  {t("settings.marker_state.sub")}
+                </div>
+              </div>
+              <span
+                className={`pill ${
+                  markerState === "intact" ? "active-pill" : ""
+                }`}
+              >
+                {t(
+                  `settings.marker_state.value.${
+                    (markerState || "unknown").replace("-", "_")
+                  }`,
+                )}
+              </span>
             </div>
 
             <div className="settings-row">

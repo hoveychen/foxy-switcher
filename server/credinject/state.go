@@ -17,6 +17,12 @@ const stateFileName = "injected.json"
 // graceful shutdown / when the pool empties.
 const backupFileName = "native-cred-backup.json"
 
+// lastWriteFileName tracks the most recent OAuth blob foxy injected into the
+// plaintext credentials file. Together with the embedded __foxy_marker inside
+// .credentials.json it lets VerifyMarker tell foxy-issued state apart from
+// state Claude Code wrote on top (logout, token refresh, IDE rewrite).
+const lastWriteFileName = "marker-last-write.json"
+
 type stateFile struct {
 	AccountID  int64  `json:"account_id"`
 	AccessHash string `json:"access_hash"` // sha256 of the access token currently in keychain
@@ -27,6 +33,17 @@ type backupFile struct {
 	OAuthBlob     []byte `json:"oauth_blob"`      // raw JSON blob; nil = no native login was present
 	ManagedAPIKey string `json:"managed_api_key"` // empty = no managed key was present
 	SnapshotAt    int64  `json:"snapshot_at"`
+}
+
+// lastWriteFile is the sidecar record of foxy's most recent OAuth blob write.
+// Compared against .credentials.json's __foxy_marker to detect external rewrites.
+type lastWriteFile struct {
+	MarkerID        string `json:"marker_id"`        // random hex injected into the credentials blob
+	AccountID       int64  `json:"account_id"`       // foxy account whose creds we wrote
+	WrittenAt       int64  `json:"written_at"`       // unix millis at the moment of write
+	CredentialsPath string `json:"credentials_path"` // absolute path foxy wrote to
+	MTimeNanos      int64  `json:"mtime_nanos"`      // os.Stat().ModTime().UnixNano() right after write
+	Size            int64  `json:"size"`             // file size right after write
 }
 
 func readState(dataDir string) (stateFile, bool, error) {
@@ -85,6 +102,39 @@ func writeBackup(dataDir string, b backupFile) error {
 		return err
 	}
 	return atomicWrite(path, append(raw, '\n'), 0o600)
+}
+
+func readLastWrite(dataDir string) (lastWriteFile, bool, error) {
+	path := filepath.Join(dataDir, lastWriteFileName)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return lastWriteFile{}, false, nil
+		}
+		return lastWriteFile{}, false, err
+	}
+	var lw lastWriteFile
+	if err := json.Unmarshal(b, &lw); err != nil {
+		return lastWriteFile{}, false, err
+	}
+	return lw, true, nil
+}
+
+func writeLastWrite(dataDir string, lw lastWriteFile) error {
+	path := filepath.Join(dataDir, lastWriteFileName)
+	b, err := json.MarshalIndent(lw, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(path, append(b, '\n'), 0o600)
+}
+
+func clearLastWrite(dataDir string) error {
+	path := filepath.Join(dataDir, lastWriteFileName)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // atomicWrite writes file contents via tmp + rename so a crash mid-write

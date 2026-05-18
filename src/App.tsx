@@ -94,6 +94,7 @@ export default function App() {
   const [adminMe, setAdminMe] = useState<AdminMe | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [managedAccountId, setManagedAccountId] = useState<number>(0);
+  const [markerState, setMarkerState] = useState<string>("");
   const [now, setNow] = useState<number>(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [daemonOk, setDaemonOk] = useState<boolean>(true);
@@ -168,6 +169,7 @@ export default function App() {
       ]);
       setAccounts(list);
       setManagedAccountId(cred.managed_account_id);
+      setMarkerState(cred.marker_state ?? "");
       setRecentEvents(events);
       if (events.length > 0) {
         const newest = events[0].id; // events are newest-first
@@ -659,6 +661,7 @@ export default function App() {
           onAutoSwitchChange={isVaultOnly ? undefined : setAutoSwitch}
           settings={settings}
           onSettingsChange={persistSettings}
+          markerState={markerState}
         />
       )}
       {route === "devices" && showAdminNav && (

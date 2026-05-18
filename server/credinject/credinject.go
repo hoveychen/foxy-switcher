@@ -16,11 +16,21 @@
 package credinject
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
+
+// markerKey is the JSON property name foxy adds to the OAuth blob it writes
+// into `.credentials.json` on Linux/Windows. Double-underscore prefix is by
+// convention: Claude Code parses the `claudeAiOauth` + `organizationUuid`
+// shape and ignores siblings, so the marker rides along without affecting
+// authentication. Used by VerifyMarker to tell foxy-issued state apart from
+// state Claude Code rewrote (logout, token refresh, IDE rewrite).
+const markerKey = "__foxy_marker"
 
 // claudeCodeClientID is the OAuth client ID Anthropic registered for Claude
 // Code (prod). The same constant is shared by every Claude Code installation
@@ -94,6 +104,70 @@ func deriveRateLimitTier(sub string) string {
 	default:
 		return ""
 	}
+}
+
+// newMarkerID returns a fresh random hex string used as the __foxy_marker
+// value for one inject. 16 hex chars / 64 bits is plenty — false collision
+// rate within one machine's account-switch cadence is astronomically low,
+// and we don't need crypto strength (marker is purely a "did this blob
+// change?" sentinel, not a secret).
+func newMarkerID() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		panic("credinject: rand.Read failed: " + err.Error())
+	}
+	return hex.EncodeToString(buf[:])
+}
+
+// injectFoxyMarker adds a `__foxy_marker` field at the top level of the OAuth
+// blob, alongside `claudeAiOauth` / `organizationUuid`. Returns the rewritten
+// blob, the marker ID, and `injected=true` on success. If the blob isn't a
+// JSON object (malformed or unexpected shape), returns the original bytes
+// with `injected=false` — the caller writes the blob unchanged and skips
+// sidecar bookkeeping. Marker lives at the outer level so Claude Code's
+// parser, which only deep-reads `claudeAiOauth.*` and `organizationUuid`,
+// never sees it.
+func injectFoxyMarker(blob []byte) ([]byte, string, bool) {
+	var obj map[string]any
+	if err := json.Unmarshal(blob, &obj); err != nil || obj == nil {
+		return blob, "", false
+	}
+	id := newMarkerID()
+	obj[markerKey] = id
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return blob, "", false
+	}
+	return out, id, true
+}
+
+// pathReporter is the optional capability a Backend exposes when its
+// credentials live in a file on disk (Linux/Windows fileBackend). macOS
+// Keychain backend deliberately does not implement it — marker bookkeeping
+// only makes sense for plaintext file storage.
+type pathReporter interface {
+	CredentialsPath() string
+}
+
+// credentialsFilePath returns the on-disk path of the credentials file, or
+// "" when the backend doesn't store credentials in a file (macOS Keychain).
+// Callers use the empty string to skip marker injection and sidecar writes.
+func credentialsFilePath(b Backend) string {
+	if pr, ok := b.(pathReporter); ok {
+		return pr.CredentialsPath()
+	}
+	return ""
+}
+
+// extractMarker pulls the __foxy_marker value out of a stored blob. Returns
+// "" when the field is absent or the blob isn't a JSON object.
+func extractMarker(blob []byte) string {
+	var obj map[string]any
+	if err := json.Unmarshal(blob, &obj); err != nil || obj == nil {
+		return ""
+	}
+	v, _ := obj[markerKey].(string)
+	return v
 }
 
 // extractAccessToken pulls claudeAiOauth.accessToken out of a stored blob.
