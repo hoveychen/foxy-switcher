@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Read the usage data — Foxy Switcher local API</title>
+    <meta
+      name="description"
+      content="Foxy Switcher exposes live Claude usage (5h / 7d Opus / 7d Sonnet) over a local HTTP API on 127.0.0.1. Any app on the same machine can read it — no SDK, no auth. Three steps."
+    />
+    <meta name="theme-color" content="#ff7a1a" />
+    <link rel="icon" type="image/png" href="assets/foxy-icon.png" />
+    <meta property="og:title" content="Foxy Switcher — local usage API" />
+    <meta
+      property="og:description"
+      content="Read live Claude usage from another app via Foxy Switcher's local HTTP API."
+    />
+    <meta property="og:image" content="assets/foxy-icon.png" />
+    <meta property="og:type" content="article" />
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      /* Page-local styles for the integration guide. Long-form prose,
+         code blocks and a field table aren't needed on the landing page,
+         so they live here instead of polluting the shared stylesheet.
+         Mirrors deploy.html's .deploy-main block. */
+      .doc-main {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 24px 24px 80px;
+      }
+      .doc-main h1 {
+        font-size: clamp(28px, 4vw, 38px);
+        letter-spacing: -0.02em;
+        margin: 24px 0 12px;
+      }
+      .doc-main h2 {
+        font-size: clamp(22px, 2.6vw, 26px);
+        letter-spacing: -0.01em;
+        margin: 40px 0 12px;
+      }
+      .doc-main h3 {
+        font-size: 17px;
+        font-weight: 600;
+        margin: 20px 0 8px;
+      }
+      .doc-main p,
+      .doc-main li {
+        font-size: 16px;
+        line-height: 1.65;
+        color: var(--text-secondary);
+      }
+      .doc-main a {
+        color: inherit;
+      }
+      .doc-main code {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.92em;
+        background: rgba(128, 128, 128, 0.18);
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+      .doc-main pre {
+        background: var(--bg-card);
+        border-radius: var(--radius-card);
+        padding: 16px 18px;
+        overflow-x: auto;
+        box-shadow: var(--shadow-card);
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13.5px;
+        line-height: 1.55;
+        margin: 12px 0 16px;
+      }
+      .doc-main pre code {
+        background: transparent;
+        padding: 0;
+        font-size: inherit;
+      }
+      .callout {
+        border-left: 3px solid var(--accent, #ff7a1a);
+        background: var(--bg-card);
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin: 16px 0;
+        font-size: 15px;
+        line-height: 1.6;
+      }
+      .callout.warn {
+        border-left-color: var(--warn, #f59e0b);
+      }
+      .doc-toc ol {
+        margin: 8px 0 0;
+        padding-left: 20px;
+      }
+      .doc-toc li {
+        margin: 4px 0;
+      }
+      .field-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 12px 0 16px;
+        font-size: 14.5px;
+        box-shadow: var(--shadow-card);
+        border-radius: var(--radius-card);
+        overflow: hidden;
+      }
+      .field-table th,
+      .field-table td {
+        text-align: left;
+        padding: 10px 14px;
+        border-bottom: 0.5px solid var(--separator);
+        vertical-align: top;
+        background: var(--bg-card);
+      }
+      .field-table th {
+        font-weight: 600;
+        color: var(--text-primary);
+        font-size: 13px;
+        letter-spacing: 0.01em;
+        text-transform: uppercase;
+      }
+      .field-table td {
+        color: var(--text-secondary);
+      }
+      .field-table tr:last-child td {
+        border-bottom: none;
+      }
+      .field-table code {
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Foxy Switcher home">
+        <img src="assets/foxy-icon.png" alt="" width="28" height="28" />
+        <span>Foxy Switcher</span>
+      </a>
+      <nav class="topnav" aria-label="Primary">
+        <a href="./#features">Features</a>
+        <a href="./#how">How it works</a>
+        <a href="./#faq">FAQ</a>
+        <a
+          class="ghost"
+          href="https://github.com/hoveychen/foxy-switcher"
+          target="_blank"
+          rel="noopener"
+          >GitHub</a
+        >
+      </nav>
+    </header>
+
+    <main class="doc-main" id="top">
+      <h1>Read the usage data from another app</h1>
+      <p>
+        Foxy Switcher runs a tiny HTTP daemon on <code>127.0.0.1</code>. Every
+        number you see in the app — each account's <strong>5-hour</strong>,
+        <strong>7-day Opus</strong> and <strong>7-day Sonnet</strong> usage, the
+        reset countdowns, which account is currently in use — is served over
+        that local API. Any program on the same machine can read it. No SDK, no
+        API key, no auth.
+      </p>
+      <p>
+        Under the hood the daemon polls Anthropic's
+        <code>GET https://api.anthropic.com/api/oauth/usage</code> endpoint for
+        each pooled account, stores the result in a local SQLite database, and
+        re-serves it. You don't talk to Anthropic — you talk to the daemon. It's
+        three steps: find the port, pull the data, pick the account.
+      </p>
+
+      <nav class="doc-toc" aria-label="On this page">
+        <strong>On this page</strong>
+        <ol>
+          <li><a href="#port">1. Find the port</a></li>
+          <li><a href="#accounts">2. Pull the usage data</a></li>
+          <li><a href="#in-use">3. Which account is &ldquo;in use&rdquo;?</a></li>
+          <li><a href="#examples">Copy-paste examples</a></li>
+          <li><a href="#caveats">Caveats &amp; gotchas</a></li>
+        </ol>
+      </nav>
+
+      <h2 id="port">1. Find the port</h2>
+      <p>
+        The daemon binds a random port on <code>127.0.0.1</code> and writes it,
+        atomically, to a plain-text file in its data directory:
+      </p>
+      <pre><code>~/.foxy-switcher/port</code></pre>
+      <p>
+        The file holds a single number (e.g. <code>49153</code>). Read it every
+        time you make a request — the port can change across restarts, so don't
+        cache it. If the file is missing, the daemon isn't running. The data
+        directory can be relocated with the <code>FOXY_DATA_DIR</code>
+        environment variable (or the daemon's <code>--data-dir</code> flag); if
+        you've done that, read the <code>port</code> file from there instead.
+      </p>
+
+      <h2 id="accounts">2. Pull the usage data</h2>
+      <p>
+        With the port in hand, GET the account list:
+      </p>
+      <pre><code>GET http://127.0.0.1:{port}/api/accounts</code></pre>
+      <p>
+        No authentication — the server only listens on <code>127.0.0.1</code>,
+        so it trusts anything already running on your machine. The response is a
+        JSON object with an <code>accounts</code> array; each entry carries the
+        three usage windows plus identity and lease metadata:
+      </p>
+      <pre><code>{
+  "accounts": [
+    {
+      "id": 1,
+      "email": "you@example.com",
+      "plan": "Claude Max 20x",
+      "rate_limit_tier": "default_claude_max_20x",
+      "status": "active",
+      "five_hour":        { "utilization": 42, "resets_at": "2026-05-27T08:20:00.868404+00:00" },
+      "seven_day":        { "utilization": 5,  "resets_at": "2026-06-03T02:00:00.868427+00:00" },
+      "seven_day_sonnet": { "utilization": 0,  "resets_at": "2026-06-03T02:00:00.868436+00:00" },
+      "usage_fetched_at": 1779867387977,
+      "five_hour_threshold": 95,
+      "seven_day_threshold": 95,
+      "seven_day_sonnet_threshold": 95,
+      "lease": { "device_id": "…", "device_name": "…", "mine": true,
+                 "acquired_at": 1779866008571, "expires_at": 1779867607434 }
+    }
+  ]
+}</code></pre>
+
+      <p>The fields you'll most likely want, per account:</p>
+      <table class="field-table">
+        <thead>
+          <tr><th>Field</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>email</code> / <code>plan</code></td>
+            <td>Account identity and its subscription label (e.g. &ldquo;Claude Max 20x&rdquo;).</td>
+          </tr>
+          <tr>
+            <td><code>rate_limit_tier</code></td>
+            <td>Tier string such as <code>default_claude_max_20x</code> / <code>default_claude_max_5x</code>.</td>
+          </tr>
+          <tr>
+            <td><code>five_hour</code></td>
+            <td>The 5-hour rolling window: <code>{ utilization, resets_at }</code>.</td>
+          </tr>
+          <tr>
+            <td><code>seven_day</code></td>
+            <td>The 7-day Opus window (shown as &ldquo;7d Opus&rdquo; in the UI).</td>
+          </tr>
+          <tr>
+            <td><code>seven_day_sonnet</code></td>
+            <td>The 7-day Sonnet window.</td>
+          </tr>
+          <tr>
+            <td><code>utilization</code></td>
+            <td><strong>A percentage on a 0&ndash;100 scale</strong> (not a 0&ndash;1 ratio). <code>42</code> means 42%.</td>
+          </tr>
+          <tr>
+            <td><code>resets_at</code></td>
+            <td>RFC 3339 timestamp when that window's usage resets to zero.</td>
+          </tr>
+          <tr>
+            <td><code>*_threshold</code></td>
+            <td>The skip threshold for each window (default 95) — Foxy stops handing out an account once it crosses this.</td>
+          </tr>
+          <tr>
+            <td><code>usage_fetched_at</code></td>
+            <td>Unix milliseconds of the last successful poll. Useful for staleness checks.</td>
+          </tr>
+          <tr>
+            <td><code>lease</code></td>
+            <td>Who currently holds this account (vault mode). <code>lease.mine</code> is true if this device holds it — see step 3.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        There's also <code>GET /api/dashboard</code> for pool-wide aggregates
+        (cooling-account count, next reset time, peak utilization, a 24-hour
+        hourly trend) if you want a single summary number instead of per-account
+        detail.
+      </p>
+
+      <h2 id="in-use">3. Which account is &ldquo;in use&rdquo;?</h2>
+      <p>
+        The app marks one account as <em>in use</em> — the one Foxy Switcher is
+        currently handing to Claude Code. To reproduce that flag, ask the
+        credential-status endpoint:
+      </p>
+      <pre><code>GET http://127.0.0.1:{port}/api/cred/status
+
+{ "managed_account_id": 1, "native_backup_present": true, "injected_at": 1779865969297 }</code></pre>
+      <p>
+        Then look up <code>managed_account_id</code> in the
+        <code>/api/accounts</code> array. This is exactly what the app's own UI
+        does, and it's the right signal in <strong>both</strong> run modes:
+      </p>
+      <ul>
+        <li>
+          <strong>Local mode</strong> (the default desktop app):
+          <code>managed_account_id</code> is the account whose credentials are
+          currently injected into Claude's config — the genuinely active one.
+          There are no leases in this mode, so <code>lease.mine</code> stays
+          false.
+        </li>
+        <li>
+          <strong>Vault mode</strong> (a shared self-hosted pool): there's no
+          local injection, so the daemon falls back to the lease this device
+          holds — <code>managed_account_id</code> then equals the leased
+          account.
+        </li>
+      </ul>
+      <div class="callout warn">
+        <strong>Don't key off <code>lease.mine</code> alone.</strong> It only
+        means anything in vault mode; in local mode it's always false and you'd
+        never find the active account. Always go through
+        <code>/api/cred/status</code> → <code>managed_account_id</code>.
+      </div>
+
+      <h2 id="examples">Copy-paste examples</h2>
+
+      <h3>Shell (curl + jq) — all accounts</h3>
+      <pre><code>PORT=$(cat ~/.foxy-switcher/port)
+curl -fsS "http://127.0.0.1:$PORT/api/accounts" \
+  | jq -r '.accounts[]
+      | "\(.email) [\(.plan)]  5h=\(.five_hour.utilization)%"
+      + "  7dOpus=\(.seven_day.utilization)%"
+      + "  7dSonnet=\(.seven_day_sonnet.utilization)%"'</code></pre>
+
+      <h3>Shell — just the account currently in use</h3>
+      <pre><code>PORT=$(cat ~/.foxy-switcher/port)
+BASE="http://127.0.0.1:$PORT"
+MID=$(curl -fsS "$BASE/api/cred/status" | jq -r '.managed_account_id')
+curl -fsS --max-time 15 "$BASE/api/accounts" \
+  | jq --argjson mid "$MID" '.accounts[] | select(.id == $mid)
+      | { email, plan,
+          five_hour: .five_hour.utilization,
+          seven_day_opus: .seven_day.utilization,
+          seven_day_sonnet: .seven_day_sonnet.utilization }'</code></pre>
+
+      <h3>Node (zero dependencies)</h3>
+      <pre><code>import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+
+const base = `http://127.0.0.1:${readFileSync(`${homedir()}/.foxy-switcher/port`, 'utf8').trim()}`;
+
+const { managed_account_id } = await (await fetch(`${base}/api/cred/status`)).json();
+const { accounts } = await (await fetch(`${base}/api/accounts`)).json();
+
+const inUse = accounts.find((a) =&gt; a.id === managed_account_id);
+console.log(inUse.email, {
+  fiveHour: inUse.five_hour.utilization,       // 0–100
+  sevenDayOpus: inUse.seven_day.utilization,
+  sevenDaySonnet: inUse.seven_day_sonnet.utilization,
+});</code></pre>
+
+      <h2 id="caveats">Caveats &amp; gotchas</h2>
+      <ul>
+        <li>
+          <strong>The port changes.</strong> It's random per launch — re-read
+          <code>~/.foxy-switcher/port</code> on every poll instead of caching it.
+        </li>
+        <li>
+          <strong><code>utilization</code> is 0&ndash;100, not 0&ndash;1.</strong>
+          A value of <code>42</code> means 42%. Don't write a threshold like
+          <code>&gt;= 0.9</code> expecting a ratio — that would fire at 0.9%.
+        </li>
+        <li>
+          <strong>No authentication.</strong> The API trusts every local
+          process because it only binds <code>127.0.0.1</code>. If you ever want
+          a non-local app to read it, put your own authenticated proxy in front
+          — don't expose the daemon's port directly.
+        </li>
+        <li>
+          <strong><code>/api/accounts</code> can be slow.</strong> Building each
+          account's lease view can take a few seconds, especially against a
+          remote vault. Use a generous timeout (≥ 8&nbsp;s) and cache the result
+          locally; the daemon only refreshes usage about once a minute anyway,
+          so polling faster than that buys nothing. <code>/api/cred/status</code>
+          is cheap and returns instantly.
+        </li>
+      </ul>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <img src="assets/foxy-icon.png" alt="" width="24" height="24" />
+          <span>Foxy Switcher</span>
+        </div>
+        <nav class="footer-links" aria-label="Footer">
+          <a
+            href="https://github.com/hoveychen/foxy-switcher"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+          >
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/releases"
+            target="_blank"
+            rel="noopener"
+            >Releases</a
+          >
+          <a href="./">Home</a>
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/issues"
+            target="_blank"
+            rel="noopener"
+            >Issues</a
+          >
+        </nav>
+        <p class="footer-meta">
+          Open source · Single-user · macOS-first ·
+          <a
+            href="https://github.com/hoveychen/foxy-switcher/blob/main/LICENSE"
+            target="_blank"
+            rel="noopener"
+            >License</a
+          >
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
