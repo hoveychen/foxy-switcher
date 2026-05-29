@@ -115,3 +115,75 @@ func applyAccountProfile(configPath string, a *store.Account) error {
 	cfg[onboardingKey] = true
 	return writeConfig(configPath, cfg)
 }
+
+// configProfileSnapshot records the pre-foxy state of the two ~/.claude.json
+// fields applyAccountProfile overwrites. We track presence separately from
+// value so restore is field-level symmetric: a key foxy added (absent at
+// snapshot) is deleted on restore; a key foxy overwrote (present at snapshot)
+// is set back to its original value. This is safer than deleting the whole
+// file, which could discard unrelated state Claude Code wrote into the config
+// between inject and shutdown.
+type configProfileSnapshot struct {
+	OAuthAccount    any  `json:"oauth_account,omitempty"`
+	HadOAuthAccount bool `json:"had_oauth_account"`
+	Onboarding      any  `json:"onboarding,omitempty"`
+	HadOnboarding   bool `json:"had_onboarding"`
+}
+
+// snapshotConfigProfile reads the current oauthAccount + hasCompletedOnboarding
+// out of ~/.claude.json so they can be restored later. A missing file yields a
+// snapshot with both Had* flags false (restore will then delete whatever foxy
+// added). configPath == "" returns (nil, nil) — the no-op path tests use.
+func snapshotConfigProfile(configPath string) (*configProfileSnapshot, error) {
+	if configPath == "" {
+		return nil, nil
+	}
+	cfg, err := readConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	snap := &configProfileSnapshot{}
+	if cfg != nil {
+		if v, ok := cfg[oauthAccountKey]; ok {
+			snap.OAuthAccount = v
+			snap.HadOAuthAccount = true
+		}
+		if v, ok := cfg[onboardingKey]; ok {
+			snap.Onboarding = v
+			snap.HadOnboarding = true
+		}
+	}
+	return snap, nil
+}
+
+// restoreConfigProfile puts the snapshotted oauthAccount + onboarding state
+// back into ~/.claude.json, preserving every other field. Keys that were
+// absent at snapshot time are deleted (foxy added them); keys that were
+// present are set back to their original value. Nil snapshot or empty path is
+// a no-op so legacy backups (no ConfigProfile) and tests both fall through
+// cleanly.
+func restoreConfigProfile(configPath string, snap *configProfileSnapshot) error {
+	if configPath == "" || snap == nil {
+		return nil
+	}
+	cfg, err := readConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	restoreKey(cfg, oauthAccountKey, snap.HadOAuthAccount, snap.OAuthAccount)
+	restoreKey(cfg, onboardingKey, snap.HadOnboarding, snap.Onboarding)
+	return writeConfig(configPath, cfg)
+}
+
+// restoreKey sets cfg[key]=val when the key was present at snapshot time, or
+// deletes it when it was absent (foxy-added).
+func restoreKey(cfg map[string]any, key string, had bool, val any) {
+	if had {
+		cfg[key] = val
+		return
+	}
+	delete(cfg, key)
+}

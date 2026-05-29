@@ -111,3 +111,102 @@ func TestApplyAccountProfileEmptyPathNoOp(t *testing.T) {
 		t.Fatalf("empty path should be a no-op, got %v", err)
 	}
 }
+
+func TestSnapshotConfigProfileMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	snap, err := snapshotConfigProfile(filepath.Join(dir, ".claude.json"))
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snap == nil || snap.HadOAuthAccount || snap.HadOnboarding {
+		t.Fatalf("missing file should snapshot as empty, got %#v", snap)
+	}
+}
+
+// TestConfigProfileRoundTripPresent: user had a real login; foxy overwrites it;
+// restore puts the user's original oauthAccount + onboarding back verbatim,
+// while unrelated fields survive throughout.
+func TestConfigProfileRoundTripPresent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claude.json")
+
+	original := map[string]any{
+		"primaryApiKey":          "sk-keep",
+		"oauthAccount":           map[string]any{"emailAddress": "original@example.com", "accountUuid": "orig-uuid"},
+		"hasCompletedOnboarding": true,
+	}
+	if err := writeConfig(path, original); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	snap, err := snapshotConfigProfile(path)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if !snap.HadOAuthAccount || !snap.HadOnboarding {
+		t.Fatalf("expected both fields captured, got %#v", snap)
+	}
+
+	// foxy switches in a different account.
+	if err := applyAccountProfile(path, &store.Account{Email: "foxy@example.com", AccountUUID: "foxy-uuid"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got := readJSON(t, path)[oauthAccountKey].(map[string]any)["emailAddress"]; got != "foxy@example.com" {
+		t.Fatalf("after inject expected foxy email, got %#v", got)
+	}
+
+	// Shutdown restore.
+	if err := restoreConfigProfile(path, snap); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	cfg := readJSON(t, path)
+	if cfg["primaryApiKey"] != "sk-keep" {
+		t.Errorf("unrelated field clobbered: %#v", cfg["primaryApiKey"])
+	}
+	acct := cfg[oauthAccountKey].(map[string]any)
+	if acct["emailAddress"] != "original@example.com" || acct["accountUuid"] != "orig-uuid" {
+		t.Errorf("oauthAccount not restored to original: %#v", acct)
+	}
+	if cfg[onboardingKey] != true {
+		t.Errorf("onboarding not restored: %#v", cfg[onboardingKey])
+	}
+}
+
+// TestConfigProfileRoundTripAbsent: user had no oauthAccount / onboarding (or
+// no file at all); foxy adds them; restore deletes the foxy-added keys so the
+// config returns to its key-less state.
+func TestConfigProfileRoundTripAbsent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claude.json")
+
+	// Snapshot the not-yet-existing file (foxy is about to create it).
+	snap, err := snapshotConfigProfile(path)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	if err := applyAccountProfile(path, &store.Account{Email: "foxy@example.com"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, ok := readJSON(t, path)[oauthAccountKey]; !ok {
+		t.Fatalf("foxy should have added oauthAccount")
+	}
+
+	if err := restoreConfigProfile(path, snap); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	cfg := readJSON(t, path)
+	if _, ok := cfg[oauthAccountKey]; ok {
+		t.Errorf("foxy-added oauthAccount should be deleted on restore: %#v", cfg[oauthAccountKey])
+	}
+	if _, ok := cfg[onboardingKey]; ok {
+		t.Errorf("foxy-added onboarding should be deleted on restore: %#v", cfg[onboardingKey])
+	}
+}
+
+func TestRestoreConfigProfileNilNoOp(t *testing.T) {
+	// Legacy backup (no ConfigProfile) must not panic or error.
+	if err := restoreConfigProfile("/nonexistent/.claude.json", nil); err != nil {
+		t.Fatalf("nil snapshot should no-op, got %v", err)
+	}
+}
