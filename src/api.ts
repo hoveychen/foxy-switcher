@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 // inTauri reflects whether this React build is running inside the
 // desktop shell. Step 9 lets the same React bundle also be served
@@ -13,15 +12,60 @@ const inTauri =
   typeof window !== "undefined" &&
   ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
 
-// httpFetch picks the right transport. @tauri-apps/plugin-http's fetch
-// is a CORS-respecting bridge that must call window.__TAURI_INTERNALS__
-// .invoke under the hood; in a plain browser that global is undefined
-// and the call throws "Cannot read properties of undefined (reading
-// 'invoke')". The vault deployment serves /app and /api on the same
-// origin, so the browser's built-in fetch works without CORS concerns.
+// tauriHttp is the desktop transport: instead of letting the webview fetch
+// http://127.0.0.1:<port> (which reqwest/WKWebView route through the system
+// proxy — a global VPN / 翻墙 proxy that doesn't bypass loopback then breaks
+// every request), it hands the request to the Rust `api_request` command,
+// which talks to the sidecar with a `.no_proxy()` reqwest client over the IPC
+// bridge. The webview makes no network call, so the proxy is out of the loop.
+//
+// It re-implements just enough of fetch() for api()/PairVaultModal: method,
+// headers, string body in; a real Response (status + headers + body) out.
+// Connection-level failures surface as a thrown invoke rejection, matching the
+// old plugin-http behaviour so api()'s rediscover-and-retry catch still fires.
+async function tauriHttp(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const href = typeof input === "string" ? input : input.toString();
+  const u = new URL(href);
+  // Send path+query only; Rust resolves the loopback port itself.
+  const path = u.pathname + u.search;
+  const method = (init?.method ?? "GET").toUpperCase();
+  const headers: [string, string][] = [];
+  new Headers(init?.headers).forEach((v, k) => headers.push([k, v]));
+  let body: string | undefined;
+  if (init?.body != null) {
+    body = typeof init.body === "string" ? init.body : String(init.body);
+  }
+
+  const resp = await invoke<{
+    status: number;
+    headers: [string, string][];
+    body: string;
+  }>("api_request", { req: { method, path, headers, body } });
+
+  const respHeaders = new Headers();
+  for (const [k, v] of resp.headers) respHeaders.append(k, v);
+  // The Response constructor rejects a body on null-body statuses (204/205/304
+  // and 1xx); pass null there so an empty 204 doesn't throw.
+  const nullBody =
+    resp.status === 204 ||
+    resp.status === 205 ||
+    resp.status === 304 ||
+    resp.status < 200;
+  return new Response(nullBody ? null : resp.body, {
+    status: resp.status,
+    headers: respHeaders,
+  });
+}
+
+// httpFetch picks the right transport. In the desktop shell we go through
+// tauriHttp (Rust, proxy-immune). The vault deployment serves /app and /api on
+// the same origin, so the browser's built-in fetch works without CORS concerns.
 // Exported so PairVaultModal can use the same selector.
 export const httpFetch: typeof fetch = inTauri
-  ? (tauriFetch as typeof fetch)
+  ? (tauriHttp as typeof fetch)
   : (...args) => globalThis.fetch(...args);
 
 let cachedPort: number | null = null;
