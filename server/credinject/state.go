@@ -33,6 +33,13 @@ type backupFile struct {
 	OAuthBlob     []byte `json:"oauth_blob"`      // raw JSON blob; nil = no native login was present
 	ManagedAPIKey string `json:"managed_api_key"` // empty = no managed key was present
 	SnapshotAt    int64  `json:"snapshot_at"`
+
+	// ConfigProfile captures the user's pre-foxy ~/.claude.json identity
+	// fields (oauthAccount + hasCompletedOnboarding) so RestoreOnShutdown can
+	// put them back symmetrically. Nil when the snapshot predates this field
+	// (older backups) — restoreConfigProfile no-ops on nil, leaving the
+	// existing token-only restore behaviour unchanged for legacy backups.
+	ConfigProfile *configProfileSnapshot `json:"config_profile,omitempty"`
 }
 
 // lastWriteFile is the sidecar record of foxy's most recent OAuth blob write.

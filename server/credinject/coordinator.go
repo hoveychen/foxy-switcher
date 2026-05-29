@@ -60,6 +60,14 @@ type Coordinator struct {
 	dataDir string
 	clock   func() time.Time
 
+	// claudeConfigPath is the absolute path to ~/.claude.json. When non-empty,
+	// reconcile syncs the injected account's oauthAccount + hasCompletedOnboarding
+	// into it, and snapshot/restore preserve the user's original identity there.
+	// Empty disables all claude.json profile writes — the default for tests and
+	// the safe fallback if the wiring can't resolve a home dir. Set via
+	// SetClaudeConfigPath from main.go / agent.go after construction.
+	claudeConfigPath string
+
 	// Bus is the optional activity hub the coordinator emits cred.injected /
 	// cred.restored / cred.failed events to. Nil-safe — set via SetBus once
 	// the bus is constructed in main; tests leave it nil.
@@ -136,6 +144,20 @@ func (c *Coordinator) SetBus(b *activity.Bus) {
 		return
 	}
 	c.bus = b
+}
+
+// SetClaudeConfigPath wires the absolute path to ~/.claude.json so reconcile
+// can keep the CLI's oauthAccount + hasCompletedOnboarding in sync with the
+// injected token. Call once after New (main.go / agent.go) with
+// DefaultClaudeConfigPath(); leave unset in tests that don't exercise the
+// profile path. Safe on a nil receiver.
+func (c *Coordinator) SetClaudeConfigPath(path string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.claudeConfigPath = path
 }
 
 // New constructs a Coordinator. The dataDir is where injected.json /
@@ -487,6 +509,19 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 		c.logger.Printf("[credinject] delete managed api key: %v", err)
 	}
 
+	// Keep the CLI's stored identity in lockstep with the token: write the
+	// switched account's oauthAccount + hasCompletedOnboarding into
+	// ~/.claude.json (no-op when claudeConfigPath is unset). Best-effort under
+	// the same no-throw policy as the managed-key flush — the token write
+	// already landed, and a stale profile only skews the /status display and
+	// the onboarding gate, not authentication itself.
+	c.mu.Lock()
+	cfgPath := c.claudeConfigPath
+	c.mu.Unlock()
+	if err := applyAccountProfile(cfgPath, a); err != nil {
+		c.logger.Printf("[credinject] sync claude.json profile (account %d): %v", a.ID, err)
+	}
+
 	c.mu.Lock()
 	c.currentAccountID = a.ID
 	c.lastAccessHash = hash
@@ -707,6 +742,19 @@ func (c *Coordinator) maybeSnapshotNative() {
 			bf.ManagedAPIKey = k
 		}
 	}
+	// Capture the user's pre-foxy ~/.claude.json identity (oauthAccount +
+	// onboarding) alongside the token snapshot so RestoreOnShutdown can put it
+	// back. Independent of `exists`: the native token and the claude.json
+	// identity can be present or absent independently. No-op path returns a nil
+	// snapshot when claudeConfigPath is unset.
+	c.mu.Lock()
+	cfgPath := c.claudeConfigPath
+	c.mu.Unlock()
+	if snap, err := snapshotConfigProfile(cfgPath); err != nil {
+		c.logger.Printf("[credinject] snapshot claude.json profile: %v", err)
+	} else {
+		bf.ConfigProfile = snap
+	}
 	if err := writeBackup(c.dataDir, bf); err != nil {
 		c.logger.Printf("[credinject] snapshot: write backup: %v", err)
 		return
@@ -801,6 +849,16 @@ func (c *Coordinator) restoreLocked() error {
 		if err := c.backend.DeleteManagedAPIKey(); err != nil {
 			return err
 		}
+	}
+	// Put the user's pre-foxy claude.json identity back (present keys restored,
+	// foxy-added keys deleted). Best-effort: the token restore above is the
+	// load-bearing part; a profile-restore hiccup shouldn't fail shutdown and
+	// strand the keychain. Nil ConfigProfile (legacy backups) no-ops.
+	c.mu.Lock()
+	cfgPath := c.claudeConfigPath
+	c.mu.Unlock()
+	if err := restoreConfigProfile(cfgPath, bf.ConfigProfile); err != nil {
+		c.logger.Printf("[credinject] restore claude.json profile: %v", err)
 	}
 	return nil
 }
