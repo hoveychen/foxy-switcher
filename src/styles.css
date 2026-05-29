@@ -1096,3 +1096,81 @@ input {
     transform: rotate(360deg);
   }
 }
+
+/* --- Per-device quota attribution (AccountDrawer) ---------------------- */
+.attr-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.attr-window {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.attr-window-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.attr-bar {
+  display: flex;
+  height: 8px;
+  width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-pill);
+}
+
+.attr-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.attr-seg-empty {
+  width: 100%;
+  background: var(--bg-pill);
+}
+
+.attr-legend {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.attr-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.attr-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.attr-legend-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attr-legend-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+}
