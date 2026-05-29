@@ -244,8 +244,12 @@ function AttributionSection({ accountId }: { accountId: number }) {
   let body: React.ReactNode;
   if (attr.sample_count < 2) {
     body = <p className="attr-hint">{t("drawer.attr.thin_data")}</p>;
-  } else if (rows.length === 0) {
-    body = <p className="attr-hint">{t("drawer.attr.none")}</p>;
+  } else if (attr.devices.length === 0) {
+    // Usage was observed but none of it overlapped a recorded lease segment
+    // (e.g. the account was held before device-usage recording began). Showing
+    // a lone "no device 100%" bar reads as broken — surface a clear
+    // accumulating hint instead.
+    body = <p className="attr-hint">{t("drawer.attr.accumulating")}</p>;
   } else {
     const total5h = totalFor("five_hour");
     body = (

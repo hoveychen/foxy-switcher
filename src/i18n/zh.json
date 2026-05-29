@@ -354,7 +354,7 @@
   "drawer.section.attribution": "设备占比",
   "drawer.attr.hint": "近似估算：按各设备持有此账号的时长，分摊当前窗口的用量增量。",
   "drawer.attr.thin_data": "数据不足，刚开始记录或用量未变化。",
-  "drawer.attr.none": "当前窗口暂无可归属的用量。",
+  "drawer.attr.accumulating": "正在积累设备占用数据：已看到用量，但还没有落在已记录的设备持有时段内（账号可能在记录开始前就已被持有）。继续使用一阵后这里会显示各设备占比。",
   "drawer.attr.unattributed": "无设备（未持有租约时段）",
   "drawer.attr.share_aria": "{device} 在 {window} 窗口的占比",
   "drawer.usage.5h": "5h",

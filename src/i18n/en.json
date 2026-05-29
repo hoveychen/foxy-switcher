@@ -354,7 +354,7 @@
   "drawer.section.attribution": "Device breakdown",
   "drawer.attr.hint": "Estimated: the current window's usage increase split across devices by how long each held this account.",
   "drawer.attr.thin_data": "Not enough history yet — just started recording, or usage hasn't changed.",
-  "drawer.attr.none": "No attributable usage in the current window.",
+  "drawer.attr.accumulating": "Building device-usage data: usage was seen but none of it falls inside a recorded device-hold window yet (the account may have been held before recording began). Per-device shares will appear here after a while of use.",
   "drawer.attr.unattributed": "No device (no lease held)",
   "drawer.attr.share_aria": "{device} share of the {window} window",
   "drawer.usage.5h": "5h",
