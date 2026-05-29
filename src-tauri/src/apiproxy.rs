@@ -70,6 +70,20 @@ pub struct ApiResponse {
     pub body: String,
 }
 
+// StreamMsg mirrors the EventSource lifecycle the frontend used to get from a
+// native EventSource: `open` once the connection is established (so the UI can
+// flip to "live" and cancel any reconnect polling), `event` per activity
+// payload, and `closed` when the stream ends or errors (the UI's onerror
+// pendant — it starts the polling fallback). Without `open`/`closed` the
+// frontend couldn't tell a healthy stream from a dead one over the channel.
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum StreamMsg {
+    Open,
+    Event { data: String },
+    Closed,
+}
+
 // api_request is the REST pendant of the old webview fetch. It returns Ok for
 // ANY HTTP response (including 4xx/5xx) so the frontend's `!res.ok` handling
 // still fires; it returns Err only for transport-level failures (connect
@@ -121,7 +135,7 @@ pub async fn api_request(
 pub async fn activity_stream(
     app: AppHandle,
     state: State<'_, ProxyState>,
-    on_event: Channel<String>,
+    on_event: Channel<StreamMsg>,
 ) -> Result<u64, String> {
     let port = crate::sidecar::rediscover_port(&app)
         .ok_or_else(|| "server not started yet".to_string())?;
@@ -132,9 +146,18 @@ pub async fn activity_stream(
         let url = format!("http://127.0.0.1:{port}/api/activity/stream");
         let resp = match client.get(&url).send().await {
             Ok(r) => r,
-            Err(_) => return, // frontend's onerror equivalent: it falls back to polling
+            // onerror pendant: tell the frontend to start polling.
+            Err(_) => {
+                let _ = on_event.send(StreamMsg::Closed);
+                return;
+            }
         };
         if !resp.status().is_success() {
+            let _ = on_event.send(StreamMsg::Closed);
+            return;
+        }
+        // Connection established — the onopen pendant.
+        if on_event.send(StreamMsg::Open).is_err() {
             return;
         }
         let mut resp = resp;
@@ -151,14 +174,17 @@ pub async fn activity_stream(
                         if let Some(data) = parse_activity_frame(&frame) {
                             // send() only errors if the channel is gone; the
                             // stop command aborts us before that, so just bail.
-                            if on_event.send(data).is_err() {
+                            if on_event.send(StreamMsg::Event { data }).is_err() {
                                 return;
                             }
                         }
                     }
                 }
-                Ok(None) => return, // server closed the stream
-                Err(_) => return,   // network error; frontend polls as fallback
+                // Stream ended / network error — onerror pendant.
+                Ok(None) | Err(_) => {
+                    let _ = on_event.send(StreamMsg::Closed);
+                    return;
+                }
             }
         }
     });
