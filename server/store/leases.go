@@ -62,9 +62,10 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 	}
 
 	var existingID, existingDeviceID string
+	var existingAcquiredAt int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, device_id FROM leases WHERE account_id = ?`, accountID).
-		Scan(&existingID, &existingDeviceID)
+		`SELECT id, device_id, acquired_at FROM leases WHERE account_id = ?`, accountID).
+		Scan(&existingID, &existingDeviceID, &existingAcquiredAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// Free — insert the lease and open its attribution segment.
@@ -95,6 +96,14 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE leases SET expires_at = ? WHERE id = ?`,
 		expiresAt, existingID); err != nil {
+		return Lease{}, err
+	}
+	// Backfill an attribution segment for a lease that has none — e.g. one
+	// first acquired before lease_events existed, then kept alive purely by
+	// renewals (the renew path otherwise never opens a segment, so the held
+	// account would show as unattributed forever). Anchored at the lease's
+	// original acquired_at so the full held span becomes attributable.
+	if err := ensureOpenLeaseEventTx(ctx, tx, existingID, accountID, deviceID, existingAcquiredAt); err != nil {
 		return Lease{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -131,7 +140,16 @@ func (s *Store) RenewLease(ctx context.Context, leaseID string, ttl time.Duratio
 	if errors.Is(err, sql.ErrNoRows) {
 		return Lease{}, ErrNotFound
 	}
-	return l, err
+	if err != nil {
+		return Lease{}, err
+	}
+	// Backfill a missing attribution segment (same rationale as the
+	// AcquireLease renew-in-place path): a lease kept alive purely via
+	// RenewLease never opens a segment otherwise. Anchored at acquired_at.
+	if err := ensureOpenLeaseEventTx(ctx, s.db, l.ID, l.AccountID, l.DeviceID, l.AcquiredAt); err != nil {
+		return Lease{}, err
+	}
+	return l, nil
 }
 
 // ReleaseLease removes the lease early. Idempotent — releasing an unknown
@@ -426,6 +444,29 @@ UPDATE lease_events
    SET ended_at = (SELECT leases.expires_at FROM leases WHERE leases.id = lease_events.lease_id)
  WHERE ended_at = 0
    AND lease_id IN (SELECT id FROM leases WHERE expires_at <= ?)`, cutoff)
+	return err
+}
+
+// execer is the subset of *sql.DB / *sql.Tx that ensureOpenLeaseEventTx needs,
+// so the helper works both inside AcquireLease's transaction and on the bare
+// db from RenewLease.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// ensureOpenLeaseEventTx opens an attribution segment for leaseID only if it
+// has no currently-open one. Idempotent: the conditional INSERT no-ops when an
+// open segment already exists, so it is safe to call on every renew. startedAt
+// should be the lease's original acquired_at so a backfilled segment covers the
+// full held span. This closes the gap where a lease kept alive purely by
+// renewals (never re-inserted) would otherwise never get a segment — the cause
+// of an actively-held account rendering as 100% unattributed.
+func ensureOpenLeaseEventTx(ctx context.Context, ex execer, leaseID string, accountID int64, deviceID string, startedAt int64) error {
+	_, err := ex.ExecContext(ctx, `
+INSERT INTO lease_events (lease_id, account_id, device_id, started_at, ended_at)
+SELECT ?, ?, ?, ?, 0
+ WHERE NOT EXISTS (SELECT 1 FROM lease_events WHERE lease_id = ? AND ended_at = 0)`,
+		leaseID, accountID, deviceID, startedAt, leaseID)
 	return err
 }
 
