@@ -288,6 +288,11 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 		cc = credinject.New(vaultSvc, backend, opts.DataDir, logger, "")
 		cc.SetBus(bus)
 		cc.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
+		if p, err := credinject.DefaultClaudeConfigPath(); err != nil {
+			logger.Printf("warning: resolve claude.json path: %v (profile sync disabled)", err)
+		} else {
+			cc.SetClaudeConfigPath(p)
+		}
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
 				logger.Printf("warning: restore native credentials: %v", err)

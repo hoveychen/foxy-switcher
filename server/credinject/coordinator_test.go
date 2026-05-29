@@ -134,6 +134,67 @@ func TestReconcile_InjectsFreshAccount(t *testing.T) {
 	}
 }
 
+// TestReconcile_SyncsClaudeJSONProfile is the end-to-end P3 check: a switch
+// writes the account's oauthAccount + hasCompletedOnboarding into ~/.claude.json
+// (creating nothing it shouldn't, clobbering no unrelated field), and shutdown
+// restores the user's pre-foxy identity symmetrically.
+func TestReconcile_SyncsClaudeJSONProfile(t *testing.T) {
+	c, _, st, dir := newCoord(t)
+	cfgPath := filepath.Join(dir, ".claude.json")
+
+	// Pre-existing user identity: an oauthAccount but no onboarding flag, plus
+	// an unrelated field that must survive the whole cycle.
+	if err := writeConfig(cfgPath, map[string]any{
+		"oauthAccount": map[string]any{"emailAddress": "user@home.com"},
+		"numStartups":  float64(7),
+	}); err != nil {
+		t.Fatalf("seed cfg: %v", err)
+	}
+	c.SetClaudeConfigPath(cfgPath)
+
+	a := store.Account{
+		Name: "alpha", AccessToken: "sk-ant-oat01-alpha", RefreshToken: "r",
+		ExpiresAt: time.Now().Add(2 * time.Hour).UnixMilli(),
+		Scopes:    "user:inference user:profile", SubscriptionType: "max", Status: "active",
+		Email: "alpha@corp.com", AccountUUID: "alpha-uuid", FullName: "Alpha", OrganizationName: "Corp",
+	}
+	if err := st.Upsert(context.Background(), &a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	c.reconcile(context.Background())
+
+	cfg := readJSON(t, cfgPath)
+	if cfg[onboardingKey] != true {
+		t.Errorf("hasCompletedOnboarding not set after inject: %#v", cfg[onboardingKey])
+	}
+	acct := cfg[oauthAccountKey].(map[string]any)
+	if acct["emailAddress"] != "alpha@corp.com" {
+		t.Errorf("oauthAccount not synced to switched account: %#v", acct)
+	}
+	if cfg["numStartups"] != float64(7) {
+		t.Errorf("unrelated field clobbered: %#v", cfg["numStartups"])
+	}
+
+	// Shutdown: restore the user's original identity. oauthAccount goes back to
+	// user@home.com (present at snapshot); the foxy-added onboarding flag is
+	// removed (absent at snapshot).
+	if err := c.RestoreOnShutdown(); err != nil {
+		t.Fatalf("RestoreOnShutdown: %v", err)
+	}
+	cfg = readJSON(t, cfgPath)
+	acct = cfg[oauthAccountKey].(map[string]any)
+	if acct["emailAddress"] != "user@home.com" {
+		t.Errorf("identity not restored on shutdown: %#v", acct)
+	}
+	if _, ok := cfg[onboardingKey]; ok {
+		t.Errorf("foxy-added onboarding should be removed on restore: %#v", cfg[onboardingKey])
+	}
+	if cfg["numStartups"] != float64(7) {
+		t.Errorf("unrelated field lost across restore: %#v", cfg["numStartups"])
+	}
+}
+
 func TestReconcile_NoOpIfAlreadyInjected(t *testing.T) {
 	c, be, st, _ := newCoord(t)
 	seedActive(t, st, "alpha", "sk-ant-oat01-alpha")

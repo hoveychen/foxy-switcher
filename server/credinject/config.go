@@ -33,6 +33,19 @@ const onboardingKey = "hasCompletedOnboarding"
 // but the UI says account B" mismatch.
 const oauthAccountKey = "oauthAccount"
 
+// DefaultClaudeConfigPath returns the absolute path to ~/.claude.json for the
+// current user ($HOME/.claude.json; %USERPROFILE%\.claude.json on Windows, via
+// os.UserHomeDir). main.go / agent.go pass the result to
+// Coordinator.SetClaudeConfigPath; on resolve failure they leave the path
+// unset, which disables profile sync rather than guessing a wrong location.
+func DefaultClaudeConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("UserHomeDir: %w", err)
+	}
+	return filepath.Join(home, ".claude.json"), nil
+}
+
 // readConfig loads ~/.claude.json into a generic map. A missing file returns
 // (nil, nil) — callers treat that as "no config yet" and create one. Parse
 // errors are surfaced so we never silently clobber a file we couldn't read.

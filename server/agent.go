@@ -81,6 +81,11 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		}
 		cc = credinject.New(client, backend, opts.DataDir, logger, cfg.DeviceID)
 		cc.SetBus(bus)
+		if p, err := credinject.DefaultClaudeConfigPath(); err != nil {
+			logger.Printf("warning: resolve claude.json path: %v (profile sync disabled)", err)
+		} else {
+			cc.SetClaudeConfigPath(p)
+		}
 		// Read auto-switch from the agent-local store rather than the
 		// remote vault. The desktop's settings page writes the toggle to
 		// agent-activity.db via /api/auto-switch (see registerLocalPrefRoutes
