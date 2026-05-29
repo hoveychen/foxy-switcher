@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { Topbar } from "../components/Topbar";
-import { apiClient, getServerPort, type ActivityEvent } from "../api";
+import { apiClient, getServerPort, isTauriHost, type ActivityEvent } from "../api";
 import { t, tf } from "../i18n";
+
+// ActivityStreamMsg mirrors the Rust StreamMsg enum (apiproxy.rs). The desktop
+// stream arrives over a Tauri Channel instead of a native EventSource so the
+// loopback connection isn't subject to the system proxy; these are the
+// onopen / onmessage / onerror pendants.
+type ActivityStreamMsg =
+  | { kind: "open" }
+  | { kind: "event"; data: string }
+  | { kind: "closed" };
 
 type FilterKey = "all" | "switches" | "refreshes" | "errors";
 
@@ -113,6 +123,7 @@ export function ActivityPage({
 
     let cancelled = false;
     let es: EventSource | null = null;
+    let streamId: number | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
     const startPolling = () => {
@@ -148,6 +159,61 @@ export function ActivityPage({
         return;
       }
 
+      const handleOpen = () => {
+        if (cancelled) return;
+        setStreamState("live");
+        // Cancel any polling we started during reconnect.
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      };
+      const handleError = () => {
+        if (cancelled) return;
+        setStreamState((s) => (s === "live" ? "fallback" : "down"));
+        startPolling();
+      };
+
+      // Desktop: stream over the Rust IPC channel so the loopback connection
+      // bypasses the system proxy (see apiproxy.rs). The Go SSE handler is
+      // parsed Rust-side; we just get open / event / closed messages here.
+      if (isTauriHost()) {
+        const channel = new Channel<ActivityStreamMsg>();
+        channel.onmessage = (msg) => {
+          if (cancelled) return;
+          if (msg.kind === "open") {
+            handleOpen();
+          } else if (msg.kind === "event") {
+            try {
+              ingest(JSON.parse(msg.data) as ActivityEvent);
+            } catch {
+              // ignore malformed payload
+            }
+          } else {
+            // "closed": the Rust task ended (daemon restart / network). Unlike
+            // EventSource there's no built-in retry, so polling carries us
+            // until this effect re-runs and reattaches the stream.
+            handleError();
+          }
+        };
+        try {
+          streamId = await invoke<number>("activity_stream", { onEvent: channel });
+        } catch {
+          startPolling();
+          return;
+        }
+        // Raced with unmount between await points — stop the task we just
+        // started so it doesn't leak.
+        if (cancelled && streamId !== null) {
+          void invoke("activity_stream_stop", { id: streamId });
+          streamId = null;
+        }
+        return;
+      }
+
+      // Browser / vault mode: native EventSource. There's no local sidecar on
+      // the user's 127.0.0.1 here, so this typically fails fast and the
+      // polling fallback (same-origin api()) takes over — unchanged behaviour.
       let port: number;
       try {
         port = await getServerPort();
@@ -173,28 +239,14 @@ export function ActivityPage({
         }
       });
 
-      es.onopen = () => {
-        if (cancelled) return;
-        setStreamState("live");
-        // Cancel any polling we started during reconnect.
-        if (pollTimer) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-        }
-      };
-
-      es.onerror = () => {
-        // EventSource auto-retries; we still spin up polling so the user
-        // doesn't sit on stale data while the browser back-off is pending.
-        if (cancelled) return;
-        setStreamState((s) => (s === "live" ? "fallback" : "down"));
-        startPolling();
-      };
+      es.onopen = handleOpen;
+      es.onerror = handleError;
     })();
 
     return () => {
       cancelled = true;
       if (es) es.close();
+      if (streamId !== null) void invoke("activity_stream_stop", { id: streamId });
       if (pollTimer) clearInterval(pollTimer);
     };
     // `paused` intentionally excluded — flipping pause shouldn't reconnect

@@ -11,6 +11,7 @@
 // any hook commands. SIGTERM in sidecar::shutdown is what gives the sidecar
 // a chance to run its cleanup defers — see the comment there.
 
+mod apiproxy;
 mod sidecar;
 mod version_check;
 
@@ -625,7 +626,8 @@ pub fn run() {
             MacosLauncher::AppleScript,
             Some(vec!["--start-minimized"]),
         ))
-        .manage(ServerState::default());
+        .manage(ServerState::default())
+        .manage(apiproxy::ProxyState::new());
 
     // macOS routes app menus into the system menubar at the top of the
     // screen, where they belong. Windows / Linux would render the same
@@ -651,7 +653,10 @@ pub fn run() {
             save_agent_config,
             clear_agent_config,
             get_device_info,
-            check_app_version
+            check_app_version,
+            apiproxy::api_request,
+            apiproxy::activity_stream,
+            apiproxy::activity_stream_stop
         ])
         .setup(|app| {
             let handle = app.handle().clone();
