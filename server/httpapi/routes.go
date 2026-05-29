@@ -93,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/{id}/refresh", s.handleRefreshNow)
 	mux.HandleFunc("POST /api/accounts/{id}/select", s.handleSelect)
 	mux.HandleFunc("POST /api/accounts/{id}/thresholds", s.handleSetThresholds)
+	mux.HandleFunc("GET /api/accounts/{id}/attribution", s.handleAttribution)
 	mux.HandleFunc("GET /api/cred/status", s.handleCredStatus)
 	mux.HandleFunc("GET /api/auto-switch", s.handleGetAutoSwitch)
 	mux.HandleFunc("POST /api/auto-switch", s.handleSetAutoSwitch)
@@ -209,6 +210,30 @@ type accountView struct {
 	// Tokens are deliberately omitted from the UI surface.
 }
 
+// deviceShareView is one device's attributed contribution to an account's
+// usage, in utilization points (0–100, same unit as the bars) for the current
+// 5h / 7d / 7d-sonnet window. The frontend turns these into a share % by
+// dividing each device's points by the per-window total.
+type deviceShareView struct {
+	DeviceID       string  `json:"device_id"`   // "" for the unattributed bucket
+	DeviceName     string  `json:"device_name"` // "" for the unattributed bucket
+	FiveHour       float64 `json:"five_hour"`
+	SevenDay       float64 `json:"seven_day"`
+	SevenDaySonnet float64 `json:"seven_day_sonnet"`
+}
+
+// attributionView is the response shape for
+// GET /api/accounts/{id}/attribution. Devices is sorted by total contribution
+// descending; Unattributed (if non-zero) holds points from intervals with no
+// lease holder. SampleCount lets the UI flag thin data.
+type attributionView struct {
+	AccountID    int64             `json:"account_id"`
+	Devices      []deviceShareView `json:"devices"`
+	Unattributed *deviceShareView  `json:"unattributed,omitempty"`
+	SampleCount  int               `json:"sample_count"`
+	SampleStart  int64             `json:"sample_start"`
+}
+
 func toView(a store.Account) accountView {
 	view := accountView{
 		ID: a.ID, Name: a.Name, ExpiresAt: a.ExpiresAt, Scopes: a.Scopes,
@@ -306,6 +331,46 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
+}
+
+// handleAttribution returns the per-device quota breakdown for one account:
+// how much of each window's current consumption each device drove, estimated
+// by replaying usage_history deltas against lease_events held-time. Answers
+// "which device used this account up, and in what proportion".
+func (s *Server) handleAttribution(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	at, err := s.Store.ComputeAttribution(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := attributionView{
+		AccountID:   at.AccountID,
+		Devices:     make([]deviceShareView, len(at.Devices)),
+		SampleCount: at.SampleCount,
+		SampleStart: at.SampleStart,
+	}
+	for i, d := range at.Devices {
+		out.Devices[i] = deviceShareView{
+			DeviceID:       d.DeviceID,
+			DeviceName:     d.DeviceName,
+			FiveHour:       d.FiveHour,
+			SevenDay:       d.SevenDay,
+			SevenDaySonnet: d.SevenDaySonnet,
+		}
+	}
+	if u := at.Unattributed; u.FiveHour > 0 || u.SevenDay > 0 || u.SevenDaySonnet > 0 {
+		out.Unattributed = &deviceShareView{
+			FiveHour:       u.FiveHour,
+			SevenDay:       u.SevenDay,
+			SevenDaySonnet: u.SevenDaySonnet,
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // --- PKCE login ------------------------------------------------------------
