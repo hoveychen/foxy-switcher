@@ -18,6 +18,11 @@ import (
 //   - web_sessions  — HTTP cookie sessions for the admin Web UI.
 //   - leases        — credinject's claim on accounts (one per account at
 //                     a time, enforced by leases_account_id_uniq below).
+//   - lease_events   — append-only audit of who held what, when. A row is
+//                     opened on first acquire and closed (ended_at set) on
+//                     release/expiry. Unlike `leases` (current-state only),
+//                     this keeps history so per-device quota attribution can
+//                     replay which device held an account across a window.
 const authSchema = `
 CREATE TABLE IF NOT EXISTS devices (
   id            TEXT    PRIMARY KEY,
@@ -72,6 +77,17 @@ CREATE TABLE IF NOT EXISTS leases (
 CREATE UNIQUE INDEX IF NOT EXISTS leases_account_id_uniq ON leases (account_id);
 CREATE INDEX IF NOT EXISTS leases_device_id ON leases (device_id);
 CREATE INDEX IF NOT EXISTS leases_expires_at ON leases (expires_at);
+
+CREATE TABLE IF NOT EXISTS lease_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  lease_id    TEXT    NOT NULL,
+  account_id  INTEGER NOT NULL,
+  device_id   TEXT    NOT NULL,
+  started_at  INTEGER NOT NULL,
+  ended_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS lease_events_account ON lease_events (account_id, started_at);
+CREATE INDEX IF NOT EXISTS lease_events_open ON lease_events (lease_id, ended_at);
 `
 
 // authColumnMigrations adds device-meta columns to existing databases. The
