@@ -222,6 +222,13 @@ export default function App() {
   // Fresh installs (mode=combined, zero accounts, no localStorage flag)
   // still walk the wizard.
   //
+  // Vault-only mode (the cloud server's own web admin UI, opened in a
+  // browser at the vault origin) must also skip the wizard: the "store
+  // your account locally or in the cloud" choice is meaningless when
+  // you are already looking at the cloud vault, and a brand-new vault
+  // has zero accounts so the listAccounts branch below would otherwise
+  // leave the overlay stuck open over the admin UI.
+  //
   // Agent-mode dismissal must NOT depend on listAccounts succeeding —
   // a paired vault behind an SSO that gates /api/* (whitelisting only
   // /agent/v1/*) makes listAccounts throw, and a Promise.all that
@@ -235,6 +242,10 @@ export default function App() {
         const about = await apiClient.getAbout();
         if (canceled) return;
         if (about.mode === "agent" && about.vault_url) {
+          dismissOnboarding();
+          return;
+        }
+        if (about.mode === "vault") {
           dismissOnboarding();
           return;
         }
