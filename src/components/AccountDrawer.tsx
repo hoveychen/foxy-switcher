@@ -1,9 +1,21 @@
-import React, { useCallback, useRef, useState } from "react";
-import type { Account, ThresholdInput, UsageWindow } from "../api";
-import { accountIsCooling, accountResetAt } from "../api";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import type {
+  Account,
+  AccountAttribution,
+  DeviceShare,
+  ThresholdInput,
+  UsageWindow,
+} from "../api";
+import { accountIsCooling, accountResetAt, apiClient } from "../api";
 import { Drawer } from "./Drawer";
 import { FoxAvatar } from "./FoxAvatar";
 import { t, tf } from "../i18n";
+
+// Stable per-device segment colours for the attribution bars. Index-assigned
+// (backend already sorts devices by total contribution), wrapping if a pool
+// somehow has more devices than colours; the unattributed bucket uses grey.
+const ATTR_PALETTE = ["#e0823d", "#3d9be0", "#6dbf6d", "#c062c0", "#d9b54a"];
+const ATTR_UNATTRIBUTED_COLOR = "#9aa0a6";
 
 type Tone = "ok" | "warn" | "danger" | "muted";
 
@@ -176,6 +188,124 @@ function UsageBar({
   );
 }
 
+// AttributionSection renders the per-device quota breakdown for an account:
+// for each rate-limit window, a stacked bar split by each device's share, plus
+// a legend listing devices with their 5h share (the window that drives
+// cooldown). Fetched on open; silently hidden if the endpoint is unavailable
+// (e.g. an agent-mode proxy that doesn't forward it) so it never breaks the
+// drawer.
+function AttributionSection({ accountId }: { accountId: number }) {
+  const [attr, setAttr] = useState<AccountAttribution | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    setAttr(null);
+    setFailed(false);
+    apiClient.attribution(accountId).then(
+      (a) => {
+        if (live) setAttr(a);
+      },
+      () => {
+        if (live) setFailed(true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [accountId]);
+
+  if (failed || !attr) return null;
+
+  const windows: { key: keyof Omit<DeviceShare, "device_id" | "device_name">; label: string }[] = [
+    { key: "five_hour", label: t("drawer.usage.5h") },
+    { key: "seven_day", label: t("drawer.usage.7d_opus") },
+    { key: "seven_day_sonnet", label: t("drawer.usage.7d_sonnet") },
+  ];
+
+  const rows = attr.devices.map((d, i) => ({
+    id: d.device_id || `dev-${i}`,
+    name: d.device_name || d.device_id || "—",
+    share: d,
+    color: ATTR_PALETTE[i % ATTR_PALETTE.length],
+  }));
+  if (attr.unattributed) {
+    rows.push({
+      id: "__unattributed__",
+      name: t("drawer.attr.unattributed"),
+      share: attr.unattributed,
+      color: ATTR_UNATTRIBUTED_COLOR,
+    });
+  }
+
+  const totalFor = (key: typeof windows[number]["key"]) =>
+    rows.reduce((sum, r) => sum + r.share[key], 0);
+
+  let body: React.ReactNode;
+  if (attr.sample_count < 2) {
+    body = <p className="attr-hint">{t("drawer.attr.thin_data")}</p>;
+  } else if (rows.length === 0) {
+    body = <p className="attr-hint">{t("drawer.attr.none")}</p>;
+  } else {
+    const total5h = totalFor("five_hour");
+    body = (
+      <>
+        {windows.map((w) => {
+          const total = totalFor(w.key);
+          return (
+            <div className="attr-window" key={w.key}>
+              <span className="attr-window-label">{w.label}</span>
+              <div className="attr-bar">
+                {total > 0 ? (
+                  rows.map((r) => {
+                    const pct = (r.share[w.key] / total) * 100;
+                    if (pct <= 0) return null;
+                    return (
+                      <div
+                        key={r.id}
+                        className="attr-seg"
+                        style={{ width: `${pct}%`, backgroundColor: r.color }}
+                        title={`${r.name} · ${pct.toFixed(0)}%`}
+                        aria-label={tf("drawer.attr.share_aria", {
+                          device: r.name,
+                          window: w.label,
+                        })}
+                      />
+                    );
+                  })
+                ) : (
+                  <div className="attr-seg attr-seg-empty" />
+                )}
+              </div>
+            </div>
+          );
+        })}
+        <ul className="attr-legend">
+          {rows.map((r) => (
+            <li key={r.id}>
+              <span className="attr-swatch" style={{ backgroundColor: r.color }} aria-hidden />
+              <span className="attr-legend-name">{r.name}</span>
+              {total5h > 0 && (
+                <span className="attr-legend-pct">
+                  {((r.share.five_hour / total5h) * 100).toFixed(0)}%
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      </>
+    );
+  }
+
+  return (
+    <div className="drawer-section">
+      <h3 className="drawer-section-title">{t("drawer.section.attribution")}</h3>
+      <p className="attr-hint">{t("drawer.attr.hint")}</p>
+      {body}
+    </div>
+  );
+}
+
 export function AccountDrawer({
   account,
   nowMs,
@@ -342,6 +472,8 @@ export function AccountDrawer({
           />
         </div>
       </div>
+
+      <AttributionSection accountId={account.id} />
 
       <div className="drawer-section">
         <h3 className="drawer-section-title">{t("drawer.section.details")}</h3>

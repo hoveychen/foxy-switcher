@@ -620,6 +620,30 @@ SELECT account_id, ts, five_hour_util, seven_day_util, seven_day_sonnet_util
 	return out, rows.Err()
 }
 
+// UsageHistoryForAccountSince returns one account's snapshots with ts >= since,
+// ordered ascending by ts. Per-device quota attribution walks these deltas;
+// the (account_id, ts DESC) index keeps the scan cheap.
+func (s *Store) UsageHistoryForAccountSince(ctx context.Context, accountID, since int64) ([]UsageHistoryRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT account_id, ts, five_hour_util, seven_day_util, seven_day_sonnet_util
+  FROM usage_history
+ WHERE account_id = ? AND ts >= ?
+ ORDER BY ts ASC`, accountID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UsageHistoryRow
+	for rows.Next() {
+		var r UsageHistoryRow
+		if err := rows.Scan(&r.AccountID, &r.Timestamp, &r.FiveHourUtil, &r.SevenDayUtil, &r.SevenDaySonnetUtil); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // SetUsage replaces the usage snapshot for one account. Pointer fields may be
 // nil, in which case the corresponding columns are zeroed (the API didn't
 // return that window this poll).

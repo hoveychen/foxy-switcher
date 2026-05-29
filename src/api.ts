@@ -154,6 +154,30 @@ export interface AccountLease {
   expires_at: number;
 }
 
+// DeviceShare is one device's estimated contribution to an account's usage,
+// in utilization points (0–100, same unit as the bars) for the current
+// 5h / 7d / 7d-sonnet window. Turn into a share % by dividing by the
+// per-window total (sum of all devices + unattributed). The unattributed
+// bucket has empty device_id / device_name.
+export interface DeviceShare {
+  device_id: string;
+  device_name: string;
+  five_hour: number;
+  seven_day: number;
+  seven_day_sonnet: number;
+}
+
+// AccountAttribution is the per-device breakdown for one account, returned by
+// GET /api/accounts/{id}/attribution. devices is sorted by total contribution
+// descending. sample_count < 2 means there isn't enough history yet to diff.
+export interface AccountAttribution {
+  account_id: number;
+  devices: DeviceShare[];
+  unattributed?: DeviceShare;
+  sample_count: number;
+  sample_start: number;
+}
+
 export interface ThresholdInput {
   five_hour: number;
   seven_day: number;
@@ -598,6 +622,9 @@ export const apiClient = {
       method: "POST",
       json: t,
     }),
+
+  attribution: (id: number) =>
+    api<AccountAttribution>(`/api/accounts/${id}/attribution`),
 
   deleteAccount: (id: number) =>
     api<void>(`/api/accounts/${id}`, { method: "DELETE" }),

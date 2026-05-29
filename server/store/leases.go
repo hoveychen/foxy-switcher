@@ -47,6 +47,13 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 	}
 	defer tx.Rollback()
 
+	// Close the lease_events segments of any rows we're about to sweep,
+	// bounding each at its own expires_at (the device couldn't have used
+	// the account past that). Must run before the DELETE, while expires_at
+	// is still readable.
+	if err := closeExpiredLeaseEventsTx(ctx, tx, now.UnixMilli()); err != nil {
+		return Lease{}, err
+	}
 	// Sweep stale rows so the unique index doesn't reject our insert
 	// because of a long-expired row that nobody released.
 	if _, err := tx.ExecContext(ctx,
@@ -60,11 +67,17 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 		Scan(&existingID, &existingDeviceID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		// Free — insert.
+		// Free — insert the lease and open its attribution segment.
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO leases (id, account_id, device_id, acquired_at, expires_at)
 			 VALUES (?, ?, ?, ?, ?)`,
 			newID, accountID, deviceID, now.UnixMilli(), expiresAt); err != nil {
+			return Lease{}, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO lease_events (lease_id, account_id, device_id, started_at, ended_at)
+			 VALUES (?, ?, ?, ?, 0)`,
+			newID, accountID, deviceID, now.UnixMilli()); err != nil {
 			return Lease{}, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -122,13 +135,26 @@ func (s *Store) RenewLease(ctx context.Context, leaseID string, ttl time.Duratio
 }
 
 // ReleaseLease removes the lease early. Idempotent — releasing an unknown
-// lease is not an error.
+// lease is not an error. Closes the lease's open attribution segment at the
+// release instant so per-device usage replay stops counting it.
 func (s *Store) ReleaseLease(ctx context.Context, leaseID string) error {
 	if leaseID == "" {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM leases WHERE id = ?`, leaseID)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE lease_events SET ended_at = ? WHERE lease_id = ? AND ended_at = 0`,
+		time.Now().UnixMilli(), leaseID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM leases WHERE id = ?`, leaseID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // FirstActiveLease returns the account_id of an arbitrary live lease, or
@@ -368,9 +394,75 @@ func (s *Store) IsAccountLeasedByOther(accountID int64, deviceID string) bool {
 
 // SweepLeases deletes expired rows so the leases_account_id_uniq index
 // stays satisfiable for the next AcquireLease attempt. Run on a goroutine
-// timer (typically every 30s).
+// timer (typically every 30s). Closes each swept lease's open attribution
+// segment at its expires_at before deleting, so the lease_events history
+// outlives the leases row.
 func (s *Store) SweepLeases(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM leases WHERE expires_at <= ?`, time.Now().UnixMilli())
+	now := time.Now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := closeExpiredLeaseEventsTx(ctx, tx, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM leases WHERE expires_at <= ?`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// closeExpiredLeaseEventsTx stamps ended_at on every still-open lease_events
+// row whose lease has expired (expires_at <= cutoff), bounding the segment at
+// the lease's own expires_at — a device cannot have used the account past the
+// moment its lease lapsed. Shared by SweepLeases and AcquireLease so both
+// expiry paths produce identical history. Leases already gone from the table
+// (released early) are untouched: ReleaseLease closed their segment itself.
+func closeExpiredLeaseEventsTx(ctx context.Context, tx *sql.Tx, cutoff int64) error {
+	_, err := tx.ExecContext(ctx, `
+UPDATE lease_events
+   SET ended_at = (SELECT leases.expires_at FROM leases WHERE leases.id = lease_events.lease_id)
+ WHERE ended_at = 0
+   AND lease_id IN (SELECT id FROM leases WHERE expires_at <= ?)`, cutoff)
 	return err
+}
+
+// LeaseEvent is one (device held account) segment from lease_events. An open
+// segment (still-live lease) has EndedAt == 0; attribution code treats that as
+// "ongoing, cap at now". Returned by LeaseEventsForAccountSince ordered by
+// started_at ascending.
+type LeaseEvent struct {
+	LeaseID   string
+	AccountID int64
+	DeviceID  string
+	StartedAt int64
+	EndedAt   int64 // 0 == still open
+}
+
+// LeaseEventsForAccountSince returns every lease segment for accountID that
+// overlaps [since, ∞): either still open (ended_at == 0) or ended at/after
+// `since`. Ordered by started_at ascending so attribution can walk them in
+// time order. Used by the per-device quota attribution computation.
+func (s *Store) LeaseEventsForAccountSince(ctx context.Context, accountID, since int64) ([]LeaseEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT lease_id, account_id, device_id, started_at, ended_at
+  FROM lease_events
+ WHERE account_id = ?
+   AND (ended_at = 0 OR ended_at >= ?)
+ ORDER BY started_at ASC`, accountID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LeaseEvent
+	for rows.Next() {
+		var e LeaseEvent
+		if err := rows.Scan(&e.LeaseID, &e.AccountID, &e.DeviceID, &e.StartedAt, &e.EndedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
