@@ -36,10 +36,13 @@ const requestTimeout = 5 * time.Second
 // account simply skips one tick before retrying.
 const retryAfterFallback = 60 * time.Second
 
-// retryAfterCap bounds whatever Anthropic asks us to wait. Past 30 minutes
-// we'd rather poll and risk another 429 than hide the account from the UI
-// for an unbounded stretch.
-const retryAfterCap = 30 * time.Minute
+// retryAfterCap bounds whatever Anthropic asks us to wait. Anthropic was
+// observed handing one rate-limited account a ~59m Retry-After on
+// /api/oauth/usage; a smaller cap made the poller retry mid-cooldown and get
+// re-throttled every cycle, so the cap must cover an hour-long backoff. Past
+// 1 hour we'd rather poll and risk another 429 than hide the account from the
+// UI for an unbounded stretch.
+const retryAfterCap = time.Hour
 
 // RateLimitError is returned by getJSON (and therefore FetchUsage /
 // FetchProfile) when the upstream responds 429. Callers use errors.As to
