@@ -209,6 +209,11 @@ export interface DeviceShare {
   five_hour: number;
   seven_day: number;
   seven_day_sonnet: number;
+  // Approximate last time this device actually drove usage (unix millis).
+  // Grounded in real utilization deltas, not the lease's acquired_at, so a
+  // device that leased but never sent a request has no value here. Omitted
+  // (undefined) when never observed and for the unattributed bucket.
+  last_used_at?: number;
 }
 
 // AccountAttribution is the per-device breakdown for one account, returned by

@@ -1169,6 +1169,14 @@ input {
   white-space: nowrap;
 }
 
+.attr-legend-lastused {
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.8;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
 .attr-legend-pct {
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
