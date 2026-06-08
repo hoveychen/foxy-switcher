@@ -126,6 +126,56 @@ func TestAttribution_Handoff(t *testing.T) {
 	if at.Devices[0].DeviceID != "dev-y" {
 		t.Fatalf("sort order: %+v", at.Devices)
 	}
+	// LastUsedAt is the end of each device's last positive-delta interval:
+	// X's last consumption ends at t2 (the handoff), Y's at t4.
+	if by["dev-x"].LastUsedAt != base+20*minMs {
+		t.Fatalf("dev-x LastUsedAt=%d want %d (t2)", by["dev-x"].LastUsedAt, base+20*minMs)
+	}
+	if by["dev-y"].LastUsedAt != base+40*minMs {
+		t.Fatalf("dev-y LastUsedAt=%d want %d (t4)", by["dev-y"].LastUsedAt, base+40*minMs)
+	}
+}
+
+// TestAttribution_LastUsedLeasedButIdle: a device that holds the lease during
+// an interval with no usage delta never gets a LastUsedAt — proving the value
+// tracks real consumption, not mere lease possession. Here dev-busy drives all
+// the early usage, then dev-idle takes over the lease but usage stays flat.
+func TestAttribution_LastUsedLeasedButIdle(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+	a := &Account{Name: "alpha", AccessToken: "at", RefreshToken: "rt"}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"dev-busy", "dev-idle"} {
+		if err := st.InsertDevice(ctx, Device{ID: id, Name: id, TokenHash: "h-" + id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Now().Add(-60 * time.Minute).UnixMilli()
+	// 5h util rises 0→20→20→20: only the first interval has a delta.
+	insertSnapshot(t, st, a.ID, base+0*minMs, 0, 0, 0)
+	insertSnapshot(t, st, a.ID, base+10*minMs, 20, 0, 0)
+	insertSnapshot(t, st, a.ID, base+20*minMs, 20, 0, 0)
+	insertSnapshot(t, st, a.ID, base+30*minMs, 20, 0, 0)
+	// dev-busy holds [t0, t1] (during the only real consumption); dev-idle holds
+	// [t1, now] (lease, but usage is flat the whole time).
+	insertSegment(t, st, a.ID, "dev-busy", base+0*minMs, base+10*minMs)
+	insertSegment(t, st, a.ID, "dev-idle", base+10*minMs, 0)
+
+	at, err := st.ComputeAttribution(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("ComputeAttribution: %v", err)
+	}
+	by := shareByDevice(at)
+	if by["dev-busy"].LastUsedAt != base+10*minMs {
+		t.Fatalf("dev-busy LastUsedAt=%d want %d (t1)", by["dev-busy"].LastUsedAt, base+10*minMs)
+	}
+	// dev-idle leased but never consumed → no real-usage timestamp (and it
+	// shouldn't even appear as a contributing device).
+	if d, ok := by["dev-idle"]; ok && d.LastUsedAt != 0 {
+		t.Fatalf("dev-idle LastUsedAt=%d want 0 (leased but idle)", d.LastUsedAt)
+	}
 }
 
 // TestAttribution_WindowReset: a utilization drop is a window rollover. Only
