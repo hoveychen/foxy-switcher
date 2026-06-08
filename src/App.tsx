@@ -157,19 +157,31 @@ export default function App() {
   const lastNotifiedIDRef = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
-    try {
-      const [list, cred, events, auto] = await Promise.all([
-        apiClient.listAccounts(),
-        apiClient.credStatus(),
-        // Dashboard only renders the top 5; ask for a small slice so the JSON
-        // payload stays tight on every poll.
-        apiClient.listActivity({ limit: 10 }).catch(() => [] as ActivityEvent[]),
-        // Polled so TUI / other client edits to the policy show up here.
-        apiClient.getAutoSwitch().catch(() => null),
-      ]);
-      setAccounts(list);
-      setManagedAccountId(cred.managed_account_id);
-      setMarkerState(cred.marker_state ?? "");
+    // allSettled, NOT Promise.all: in agent mode listAccounts / listActivity
+    // proxy to a remote vault, so a single transient hiccup (network blip,
+    // SSO, cold proxy) used to reject the whole batch and skip every setter —
+    // freezing the accounts list (and its lease badges) on the last good
+    // snapshot until a later poll happened to succeed. Settling each call
+    // independently lets the pieces that did succeed update, and keeps the
+    // last-known value for the ones that didn't.
+    const [listR, credR, eventsR, autoR] = await Promise.allSettled([
+      apiClient.listAccounts(),
+      apiClient.credStatus(),
+      // Dashboard only renders the top 5; ask for a small slice so the JSON
+      // payload stays tight on every poll.
+      apiClient.listActivity({ limit: 10 }),
+      // Polled so TUI / other client edits to the policy show up here.
+      apiClient.getAutoSwitch(),
+    ]);
+    if (listR.status === "fulfilled") setAccounts(listR.value);
+    if (credR.status === "fulfilled") {
+      setManagedAccountId(credR.value.managed_account_id);
+      setMarkerState(credR.value.marker_state ?? "");
+    }
+    // Only touch recentEvents when the fetch succeeded — keep the last-known
+    // timeline on a transient failure rather than blanking it.
+    if (eventsR.status === "fulfilled") {
+      const events = eventsR.value;
       setRecentEvents(events);
       if (events.length > 0) {
         const newest = events[0].id; // events are newest-first
@@ -184,14 +196,25 @@ export default function App() {
           void notifyForEvents(fresh);
         }
       }
-      if (auto && !autoSwitchWritingRef.current) {
-        setAutoSwitchState(auto);
-      }
+    }
+    if (
+      autoR.status === "fulfilled" &&
+      autoR.value &&
+      !autoSwitchWritingRef.current
+    ) {
+      setAutoSwitchState(autoR.value);
+    }
+    // Connectivity is keyed off credStatus, not listAccounts: credStatus is
+    // served locally even in agent mode (the agent owns /api/cred/status),
+    // so it's the truest "is the local daemon up" probe. A remote
+    // listAccounts failure must NOT trip the disconnect banner when the
+    // local daemon is perfectly healthy.
+    if (credR.status === "fulfilled") {
       setDaemonOk(true);
       setError(null);
-    } catch (e) {
+    } else {
       setDaemonOk(false);
-      setError(String(e));
+      setError(String(credR.reason));
     }
   }, []);
 
@@ -348,6 +371,27 @@ export default function App() {
     return () => {
       clearInterval(i);
       clearInterval(t);
+    };
+  }, [refresh]);
+
+  // Force a refresh the moment the window becomes visible / regains focus.
+  // FoxySwitcher is a tray app — closing the window only hides it (the
+  // sidecar keeps running), so the window sits hidden most of the time.
+  // WKWebView throttles/suspends the 5s setInterval above while hidden (and
+  // the OS pauses it entirely across sleep), so on re-open the accounts list
+  // — including each account's lease badge — would otherwise show a stale
+  // snapshot from whenever the timer last fired. In agent mode that's how a
+  // pool account another device leased while you were away still looks free
+  // until you act on it. Re-fetching on show closes that gap.
+  useEffect(() => {
+    const onShow = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", onShow);
+    window.addEventListener("focus", onShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onShow);
+      window.removeEventListener("focus", onShow);
     };
   }, [refresh]);
 
