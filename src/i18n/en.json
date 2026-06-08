@@ -357,6 +357,7 @@
   "drawer.attr.accumulating": "Building device-usage data: usage was seen but none of it falls inside a recorded device-hold window yet (the account may have been held before recording began). Per-device shares will appear here after a while of use.",
   "drawer.attr.unattributed": "No device (no lease held)",
   "drawer.attr.share_aria": "{device} share of the {window} window",
+  "drawer.attr.last_used": "last real use {time} ago",
   "drawer.usage.5h": "5h",
   "drawer.usage.7d_opus": "7d Opus",
   "drawer.usage.7d_sonnet": "7d Sonnet",

@@ -220,6 +220,10 @@ type deviceShareView struct {
 	FiveHour       float64 `json:"five_hour"`
 	SevenDay       float64 `json:"seven_day"`
 	SevenDaySonnet float64 `json:"seven_day_sonnet"`
+	// LastUsedAt: approximate last time this device actually drove usage (unix
+	// millis); 0/omitted when never observed. Real-consumption grounded, unlike
+	// the lease's acquired_at. Not emitted for the unattributed bucket.
+	LastUsedAt int64 `json:"last_used_at,omitempty"`
 }
 
 // attributionView is the response shape for
@@ -361,6 +365,7 @@ func (s *Server) handleAttribution(w http.ResponseWriter, r *http.Request) {
 			FiveHour:       d.FiveHour,
 			SevenDay:       d.SevenDay,
 			SevenDaySonnet: d.SevenDaySonnet,
+			LastUsedAt:     d.LastUsedAt,
 		}
 	}
 	if u := at.Unattributed; u.FiveHour > 0 || u.SevenDay > 0 || u.SevenDaySonnet > 0 {

@@ -73,6 +73,11 @@ func TestAttributionEndpoint(t *testing.T) {
 	if d.FiveHour <= 0 {
 		t.Fatalf("device five_hour=%.3f want > 0", d.FiveHour)
 	}
+	// last_used_at is plumbed through: the device drove real usage, so it must
+	// carry a positive timestamp no older than the lease acquisition.
+	if d.LastUsedAt < acq {
+		t.Fatalf("last_used_at=%d want >= acquire time %d", d.LastUsedAt, acq)
+	}
 	// Device + unattributed points reconstruct the observed delta (25).
 	total := d.FiveHour
 	if out.Unattributed != nil {

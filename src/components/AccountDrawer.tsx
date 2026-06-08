@@ -217,7 +217,7 @@ function AttributionSection({ accountId }: { accountId: number }) {
 
   if (failed || !attr) return null;
 
-  const windows: { key: keyof Omit<DeviceShare, "device_id" | "device_name">; label: string }[] = [
+  const windows: { key: keyof Omit<DeviceShare, "device_id" | "device_name" | "last_used_at">; label: string }[] = [
     { key: "five_hour", label: t("drawer.usage.5h") },
     { key: "seven_day", label: t("drawer.usage.7d_opus") },
     { key: "seven_day_sonnet", label: t("drawer.usage.7d_sonnet") },
@@ -289,6 +289,16 @@ function AttributionSection({ accountId }: { accountId: number }) {
             <li key={r.id}>
               <span className="attr-swatch" style={{ backgroundColor: r.color }} aria-hidden />
               <span className="attr-legend-name">{r.name}</span>
+              {r.id !== "__unattributed__" && r.share.last_used_at ? (
+                <span
+                  className="attr-legend-lastused"
+                  title={new Date(r.share.last_used_at).toLocaleString()}
+                >
+                  {tf("drawer.attr.last_used", {
+                    time: fmtRemaining(Date.now() - r.share.last_used_at),
+                  })}
+                </span>
+              ) : null}
               {total5h > 0 && (
                 <span className="attr-legend-pct">
                   {((r.share.five_hour / total5h) * 100).toFixed(0)}%

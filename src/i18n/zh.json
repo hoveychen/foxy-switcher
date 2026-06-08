@@ -357,6 +357,7 @@
   "drawer.attr.accumulating": "正在积累设备占用数据：已看到用量，但还没有落在已记录的设备持有时段内（账号可能在记录开始前就已被持有）。继续使用一阵后这里会显示各设备占比。",
   "drawer.attr.unattributed": "无设备（未持有租约时段）",
   "drawer.attr.share_aria": "{device} 在 {window} 窗口的占比",
+  "drawer.attr.last_used": "最近真实使用：{time}前",
   "drawer.usage.5h": "5h",
   "drawer.usage.7d_opus": "7d Opus",
   "drawer.usage.7d_sonnet": "7d Sonnet",
