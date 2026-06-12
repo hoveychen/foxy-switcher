@@ -64,7 +64,7 @@ func (s *InProc) Pick(ctx context.Context, now time.Time) (*Account, error) {
 // leased account" behaviour for callers that don't yet plumb device
 // identity through.
 func (s *InProc) PickForDevice(ctx context.Context, now time.Time, deviceID string) (*Account, error) {
-	return selector.PickWithFilter(ctx, s.st, now, func(a Account) bool {
+	return selector.PickWithFilter(ctx, s.st, now, deviceID, func(a Account) bool {
 		if deviceID == "" {
 			return s.st.IsAccountLeased(a.ID)
 		}

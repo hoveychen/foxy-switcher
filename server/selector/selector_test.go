@@ -112,7 +112,7 @@ func TestPickSkipsAccountWithExpiredToken(t *testing.T) {
 	}
 	// Force the expired account to be the LRU favourite — without the
 	// expired filter it would win the pick.
-	if err := st.MarkForNextPick(ctx, expired.ID); err != nil {
+	if err := st.MarkForNextPick(ctx, expired.ID, ""); err != nil {
 		t.Fatalf("mark for next pick: %v", err)
 	}
 

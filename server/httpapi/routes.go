@@ -659,12 +659,31 @@ func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "account is not eligible", http.StatusConflict)
 		return
 	}
-	if err := s.Store.MarkForNextPick(r.Context(), id); err != nil {
+	if err := s.Store.MarkForNextPick(r.Context(), id, s.pinDeviceID(r.Context())); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.Cred.Trigger()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// pinDeviceID resolves which device a /select pin should be scoped to:
+//   - vault mode + Bearer device → that device.
+//   - combined mode (no device in ctx) → the local coordinator's device id,
+//     so the pin stays invisible to any paired agents sharing the pool.
+//   - web-admin cookie session (or no coordinator) → "" — the legacy global
+//     pin every device races for, since the admin named no target device.
+func (s *Server) pinDeviceID(ctx context.Context) string {
+	if devID, ok := vaulthttpserver.DeviceFromContext(ctx); ok {
+		if devID == vaulthttpserver.SessionDeviceID {
+			return ""
+		}
+		return devID
+	}
+	if s.Cred != nil {
+		return s.Cred.DeviceID()
+	}
+	return ""
 }
 
 // thresholdsReq is the body shape for POST /api/accounts/{id}/thresholds.

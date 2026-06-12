@@ -277,7 +277,7 @@ func (s *Store) ListAccountsWithLeases(ctx context.Context) ([]AccountWithLease,
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
-			&a.AccountUUID, &a.RateLimitTier,
+			&a.AccountUUID, &a.RateLimitTier, &a.PinnedDeviceID,
 			&deviceID, &acquiredAt, &expiresAt, &deviceName,
 		); err != nil {
 			return nil, err
@@ -377,7 +377,7 @@ accounts.seven_day_util, accounts.seven_day_resets_at,
 accounts.seven_day_sonnet_util, accounts.seven_day_sonnet_resets_at,
 accounts.usage_fetched_at,
 accounts.five_hour_threshold, accounts.seven_day_threshold, accounts.seven_day_sonnet_threshold,
-accounts.account_uuid, accounts.rate_limit_tier`
+accounts.account_uuid, accounts.rate_limit_tier, accounts.pinned_device_id`
 
 // IsAccountLeased reports whether accountID has a live lease. Used by
 // refresh.Scheduler.IsAccountInUse and by selector.Pick to skip in-use

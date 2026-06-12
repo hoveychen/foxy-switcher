@@ -26,7 +26,7 @@ var ErrNoAvailable = errors.New("no available account")
 // the store; the caller should call store.MarkUsed after the inject succeeds
 // so the LRU clock advances.
 func Pick(ctx context.Context, st *store.Store, now time.Time) (*store.Account, error) {
-	return PickWithFilter(ctx, st, now, nil)
+	return PickWithFilter(ctx, st, now, "", nil)
 }
 
 // PickWithFilter is Pick with an extra disqualifier the caller can apply
@@ -34,7 +34,14 @@ func Pick(ctx context.Context, st *store.Store, now time.Time) (*store.Account, 
 // accounts another device currently holds a live lease on. `extraSkip`
 // returns true to drop the account from the candidate set; nil means
 // "no extra filter" and PickWithFilter behaves identically to Pick.
-func PickWithFilter(ctx context.Context, st *store.Store, now time.Time, extraSkip func(store.Account) bool) (*store.Account, error) {
+//
+// deviceID identifies the picking device so an account pinned for it
+// (store.MarkForNextPick with that device) jumps to the front of the
+// order. Accounts pinned for OTHER devices get no promotion here — they
+// keep their plain LRU position, which is what stops every device's
+// reconcile tick from stampeding onto a freshly-pinned account. "" means
+// the caller has no device identity; only LRU order applies.
+func PickWithFilter(ctx context.Context, st *store.Store, now time.Time, deviceID string, extraSkip func(store.Account) bool) (*store.Account, error) {
 	accs, err := st.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
@@ -54,8 +61,15 @@ func PickWithFilter(ctx context.Context, st *store.Store, now time.Time, extraSk
 		return nil, ErrNoAvailable
 	}
 
-	// Least-recently-used wins. Tie-break by id for stability.
+	// Pinned-for-this-device first, then least-recently-used. Tie-break by
+	// id for stability.
+	pinnedForMe := func(a store.Account) bool {
+		return deviceID != "" && a.PinnedDeviceID == deviceID
+	}
 	sort.Slice(candidates, func(i, j int) bool {
+		if pi, pj := pinnedForMe(candidates[i]), pinnedForMe(candidates[j]); pi != pj {
+			return pi
+		}
 		if candidates[i].LastUsedAt != candidates[j].LastUsedAt {
 			return candidates[i].LastUsedAt < candidates[j].LastUsedAt
 		}

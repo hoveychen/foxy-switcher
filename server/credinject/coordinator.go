@@ -341,8 +341,12 @@ func (c *Coordinator) loadState() {
 // choose decides which account reconcile should target this tick. The policy
 // is sticky-with-explicit-pin: keep the currently-injected account if it's
 // still eligible (active, token live, under threshold) AND no other account
-// has had its last_used_at zeroed (the MarkForNextPick sentinel used by
-// /select and fresh-add). Otherwise fall back to the LRU selector.
+// is pinned for this tick. A pin is either device-scoped (MarkForNextPick
+// recorded our deviceID — only we react) or the legacy global sentinel
+// (last_used_at == 0, set by fresh-add and device-less /select callers —
+// every device reacts). Pins for OTHER devices are ignored: reacting to them
+// is exactly the stampede that let a foreign tick steal a user's manual
+// switch. Otherwise fall back to the LRU selector.
 //
 // Why: without stickiness, every 5s reconcile re-runs LRU; MarkUsed bumps the
 // just-injected account to "now", which makes the *other* eligible account
@@ -350,7 +354,7 @@ func (c *Coordinator) loadState() {
 // forever. The "In use" badge in the UI ping-pongs every refresh.
 //
 // Manual mode (auto_switch.enabled=false): never spontaneously rotate. Only
-// switch when the user explicitly pinned (MarkForNextPick → LastUsedAt==0) or
+// switch when the user explicitly pinned (for this device, or globally) or
 // when the current account becomes ineligible. Without an eligible target,
 // return ErrNoAvailable so the caller restores the user's native creds.
 func (c *Coordinator) choose(ctx context.Context) (*vault.Account, error) {
@@ -401,7 +405,7 @@ func (c *Coordinator) choose(ctx context.Context) (*vault.Account, error) {
 			cur = &ac
 			continue
 		}
-		if a.LastUsedAt == 0 {
+		if c.pinnedForMe(a) {
 			pinnedOther = true
 		}
 	}
@@ -411,9 +415,21 @@ func (c *Coordinator) choose(ctx context.Context) (*vault.Account, error) {
 	return c.svc.PickForDevice(ctx, c.clock(), c.deviceID)
 }
 
+// pinnedForMe reports whether account `a` carries a pin this device must
+// honour: a device-scoped pin naming us, or the legacy global sentinel
+// (last_used_at == 0 with no owning device). Foreign devices' pins are
+// invisible on purpose — see choose.
+func (c *Coordinator) pinnedForMe(a vault.Account) bool {
+	if a.PinnedDeviceID != "" {
+		return a.PinnedDeviceID == c.deviceID
+	}
+	return a.LastUsedAt == 0
+}
+
 // chooseManual implements the auto-switch=off path. Order:
-//  1. Honour an explicit pin (LastUsedAt==0) — that's how the UI's "Use now"
-//     button reaches us, and a manual user expects clicks to take effect.
+//  1. Honour an explicit pin for this device (or a legacy global pin) —
+//     that's how the UI's "Use now" button reaches us, and a manual user
+//     expects clicks to take effect.
 //  2. Stick to the current account if it's still eligible.
 //  3. Otherwise no rotation — return ErrNoAvailable so credinject restores
 //     native creds rather than silently picking some other pool member.
@@ -429,7 +445,7 @@ func (c *Coordinator) chooseManual(ctx context.Context, currentID int64) (*vault
 		if !selector.IsEligible(a, now) {
 			continue
 		}
-		if a.LastUsedAt == 0 && (pinned == nil || a.ID < pinned.ID) {
+		if c.pinnedForMe(a) && (pinned == nil || a.ID < pinned.ID) {
 			pp := a
 			pinned = &pp
 		}
@@ -602,8 +618,19 @@ func (c *Coordinator) refreshLease(ctx context.Context, accountID int64) error {
 		return err
 	}
 	c.mu.Lock()
+	oldLeaseID := c.currentLeaseID
 	c.currentLeaseID = lease.ID
 	c.mu.Unlock()
+	// Release the previous account's lease only after the new acquire
+	// succeeded — releasing first would let another device grab the old
+	// account while our keychain still injects it. Without this release the
+	// old lease lingered until TTL+sweep (~90s): the UI showed this device
+	// on two account cards and other devices couldn't pick the old account.
+	if oldLeaseID != "" && oldLeaseID != lease.ID {
+		if err := c.svc.ReleaseLease(ctx, oldLeaseID); err != nil {
+			c.logger.Printf("[credinject] release previous lease %s: %v", oldLeaseID, err)
+		}
+	}
 	return nil
 }
 

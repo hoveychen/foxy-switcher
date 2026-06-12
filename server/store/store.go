@@ -30,8 +30,14 @@ type Account struct {
 	OrganizationUUID string
 	Status           string // "active" | "paused"
 	LastUsedAt       int64  // unix millis
-	CreatedAt        int64
-	UpdatedAt        int64
+	// PinnedDeviceID scopes a "Use now" pin to the device that asked for
+	// it. Only that device's selector promotes the row to the front;
+	// other devices follow plain LRU. Empty = not device-pinned (the
+	// legacy global pin is last_used_at == 0). Cleared by MarkUsed once
+	// any device actually injects the account.
+	PinnedDeviceID string
+	CreatedAt      int64
+	UpdatedAt      int64
 
 	// Profile fields populated once at login from /api/oauth/profile.
 	// AccountUUID is the stable per-user id and the dedup key used by Upsert.
@@ -119,7 +125,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
-  rate_limit_tier            TEXT    NOT NULL DEFAULT ''
+  rate_limit_tier            TEXT    NOT NULL DEFAULT '',
+  pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 `
 
@@ -199,6 +206,9 @@ var columnMigrations = []string{
 	// because subscription_type can't tell personal Max 5x from Max 20x.
 	// Older rows backfill on the next UsagePoller tick.
 	`ALTER TABLE accounts ADD COLUMN rate_limit_tier TEXT NOT NULL DEFAULT ''`,
+	// pinned_device_id scopes a "Use now" pin to the requesting device so
+	// other devices' reconcile ticks don't race to grab the account.
+	`ALTER TABLE accounts ADD COLUMN pinned_device_id TEXT NOT NULL DEFAULT ''`,
 }
 
 type Store struct {
@@ -321,7 +331,8 @@ CREATE TABLE accounts_new (
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
-  rate_limit_tier            TEXT    NOT NULL DEFAULT ''
+  rate_limit_tier            TEXT    NOT NULL DEFAULT '',
+  pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
   id, name, access_token, refresh_token, expires_at, scopes,
@@ -333,7 +344,7 @@ INSERT INTO accounts_new SELECT
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier FROM accounts;
+  account_uuid, rate_limit_tier, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -393,7 +404,8 @@ CREATE TABLE accounts_new (
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
-  rate_limit_tier            TEXT    NOT NULL DEFAULT ''
+  rate_limit_tier            TEXT    NOT NULL DEFAULT '',
+  pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
   id, name, access_token, refresh_token, expires_at, scopes,
@@ -405,7 +417,7 @@ INSERT INTO accounts_new SELECT
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier FROM accounts;
+  account_uuid, rate_limit_tier, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -669,21 +681,48 @@ UPDATE accounts
 }
 
 // MarkUsed bumps last_used_at to now. Called by credinject after a successful
-// inject so the selector's LRU tiebreaker reflects real pool usage.
+// inject so the selector's LRU tiebreaker reflects real pool usage. Also
+// consumes any device pin on the row — the pin is a one-shot "switch to this
+// next" request, satisfied the moment some device actually injects it.
 func (s *Store) MarkUsed(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE accounts SET last_used_at = ? WHERE id = ?`, time.Now().UnixMilli(), id)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE accounts SET last_used_at = ?, pinned_device_id = '' WHERE id = ?`,
+		time.Now().UnixMilli(), id)
 	return err
 }
 
-// MarkForNextPick zeroes last_used_at so the LRU selector promotes this row to
-// the front on the next reconcile. Used by the "Use now" UI action — a
-// one-shot manual switch. It does not pin: subsequent injects (after the next
-// MarkUsed bumps last_used_at to now) follow the normal LRU rotation.
-func (s *Store) MarkForNextPick(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE accounts SET last_used_at = 0, updated_at = ? WHERE id = ?`,
-		time.Now().UnixMilli(), id)
-	return err
+// MarkForNextPick requests a one-shot manual switch to this account ("Use
+// now" in the UI). With a non-empty deviceID the pin is scoped to that
+// device: only its selector promotes the row, so other devices' reconcile
+// ticks can't race to grab the account first. Any previous pin held by the
+// same device is replaced. deviceID == "" falls back to the legacy global
+// pin (last_used_at = 0) used by callers with no device identity (web-admin
+// sessions); every auto-mode device races for those, by design. Either form
+// is consumed by the next MarkUsed.
+func (s *Store) MarkForNextPick(ctx context.Context, id int64, deviceID string) error {
+	now := time.Now().UnixMilli()
+	if deviceID == "" {
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE accounts SET last_used_at = 0, updated_at = ? WHERE id = ?`,
+			now, id)
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE accounts SET pinned_device_id = '', updated_at = ? WHERE pinned_device_id = ?`,
+		now, deviceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE accounts SET pinned_device_id = ?, updated_at = ? WHERE id = ?`,
+		deviceID, now, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SetThresholds rewrites the per-window utilization thresholds for one
@@ -743,7 +782,7 @@ seven_day_util, seven_day_resets_at,
 seven_day_sonnet_util, seven_day_sonnet_resets_at,
 usage_fetched_at,
 five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-account_uuid, rate_limit_tier`
+account_uuid, rate_limit_tier, pinned_device_id`
 
 // List returns every row ordered by id (stable insertion order).
 func (s *Store) List(ctx context.Context) ([]Account, error) {
@@ -789,7 +828,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
-			&a.AccountUUID, &a.RateLimitTier,
+			&a.AccountUUID, &a.RateLimitTier, &a.PinnedDeviceID,
 		); err != nil {
 			return nil, err
 		}
