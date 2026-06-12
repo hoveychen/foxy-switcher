@@ -602,8 +602,19 @@ func (c *Coordinator) refreshLease(ctx context.Context, accountID int64) error {
 		return err
 	}
 	c.mu.Lock()
+	oldLeaseID := c.currentLeaseID
 	c.currentLeaseID = lease.ID
 	c.mu.Unlock()
+	// Release the previous account's lease only after the new acquire
+	// succeeded — releasing first would let another device grab the old
+	// account while our keychain still injects it. Without this release the
+	// old lease lingered until TTL+sweep (~90s): the UI showed this device
+	// on two account cards and other devices couldn't pick the old account.
+	if oldLeaseID != "" && oldLeaseID != lease.ID {
+		if err := c.svc.ReleaseLease(ctx, oldLeaseID); err != nil {
+			c.logger.Printf("[credinject] release previous lease %s: %v", oldLeaseID, err)
+		}
+	}
 	return nil
 }
 
