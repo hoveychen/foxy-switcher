@@ -943,3 +943,54 @@ func TestReverseSync_EmitsExternalRotationEvent(t *testing.T) {
 			id, bus.List(activity.Filter{}))
 	}
 }
+
+// TestReconcile_SwitchReleasesOldLease is the regression test for the
+// orphan-lease window: switching from account A to account B acquired B's
+// lease but never released A's. The stale A lease lived on until TTL +
+// sweep (~90s), during which (1) the UI showed this device "in use" on two
+// account cards at once, and (2) other devices' PickForDevice skipped A as
+// foreign-leased even though nobody was injecting it.
+func TestReconcile_SwitchReleasesOldLease(t *testing.T) {
+	ctx := context.Background()
+	c, _, st, _ := newCoord(t)
+	idA := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	idB := seedActive(t, st, "beta", "sk-ant-oat01-beta")
+
+	// First reconcile injects one account and acquires its lease.
+	c.reconcile(ctx)
+	oldID := c.CurrentAccountID()
+	if oldID == 0 {
+		t.Fatal("setup failed: first reconcile injected nothing")
+	}
+	newID := idA
+	if oldID == idA {
+		newID = idB
+	}
+
+	// User pins the other account ("Use now") and reconcile switches.
+	if err := st.MarkForNextPick(ctx, newID); err != nil {
+		t.Fatalf("MarkForNextPick: %v", err)
+	}
+	c.reconcile(ctx)
+	if got := c.CurrentAccountID(); got != newID {
+		t.Fatalf("reconcile did not switch: CurrentAccountID=%d want %d", got, newID)
+	}
+
+	views, err := st.ListAccountsWithLeases(ctx)
+	if err != nil {
+		t.Fatalf("ListAccountsWithLeases: %v", err)
+	}
+	for _, v := range views {
+		switch v.Account.ID {
+		case oldID:
+			if v.Lease != nil {
+				t.Errorf("old account %d still holds a live lease (device %s) after switching away",
+					oldID, v.Lease.DeviceID)
+			}
+		case newID:
+			if v.Lease == nil {
+				t.Errorf("new account %d has no live lease after switch", newID)
+			}
+		}
+	}
+}
