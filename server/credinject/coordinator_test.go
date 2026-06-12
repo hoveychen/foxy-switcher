@@ -427,7 +427,7 @@ func TestReconcile_RespectsManualSelect(t *testing.T) {
 		other = idB
 	}
 
-	if err := st.MarkForNextPick(context.Background(), other); err != nil {
+	if err := st.MarkForNextPick(context.Background(), other, c.deviceID); err != nil {
 		t.Fatalf("MarkForNextPick: %v", err)
 	}
 	c.reconcile(context.Background())
@@ -496,7 +496,7 @@ func TestReconcile_ManualMode_RespectsExplicitPin(t *testing.T) {
 		t.Fatalf("SetAutoSwitch: %v", err)
 	}
 
-	if err := st.MarkForNextPick(context.Background(), idB); err != nil {
+	if err := st.MarkForNextPick(context.Background(), idB, c.deviceID); err != nil {
 		t.Fatalf("MarkForNextPick: %v", err)
 	}
 	c.reconcile(context.Background())
@@ -968,7 +968,7 @@ func TestReconcile_SwitchReleasesOldLease(t *testing.T) {
 	}
 
 	// User pins the other account ("Use now") and reconcile switches.
-	if err := st.MarkForNextPick(ctx, newID); err != nil {
+	if err := st.MarkForNextPick(ctx, newID, c.deviceID); err != nil {
 		t.Fatalf("MarkForNextPick: %v", err)
 	}
 	c.reconcile(ctx)
@@ -1043,7 +1043,7 @@ func TestReconcile_PinIsDeviceScoped(t *testing.T) {
 	}
 
 	// User on device A clicks "Use now" on accC.
-	if err := st.MarkForNextPick(ctx, idC); err != nil {
+	if err := st.MarkForNextPick(ctx, idC, cA.deviceID); err != nil {
 		t.Fatalf("MarkForNextPick: %v", err)
 	}
 
