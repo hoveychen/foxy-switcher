@@ -994,3 +994,70 @@ func TestReconcile_SwitchReleasesOldLease(t *testing.T) {
 		}
 	}
 }
+
+// TestReconcile_PinIsDeviceScoped is the regression test for the pin
+// stampede: MarkForNextPick zeroed a shared LRU field with no record of
+// WHO pinned, so every auto-mode device's next 5s tick treated the pinned
+// account as its own top candidate. Whichever device reconciled first
+// stole the lease; the user's own device then hit ErrLeaseLocked and
+// silently rotated to a different account.
+//
+// Topology: device A injects accA, device B injects accB, accC idle.
+// The user on device A pins accC. Device B reconciles first (the race).
+// Expected: B ignores the foreign pin and stays on accB; A's reconcile
+// gets accC.
+func TestReconcile_PinIsDeviceScoped(t *testing.T) {
+	ctx := context.Background()
+	dbDir := t.TempDir()
+	st, err := store.Open(filepath.Join(dbDir, "state.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	logger := log.New(io.Discard, "", 0)
+	cA := New(vault.NewInProc(st), &fakeBackend{}, t.TempDir(), logger, "")
+	cB := New(vault.NewInProc(st), &fakeBackend{}, t.TempDir(), logger, "")
+	if cA.deviceID == cB.deviceID {
+		t.Fatal("setup failed: coordinators share a deviceID")
+	}
+
+	idA := seedActive(t, st, "accA", "sk-ant-oat01-a")
+	idB := seedActive(t, st, "accB", "sk-ant-oat01-b")
+	idC := seedActive(t, st, "accC", "sk-ant-oat01-c")
+	// Deterministic LRU order: accA oldest, then accB, then accC.
+	for i, id := range []int64{idA, idB, idC} {
+		if _, err := st.DB().ExecContext(ctx,
+			`UPDATE accounts SET last_used_at = ? WHERE id = ?`,
+			time.Now().Add(time.Duration(i-3)*time.Hour).UnixMilli(), id); err != nil {
+			t.Fatalf("seed last_used_at: %v", err)
+		}
+	}
+
+	cA.reconcile(ctx)
+	if got := cA.CurrentAccountID(); got != idA {
+		t.Fatalf("setup: device A injected %d want %d", got, idA)
+	}
+	cB.reconcile(ctx)
+	if got := cB.CurrentAccountID(); got != idB {
+		t.Fatalf("setup: device B injected %d want %d", got, idB)
+	}
+
+	// User on device A clicks "Use now" on accC.
+	if err := st.MarkForNextPick(ctx, idC); err != nil {
+		t.Fatalf("MarkForNextPick: %v", err)
+	}
+
+	// Device B's periodic tick fires first. It must not steal A's pin.
+	cB.reconcile(ctx)
+	if got := cB.CurrentAccountID(); got == idC {
+		t.Errorf("device B stole the account pinned on device A")
+	} else if got != idB {
+		t.Errorf("device B rotated off its sticky account: got %d want %d", got, idB)
+	}
+
+	// Device A's tick lands the pin.
+	cA.reconcile(ctx)
+	if got := cA.CurrentAccountID(); got != idC {
+		t.Errorf("device A did not get its pinned account: got %d want %d", got, idC)
+	}
+}
