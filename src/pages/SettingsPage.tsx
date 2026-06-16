@@ -130,6 +130,8 @@ export function SettingsPage({
   const [unpairError, setUnpairError] = useState<string | null>(null);
   const [devices, setDevices] = useState<VaultDevice[] | null>(null);
   const [devicesError, setDevicesError] = useState<string | null>(null);
+  const [applyThresholdsBusy, setApplyThresholdsBusy] = useState(false);
+  const [applyThresholdsMsg, setApplyThresholdsMsg] = useState<string | null>(null);
   const localeOverride = getLocaleOverride();
   // tauriHost is computed once at mount — the host never changes
   // mid-session. Settings rows that depend on Tauri-side bridges
@@ -209,6 +211,30 @@ export function SettingsPage({
       setUnpairError(e instanceof Error ? e.message : String(e));
       setUnpairBusy(false);
       setConfirmUnpair(false);
+    }
+  };
+
+  const onApplyThresholds = async () => {
+    if (applyThresholdsBusy) return;
+    setApplyThresholdsBusy(true);
+    setApplyThresholdsMsg(null);
+    try {
+      // Persist the current form values first so the server applies exactly
+      // what's shown — the apply endpoint reads the saved settings, not the
+      // request body — then push them across every account.
+      await apiClient.setSettings({
+        default_five_hour: settings.default_five_hour,
+        default_seven_day: settings.default_seven_day,
+        default_seven_day_sonnet: settings.default_seven_day_sonnet,
+      });
+      const r = await apiClient.applyThresholdDefaults();
+      setApplyThresholdsMsg(
+        tf("settings.threshold_default.applied", { count: r.updated }),
+      );
+    } catch (e) {
+      setApplyThresholdsMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplyThresholdsBusy(false);
     }
   };
 
@@ -582,26 +608,82 @@ export function SettingsPage({
                 admin web UI is the right place for cross-agent
                 threshold defaults. */}
             {vaultMode !== "agent" && (
-              <div className="settings-row">
-                <div className="settings-row-text">
-                  <div className="settings-row-label">
-                    {t("settings.threshold_default.label")}
+              <>
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">
+                      {t("settings.threshold_default.five_hour")}
+                    </div>
+                    <div className="settings-row-sub text-meta">
+                      {t("settings.threshold_default.sub")}
+                    </div>
                   </div>
-                  <div className="settings-row-sub text-meta">
-                    {t("settings.threshold_default.sub")}
-                  </div>
+                  <NumberStepper
+                    value={settings.default_five_hour}
+                    min={50}
+                    max={100}
+                    step={5}
+                    suffix="%"
+                    onChange={(v) => onSettingsChange({ default_five_hour: v })}
+                  />
                 </div>
-                <NumberStepper
-                  value={settings.default_threshold_percent}
-                  min={50}
-                  max={100}
-                  step={5}
-                  suffix="%"
-                  onChange={(v) =>
-                    onSettingsChange({ default_threshold_percent: v })
-                  }
-                />
-              </div>
+
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">
+                      {t("settings.threshold_default.seven_day")}
+                    </div>
+                  </div>
+                  <NumberStepper
+                    value={settings.default_seven_day}
+                    min={50}
+                    max={100}
+                    step={5}
+                    suffix="%"
+                    onChange={(v) => onSettingsChange({ default_seven_day: v })}
+                  />
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">
+                      {t("settings.threshold_default.seven_day_sonnet")}
+                    </div>
+                  </div>
+                  <NumberStepper
+                    value={settings.default_seven_day_sonnet}
+                    min={50}
+                    max={100}
+                    step={5}
+                    suffix="%"
+                    onChange={(v) =>
+                      onSettingsChange({ default_seven_day_sonnet: v })
+                    }
+                  />
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-label">
+                      {t("settings.threshold_default.apply.label")}
+                    </div>
+                    <div className="settings-row-sub text-meta">
+                      {applyThresholdsMsg ??
+                        t("settings.threshold_default.apply.sub")}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={applyThresholdsBusy}
+                    onClick={onApplyThresholds}
+                  >
+                    {applyThresholdsBusy
+                      ? t("settings.threshold_default.apply.busy")
+                      : t("settings.threshold_default.apply.button")}
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </section>

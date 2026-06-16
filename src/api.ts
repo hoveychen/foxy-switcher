@@ -368,7 +368,11 @@ export interface Settings {
   sidebar_mode: SidebarMode;
   // 30–300; server clamps. Applies on next daemon restart.
   usage_poll_interval_sec: number;
-  default_threshold_percent: number; // 0–100; server clamps
+  // Pool-wide per-window defaults for new accounts (0–100; server clamps).
+  // The "apply to all accounts" action writes these across existing rows.
+  default_five_hour: number;
+  default_seven_day: number;
+  default_seven_day_sonnet: number;
   restore_native_on_quit: boolean;
 }
 
@@ -694,6 +698,13 @@ export const apiClient = {
   getSettings: () => api<Settings>("/api/settings"),
   setSettings: (v: Partial<Settings>) =>
     api<Settings>("/api/settings", { method: "PUT", json: v }),
+  // Overwrites every account's per-window thresholds with the currently
+  // persisted defaults; returns how many accounts were updated. Save settings
+  // first — the server applies what's persisted, not the in-flight form state.
+  applyThresholdDefaults: () =>
+    api<{ updated: number }>("/api/settings/apply-thresholds", {
+      method: "POST",
+    }),
 
   getDashboard: () => api<DashboardResponse>("/api/dashboard"),
 

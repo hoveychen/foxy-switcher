@@ -83,27 +83,31 @@ func TestHandleListKey_AgentMode_IgnoresAdminKeys(t *testing.T) {
 	}
 }
 
-// TestSettingsRowOrder_AgentMode_DropsThreshold: rowDefaultThreshold is
-// vault-side state shared across agents — a lease consumer can't edit
-// it, so the row must vanish from keyboard-nav order in agent mode.
+// TestSettingsRowOrder_AgentMode_DropsThreshold: the default-threshold rows
+// are vault-side state shared across agents — a lease consumer can't edit
+// them, so they must vanish from keyboard-nav order in agent mode.
 func TestSettingsRowOrder_AgentMode_DropsThreshold(t *testing.T) {
+	thresholdRows := map[settingsRowID]bool{
+		rowDefaultFiveHour:       true,
+		rowDefaultSevenDay:       true,
+		rowDefaultSevenDaySonnet: true,
+	}
 	p := &settingsPage{about: About{Mode: "agent"}}
 	for _, id := range p.rowOrder() {
-		if id == rowDefaultThreshold {
-			t.Fatal("rowDefaultThreshold must not appear in agent-mode rowOrder")
+		if thresholdRows[id] {
+			t.Fatal("default-threshold rows must not appear in agent-mode rowOrder")
 		}
 	}
-	// Sanity: combined mode keeps the row.
+	// Sanity: combined mode keeps all three rows.
 	pCombined := &settingsPage{about: About{Mode: "combined"}}
-	found := false
+	found := 0
 	for _, id := range pCombined.rowOrder() {
-		if id == rowDefaultThreshold {
-			found = true
-			break
+		if thresholdRows[id] {
+			found++
 		}
 	}
-	if !found {
-		t.Fatal("combined-mode rowOrder must keep rowDefaultThreshold")
+	if found != 3 {
+		t.Fatalf("combined-mode rowOrder must keep all three default-threshold rows; found %d", found)
 	}
 }
 
@@ -113,7 +117,7 @@ func TestSettingsView_AgentMode_HidesThresholdRow(t *testing.T) {
 	p := &settingsPage{
 		width:            120,
 		height:           40,
-		settings:         Settings{UsagePollIntervalSec: 60, DefaultThresholdPercent: 90, RestoreNativeOnQuit: true},
+		settings:         Settings{UsagePollIntervalSec: 60, DefaultFiveHourThreshold: 90, DefaultSevenDayThreshold: 90, DefaultSevenDaySonnetThreshold: 90, RestoreNativeOnQuit: true},
 		autoSwitch:       AutoSwitch{Enabled: false, Policy: "lru"},
 		about:            About{Mode: "agent", VaultURL: "https://x"},
 		settingsLoaded:   true,
@@ -121,14 +125,14 @@ func TestSettingsView_AgentMode_HidesThresholdRow(t *testing.T) {
 		aboutLoaded:      true,
 	}
 	out := p.view()
-	if strings.Contains(out, "Default threshold") {
-		t.Fatalf("agent-mode settings view should not render Default threshold; got\n%s", out)
+	if strings.Contains(out, "Default 5h threshold") {
+		t.Fatalf("agent-mode settings view should not render default threshold rows; got\n%s", out)
 	}
 
 	pCombined := &settingsPage{
 		width:            120,
 		height:           40,
-		settings:         Settings{UsagePollIntervalSec: 60, DefaultThresholdPercent: 90, RestoreNativeOnQuit: true},
+		settings:         Settings{UsagePollIntervalSec: 60, DefaultFiveHourThreshold: 90, DefaultSevenDayThreshold: 90, DefaultSevenDaySonnetThreshold: 90, RestoreNativeOnQuit: true},
 		autoSwitch:       AutoSwitch{Enabled: false, Policy: "lru"},
 		about:            About{Mode: "combined"},
 		settingsLoaded:   true,
@@ -136,7 +140,7 @@ func TestSettingsView_AgentMode_HidesThresholdRow(t *testing.T) {
 		aboutLoaded:      true,
 	}
 	outCombined := pCombined.view()
-	if !strings.Contains(outCombined, "Default threshold") {
-		t.Fatalf("combined-mode settings view must render Default threshold; got\n%s", outCombined)
+	if !strings.Contains(outCombined, "Default 5h threshold") {
+		t.Fatalf("combined-mode settings view must render default threshold rows; got\n%s", outCombined)
 	}
 }

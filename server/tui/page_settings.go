@@ -17,7 +17,9 @@ type settingsRowID int
 const (
 	rowThemePicker settingsRowID = iota
 	rowPollInterval
-	rowDefaultThreshold
+	rowDefaultFiveHour
+	rowDefaultSevenDay
+	rowDefaultSevenDaySonnet
 	rowRestoreNative
 	rowAutoSwitchEnabled
 	rowAutoSwitchPolicy
@@ -35,7 +37,7 @@ func (p *settingsPage) rowOrder() []settingsRowID {
 		rowPollInterval,
 	}
 	if !p.adminDisabled() {
-		out = append(out, rowDefaultThreshold)
+		out = append(out, rowDefaultFiveHour, rowDefaultSevenDay, rowDefaultSevenDaySonnet)
 	}
 	out = append(out,
 		rowRestoreNative,
@@ -300,12 +302,26 @@ func (p *settingsPage) handleAction(c *Client, dir int) (tea.Cmd, bool) {
 		s := p.settings
 		s.UsagePollIntervalSec = clampInt(s.UsagePollIntervalSec+dir*30, 30, 300)
 		return settingsSaveCmd(c, s), true
-	case rowDefaultThreshold:
+	case rowDefaultFiveHour:
 		if dir == 0 {
 			return nil, true
 		}
 		s := p.settings
-		s.DefaultThresholdPercent = clampFloat(s.DefaultThresholdPercent+float64(dir*5), 50, 100)
+		s.DefaultFiveHourThreshold = clampFloat(s.DefaultFiveHourThreshold+float64(dir*5), 50, 100)
+		return settingsSaveCmd(c, s), true
+	case rowDefaultSevenDay:
+		if dir == 0 {
+			return nil, true
+		}
+		s := p.settings
+		s.DefaultSevenDayThreshold = clampFloat(s.DefaultSevenDayThreshold+float64(dir*5), 50, 100)
+		return settingsSaveCmd(c, s), true
+	case rowDefaultSevenDaySonnet:
+		if dir == 0 {
+			return nil, true
+		}
+		s := p.settings
+		s.DefaultSevenDaySonnetThreshold = clampFloat(s.DefaultSevenDaySonnetThreshold+float64(dir*5), 50, 100)
 		return settingsSaveCmd(c, s), true
 	case rowRestoreNative:
 		s := p.settings
@@ -393,11 +409,15 @@ func (p *settingsPage) view() string {
 	behaviorRows := []string{
 		p.renderRow(rowPollInterval, "Poll interval", fmt.Sprintf("%ds", p.settings.UsagePollIntervalSec)),
 	}
-	// Default threshold lives on the vault side; in agent mode the lease
-	// boundary blocks the write and the row's adjustments would silently
-	// no-op. Hide it in lock-step with rowOrder.
+	// Default thresholds live on the vault side; in agent mode the lease
+	// boundary blocks the write and the rows' adjustments would silently
+	// no-op. Hide them in lock-step with rowOrder.
 	if !p.adminDisabled() {
-		behaviorRows = append(behaviorRows, p.renderRow(rowDefaultThreshold, "Default threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultThresholdPercent)))
+		behaviorRows = append(behaviorRows,
+			p.renderRow(rowDefaultFiveHour, "Default 5h threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultFiveHourThreshold)),
+			p.renderRow(rowDefaultSevenDay, "Default 7d threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultSevenDayThreshold)),
+			p.renderRow(rowDefaultSevenDaySonnet, "Default 7d Sonnet threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultSevenDaySonnetThreshold)),
+		)
 	}
 	behaviorRows = append(behaviorRows, p.renderRow(rowRestoreNative, "Restore native on quit", boolValue(p.settings.RestoreNativeOnQuit)))
 	rows := []string{
@@ -458,7 +478,7 @@ func formatValue(id settingsRowID, value string) string {
 	switch id {
 	case rowThemePicker, rowAutoSwitchPolicy:
 		return dimStyle.Render("◀ ") + value + dimStyle.Render(" ▶")
-	case rowPollInterval, rowDefaultThreshold:
+	case rowPollInterval, rowDefaultFiveHour, rowDefaultSevenDay, rowDefaultSevenDaySonnet:
 		return dimStyle.Render("− ") + value + dimStyle.Render(" +")
 	case rowRestoreNative, rowAutoSwitchEnabled:
 		return value
@@ -577,4 +597,3 @@ func themeName(t *Theme) string {
 	}
 	return t.Name
 }
-

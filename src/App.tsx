@@ -143,7 +143,9 @@ export default function App() {
     theme: "system",
     sidebar_mode: "auto",
     usage_poll_interval_sec: 60,
-    default_threshold_percent: 95,
+    default_five_hour: 95,
+    default_seven_day: 95,
+    default_seven_day_sonnet: 95,
     restore_native_on_quit: true,
   });
 

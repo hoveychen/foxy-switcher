@@ -61,11 +61,11 @@ type UsageWindow struct {
 
 // Account mirrors httpapi.accountView. Tokens are deliberately not exposed.
 type Account struct {
-	ID               int64        `json:"id"`
-	Name             string       `json:"name"`
-	ExpiresAt        int64        `json:"expires_at"`
-	Scopes           string       `json:"scopes"`
-	SubscriptionType string       `json:"subscription_type"`
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	ExpiresAt        int64  `json:"expires_at"`
+	Scopes           string `json:"scopes"`
+	SubscriptionType string `json:"subscription_type"`
 	// RateLimitTier mirrors httpapi.accountView.rate_limit_tier — the
 	// authoritative quota label ("default_claude_pro" /
 	// "default_claude_max_5x" / "default_claude_max_20x"). Empty on legacy
@@ -186,11 +186,11 @@ func (c *Client) LoginCallback(ctx context.Context, pasted, state string) error 
 // in the TUI header is still derived from the local credinject
 // Coordinator's ManagedAccountID, not from this struct.
 type DashboardKPIs struct {
-	PoolSize        int `json:"pool_size"`
-	ActiveCount     int `json:"active_count"`
-	CoolingCount    int `json:"cooling_count"`
+	PoolSize        int   `json:"pool_size"`
+	ActiveCount     int   `json:"active_count"`
+	CoolingCount    int   `json:"cooling_count"`
 	NextResetAt     int64 `json:"next_reset_at"`
-	PeakUtilPercent int `json:"peak_util_percent"`
+	PeakUtilPercent int   `json:"peak_util_percent"`
 }
 
 // DashboardTrendBucket mirrors httpapi.DashboardTrendBucket. One hour-aligned
@@ -346,11 +346,13 @@ type ActivityFilter struct {
 // callers can submit raw values and rely on the response to echo the canonical
 // form (the TUI snaps its row state to the response).
 type Settings struct {
-	Theme                   string  `json:"theme"`
-	SidebarMode             string  `json:"sidebar_mode"`
-	UsagePollIntervalSec    int     `json:"usage_poll_interval_sec"`
-	DefaultThresholdPercent float64 `json:"default_threshold_percent"`
-	RestoreNativeOnQuit     bool    `json:"restore_native_on_quit"`
+	Theme                          string  `json:"theme"`
+	SidebarMode                    string  `json:"sidebar_mode"`
+	UsagePollIntervalSec           int     `json:"usage_poll_interval_sec"`
+	DefaultFiveHourThreshold       float64 `json:"default_five_hour"`
+	DefaultSevenDayThreshold       float64 `json:"default_seven_day"`
+	DefaultSevenDaySonnetThreshold float64 `json:"default_seven_day_sonnet"`
+	RestoreNativeOnQuit            bool    `json:"restore_native_on_quit"`
 }
 
 func (c *Client) GetSettings(ctx context.Context) (Settings, error) {
