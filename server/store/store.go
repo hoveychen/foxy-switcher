@@ -763,6 +763,25 @@ UPDATE accounts
 	return err
 }
 
+// ApplyThresholdsToAll overwrites every account's per-window thresholds with
+// the supplied values (clamped to [0, 100]), returning the number of rows
+// updated. This is an intentional, indiscriminate overwrite — accounts that
+// were manually tuned are reset too, which is the documented behaviour of the
+// operator's "apply default thresholds to all accounts" action.
+func (s *Store) ApplyThresholdsToAll(ctx context.Context, fiveHour, sevenDay, sevenDaySonnet float64) (int64, error) {
+	const q = `
+UPDATE accounts
+   SET five_hour_threshold = ?, seven_day_threshold = ?, seven_day_sonnet_threshold = ?,
+       updated_at = ?`
+	res, err := s.db.ExecContext(ctx, q,
+		clampPercent(fiveHour), clampPercent(sevenDay), clampPercent(sevenDaySonnet),
+		time.Now().UnixMilli())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func clampPercent(v float64) float64 {
 	if v < 0 {
 		return 0

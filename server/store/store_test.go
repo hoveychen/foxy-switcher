@@ -451,6 +451,47 @@ func TestUpsertNewAccountSeedsThresholdsFromSettings(t *testing.T) {
 	}
 }
 
+// TestApplyThresholdsToAll proves the bulk-apply path overwrites every
+// account's per-window thresholds with the supplied values (clamped),
+// including accounts that had been manually tuned — the operator's "apply to
+// all accounts" action is an intentional, indiscriminate overwrite.
+func TestApplyThresholdsToAll(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	mk := func(name, email string) int64 {
+		a := &Account{Name: name, Email: email, AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1}
+		if err := st.Upsert(ctx, a); err != nil {
+			t.Fatalf("upsert %s: %v", name, err)
+		}
+		return a.ID
+	}
+	id1 := mk("a", "a@example.com")
+	id2 := mk("b", "b@example.com")
+	// Manually tune id2 so we can prove the bulk apply steamrolls it.
+	if err := st.SetThresholds(ctx, id2, 30, 40, 50); err != nil {
+		t.Fatalf("SetThresholds: %v", err)
+	}
+
+	n, err := st.ApplyThresholdsToAll(ctx, 88, 77, 150) // 150 clamps to 100
+	if err != nil {
+		t.Fatalf("ApplyThresholdsToAll: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 accounts updated, got %d", n)
+	}
+	for _, id := range []int64{id1, id2} {
+		got, err := st.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("get %d: %v", id, err)
+		}
+		if got.FiveHourThreshold != 88 || got.SevenDayThreshold != 77 || got.SevenDaySonnetThreshold != 100 {
+			t.Fatalf("account %d not overwritten: got %v/%v/%v want 88/77/100",
+				id, got.FiveHourThreshold, got.SevenDayThreshold, got.SevenDaySonnetThreshold)
+		}
+	}
+}
+
 // TestAutoSwitchDefaultsAndRoundTrip covers the kv-backed auto-switch knob:
 // a fresh DB returns the daemon defaults (enabled, lru), and SetAutoSwitch
 // then GetAutoSwitch round-trips the toggle so the credinject coordinator

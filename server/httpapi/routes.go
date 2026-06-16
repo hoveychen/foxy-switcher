@@ -99,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auto-switch", s.handleSetAutoSwitch)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleSetSettings)
+	mux.HandleFunc("POST /api/settings/apply-thresholds", s.handleApplyThresholdDefaults)
 	mux.HandleFunc("GET /api/activity", s.handleListActivity)
 	mux.HandleFunc("GET /api/activity/stream", s.handleActivityStream)
 	mux.HandleFunc("GET /api/dashboard", s.handleGetDashboard)
@@ -246,9 +247,9 @@ func toView(a store.Account) accountView {
 		OrganizationUUID: a.OrganizationUUID,
 		AccountUUID:      a.AccountUUID,
 		Status:           a.Status,
-		TokenExpired: a.TokenExpired(time.Now()),
-		LastUsedAt:   a.LastUsedAt,
-		CreatedAt:    a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		TokenExpired:     a.TokenExpired(time.Now()),
+		LastUsedAt:       a.LastUsedAt,
+		CreatedAt:        a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		Email: a.Email, FullName: a.FullName,
 		OrganizationName: a.OrganizationName, Plan: a.Plan,
 		UsageFetchedAt:          a.UsageFetchedAt,
@@ -948,10 +949,10 @@ type DashboardKPIs struct {
 // is the sum of weights across all currently-tracked accounts (constant
 // across buckets, but emitted per-bucket to keep the chart self-contained).
 type DashboardTrendBucket struct {
-	TS              int64   `json:"ts"` // unix millis at bucket start (top of hour)
-	FiveHour        float64 `json:"five_hour"`
-	SevenDay        float64 `json:"seven_day"`
-	SevenDaySonnet  float64 `json:"seven_day_sonnet"`
+	TS               int64   `json:"ts"` // unix millis at bucket start (top of hour)
+	FiveHour         float64 `json:"five_hour"`
+	SevenDay         float64 `json:"seven_day"`
+	SevenDaySonnet   float64 `json:"seven_day_sonnet"`
 	FiveHourUsed     float64 `json:"five_hour_used"`
 	FiveHourCapacity float64 `json:"five_hour_capacity"`
 	FiveHourPct      float64 `json:"five_hour_pct"`
@@ -1202,6 +1203,30 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 		s.Cred.SetRestoreOnQuit(v.RestoreNativeOnQuit)
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+// handleApplyThresholdDefaults overwrites every account's per-window
+// thresholds with the currently-persisted pool-wide defaults. This is an
+// indiscriminate bulk overwrite — manually-tuned accounts are reset too — so
+// the frontend gates it behind an explicit "apply to all accounts" action.
+// It reads the saved settings (rather than a request body) so it always
+// applies exactly what the operator sees in the settings form after saving.
+func (s *Server) handleApplyThresholdDefaults(w http.ResponseWriter, r *http.Request) {
+	v, err := s.Store.GetSettings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	n, err := s.Store.ApplyThresholdsToAll(r.Context(),
+		v.DefaultFiveHourThreshold, v.DefaultSevenDayThreshold, v.DefaultSevenDaySonnetThreshold)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if s.Cred != nil {
+		s.Cred.Trigger()
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"updated": n})
 }
 
 // --- credinject status ----------------------------------------------------
