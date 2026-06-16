@@ -506,19 +506,41 @@ WHERE id = ?`,
 		return tx.Commit()
 	}
 
+	// Seed per-window thresholds from the pool-wide defaults for brand-new
+	// accounts (existing rows above keep their own values). The caller rarely
+	// populates these on the Account; when a field is left at its zero value
+	// we fall back to the configured default so the "default threshold" knob
+	// actually governs new accounts. GetSettings is read here, before the
+	// INSERT acquires the write lock, so it doesn't deadlock the open tx.
+	defaults, derr := s.GetSettings(ctx)
+	if derr != nil {
+		defaults = DefaultSettings
+	}
+	if a.FiveHourThreshold <= 0 {
+		a.FiveHourThreshold = defaults.DefaultFiveHourThreshold
+	}
+	if a.SevenDayThreshold <= 0 {
+		a.SevenDayThreshold = defaults.DefaultSevenDayThreshold
+	}
+	if a.SevenDaySonnetThreshold <= 0 {
+		a.SevenDaySonnetThreshold = defaults.DefaultSevenDaySonnetThreshold
+	}
+
 	res, err := tx.ExecContext(ctx, `
 INSERT INTO accounts
   (name, access_token, refresh_token, expires_at, scopes, subscription_type,
    organization_uuid, status, last_used_at,
    created_at, updated_at,
-   email, full_name, organization_name, plan, account_uuid, rate_limit_tier)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   email, full_name, organization_name, plan, account_uuid, rate_limit_tier,
+   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
 		a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 		ifEmpty(a.Status, "active"), a.LastUsedAt,
 		a.CreatedAt, a.UpdatedAt,
 		a.Email, a.FullName, a.OrganizationName, a.Plan,
 		a.AccountUUID, a.RateLimitTier,
+		clampPercent(a.FiveHourThreshold), clampPercent(a.SevenDayThreshold), clampPercent(a.SevenDaySonnetThreshold),
 	)
 	if err != nil {
 		return err

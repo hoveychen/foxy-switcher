@@ -417,6 +417,40 @@ func TestThresholdsDefaultAndSet(t *testing.T) {
 	}
 }
 
+// TestUpsertNewAccountSeedsThresholdsFromSettings proves that a brand-new
+// account inherits the pool-wide per-window default thresholds configured in
+// Settings, rather than the bare schema default of 95. Before this fix the
+// INSERT never referenced the settings, so the "default threshold" knob was
+// inert — every new account silently got 95 regardless of what the operator
+// configured.
+func TestUpsertNewAccountSeedsThresholdsFromSettings(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	if _, err := st.SetSettings(ctx, Settings{
+		UsagePollIntervalSec:           60,
+		DefaultFiveHourThreshold:       80,
+		DefaultSevenDayThreshold:       70,
+		DefaultSevenDaySonnetThreshold: 60,
+		RestoreNativeOnQuit:            true,
+	}); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+
+	a := &Account{Name: "bob", Email: "bob@example.com", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.FiveHourThreshold != 80 || got.SevenDayThreshold != 70 || got.SevenDaySonnetThreshold != 60 {
+		t.Fatalf("new account should inherit configured default thresholds 80/70/60, got %v/%v/%v",
+			got.FiveHourThreshold, got.SevenDayThreshold, got.SevenDaySonnetThreshold)
+	}
+}
+
 // TestAutoSwitchDefaultsAndRoundTrip covers the kv-backed auto-switch knob:
 // a fresh DB returns the daemon defaults (enabled, lru), and SetAutoSwitch
 // then GetAutoSwitch round-trips the toggle so the credinject coordinator
