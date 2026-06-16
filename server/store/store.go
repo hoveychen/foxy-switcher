@@ -551,7 +551,7 @@ UPDATE accounts
 // that uuid. Condition (c) is the legacy-duplicate guard: when two rows
 // historically represent the same Anthropic user (e.g. an email-shifted
 // re-login created a second row before this column existed), only the
-// first poll wins; the loser keeps account_uuid='' so the partial unique
+// first poll wins; the loser keeps account_uuid=” so the partial unique
 // index doesn't trip. The user resolves the duplicate by deleting one row
 // in the UI.
 func (s *Store) SetProfile(ctx context.Context, id int64,
@@ -903,11 +903,18 @@ type Settings struct {
 	// server clamps. Applies on next daemon start (the existing ticker is
 	// fixed-period; rebuilding it on every PUT would race with in-flight ticks).
 	UsagePollIntervalSec int `json:"usage_poll_interval_sec"`
-	// DefaultThresholdPercent is the pool-wide default for new accounts'
-	// per-window thresholds. Existing accounts keep their own values. The
-	// JSON form was historically `cooldown_threshold_percent`; GetSettings
-	// transparently lifts that legacy key so old persisted blobs survive.
-	DefaultThresholdPercent float64 `json:"default_threshold_percent"`
+	// Default{FiveHour,SevenDay,SevenDaySonnet}Threshold are the pool-wide
+	// defaults for new accounts' per-window thresholds, and the values the
+	// "apply to all accounts" action writes across every existing account.
+	// Existing accounts otherwise keep their own per-window values.
+	//
+	// The JSON form was historically a single `default_threshold_percent`
+	// (and, even earlier, `cooldown_threshold_percent`). GetSettings lifts
+	// either legacy single value into all three windows so old persisted
+	// blobs survive the split into per-window defaults.
+	DefaultFiveHourThreshold       float64 `json:"default_five_hour"`
+	DefaultSevenDayThreshold       float64 `json:"default_seven_day"`
+	DefaultSevenDaySonnetThreshold float64 `json:"default_seven_day_sonnet"`
 	// RestoreNativeOnQuit gates the credinject Restore call at shutdown. Off
 	// is "leave whatever was last injected in place" — useful for users who
 	// don't want their native login auto-replaced on quit.
@@ -919,11 +926,13 @@ const settingsKey = "settings"
 // DefaultSettings mirrors PRD §5.4 defaults: System theme, 60s poll interval,
 // 95% default per-window threshold, restore native on quit.
 var DefaultSettings = Settings{
-	Theme:                   "system",
-	SidebarMode:             "auto",
-	UsagePollIntervalSec:    60,
-	DefaultThresholdPercent: 95,
-	RestoreNativeOnQuit:     true,
+	Theme:                          "system",
+	SidebarMode:                    "auto",
+	UsagePollIntervalSec:           60,
+	DefaultFiveHourThreshold:       95,
+	DefaultSevenDayThreshold:       95,
+	DefaultSevenDaySonnetThreshold: 95,
+	RestoreNativeOnQuit:            true,
 }
 
 // GetSettings reads the settings blob. Missing row → defaults. Corrupt JSON
@@ -942,15 +951,30 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
 		return DefaultSettings, nil
 	}
-	// Legacy fallback: blobs written before the cooldown→threshold rename
-	// stored the value under `cooldown_threshold_percent`. Lift it only when
-	// the new key is absent so a co-resident new key always wins.
+	// Legacy fallback: blobs written before the per-window split stored a
+	// single threshold under `default_threshold_percent` (and, even earlier,
+	// `cooldown_threshold_percent`). Lift that single value into all three
+	// windows, but only when none of the new per-window keys are present so a
+	// co-resident new key always wins. Prefer the newer legacy key when both
+	// single-value keys somehow coexist.
 	var probe struct {
-		Default  *float64 `json:"default_threshold_percent"`
-		Cooldown *float64 `json:"cooldown_threshold_percent"`
+		FiveHour       *float64 `json:"default_five_hour"`
+		SevenDay       *float64 `json:"default_seven_day"`
+		SevenDaySonnet *float64 `json:"default_seven_day_sonnet"`
+		LegacyDefault  *float64 `json:"default_threshold_percent"`
+		LegacyCooldown *float64 `json:"cooldown_threshold_percent"`
 	}
-	if json.Unmarshal([]byte(raw), &probe) == nil && probe.Default == nil && probe.Cooldown != nil {
-		v.DefaultThresholdPercent = *probe.Cooldown
+	if json.Unmarshal([]byte(raw), &probe) == nil &&
+		probe.FiveHour == nil && probe.SevenDay == nil && probe.SevenDaySonnet == nil {
+		legacy := probe.LegacyDefault
+		if legacy == nil {
+			legacy = probe.LegacyCooldown
+		}
+		if legacy != nil {
+			v.DefaultFiveHourThreshold = *legacy
+			v.DefaultSevenDayThreshold = *legacy
+			v.DefaultSevenDaySonnetThreshold = *legacy
+		}
 	}
 	return mergeSettingsDefaults(v), nil
 }
@@ -993,10 +1017,18 @@ func mergeSettingsDefaults(v Settings) Settings {
 	if v.UsagePollIntervalSec > 300 {
 		v.UsagePollIntervalSec = 300
 	}
-	if v.DefaultThresholdPercent <= 0 {
-		v.DefaultThresholdPercent = DefaultSettings.DefaultThresholdPercent
+	if v.DefaultFiveHourThreshold <= 0 {
+		v.DefaultFiveHourThreshold = DefaultSettings.DefaultFiveHourThreshold
 	}
-	v.DefaultThresholdPercent = clampPercent(v.DefaultThresholdPercent)
+	if v.DefaultSevenDayThreshold <= 0 {
+		v.DefaultSevenDayThreshold = DefaultSettings.DefaultSevenDayThreshold
+	}
+	if v.DefaultSevenDaySonnetThreshold <= 0 {
+		v.DefaultSevenDaySonnetThreshold = DefaultSettings.DefaultSevenDaySonnetThreshold
+	}
+	v.DefaultFiveHourThreshold = clampPercent(v.DefaultFiveHourThreshold)
+	v.DefaultSevenDayThreshold = clampPercent(v.DefaultSevenDayThreshold)
+	v.DefaultSevenDaySonnetThreshold = clampPercent(v.DefaultSevenDaySonnetThreshold)
 	return v
 }
 

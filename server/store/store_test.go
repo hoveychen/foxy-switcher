@@ -474,11 +474,13 @@ func TestSettingsDefaultsAndRoundTrip(t *testing.T) {
 	}
 
 	in := Settings{
-		Theme:                    "dark",
-		SidebarMode:              "expanded",
-		UsagePollIntervalSec:    5,   // below min, must clamp to 30
-		DefaultThresholdPercent: 250, // above max, must clamp to 100
-		RestoreNativeOnQuit:     false,
+		Theme:                          "dark",
+		SidebarMode:                    "expanded",
+		UsagePollIntervalSec:           5,   // below min, must clamp to 30
+		DefaultFiveHourThreshold:       250, // above max, must clamp to 100
+		DefaultSevenDayThreshold:       80,
+		DefaultSevenDaySonnetThreshold: 60,
+		RestoreNativeOnQuit:            false,
 	}
 	out, err := st.SetSettings(ctx, in)
 	if err != nil {
@@ -487,8 +489,12 @@ func TestSettingsDefaultsAndRoundTrip(t *testing.T) {
 	if out.UsagePollIntervalSec != 30 {
 		t.Fatalf("expected interval clamped to 30, got %d", out.UsagePollIntervalSec)
 	}
-	if out.DefaultThresholdPercent != 100 {
-		t.Fatalf("expected threshold clamped to 100, got %v", out.DefaultThresholdPercent)
+	if out.DefaultFiveHourThreshold != 100 {
+		t.Fatalf("expected five-hour threshold clamped to 100, got %v", out.DefaultFiveHourThreshold)
+	}
+	if out.DefaultSevenDayThreshold != 80 || out.DefaultSevenDaySonnetThreshold != 60 {
+		t.Fatalf("per-window defaults not preserved: 7d=%v 7d-sonnet=%v",
+			out.DefaultSevenDayThreshold, out.DefaultSevenDaySonnetThreshold)
 	}
 	if out.RestoreNativeOnQuit {
 		t.Fatalf("RestoreNativeOnQuit should be false")
@@ -528,8 +534,37 @@ func TestSettingsLegacyCooldownThresholdJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSettings: %v", err)
 	}
-	if got.DefaultThresholdPercent != 67 {
-		t.Fatalf("legacy cooldown_threshold_percent should land in DefaultThresholdPercent: got %v", got.DefaultThresholdPercent)
+	if got.DefaultFiveHourThreshold != 67 || got.DefaultSevenDayThreshold != 67 || got.DefaultSevenDaySonnetThreshold != 67 {
+		t.Fatalf("legacy cooldown_threshold_percent should lift into all three per-window defaults: 5h=%v 7d=%v 7d-sonnet=%v",
+			got.DefaultFiveHourThreshold, got.DefaultSevenDayThreshold, got.DefaultSevenDaySonnetThreshold)
+	}
+}
+
+// TestSettingsLegacySingleDefaultThresholdJSON proves that a kv blob written
+// after the cooldown→default rename but before the per-window split — i.e. one
+// carrying a single `default_threshold_percent` — lifts that value into all
+// three per-window defaults. Without this, installs that tuned the single
+// default would silently revert to 95 across every window on upgrade.
+func TestSettingsLegacySingleDefaultThresholdJSON(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	legacy := `{"theme":"dark","sidebar_mode":"auto","usage_poll_interval_sec":60,"default_threshold_percent":82,"restore_native_on_quit":true}`
+	_, err := st.db.ExecContext(ctx,
+		`INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		settingsKey, legacy, time.Now().UnixMilli())
+	if err != nil {
+		t.Fatalf("seed legacy kv: %v", err)
+	}
+
+	got, err := st.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if got.DefaultFiveHourThreshold != 82 || got.DefaultSevenDayThreshold != 82 || got.DefaultSevenDaySonnetThreshold != 82 {
+		t.Fatalf("legacy default_threshold_percent should lift into all three per-window defaults: 5h=%v 7d=%v 7d-sonnet=%v",
+			got.DefaultFiveHourThreshold, got.DefaultSevenDayThreshold, got.DefaultSevenDaySonnetThreshold)
 	}
 }
 
