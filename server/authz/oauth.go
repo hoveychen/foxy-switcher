@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,14 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrInvalidGrant is the terminal refresh failure: Anthropic's token endpoint
+// answered with OAuth error "invalid_grant", meaning the refresh_token itself
+// is dead (revoked, or already rotated by a racing refresh). Unlike a network
+// blip or a 5xx — which are transient and worth retrying — an invalid_grant
+// will never succeed on retry; the account needs the user to re-authenticate.
+// Callers use errors.Is(err, ErrInvalidGrant) to tell the two apart.
+var ErrInvalidGrant = errors.New("oauth: refresh_token rejected (invalid_grant)")
 
 const (
 	ClaudeOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -144,7 +153,7 @@ func postToken(ctx context.Context, body []byte) (*TokenResponse, error) {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return nil, classifyTokenError(resp.StatusCode, respBody)
 	}
 	var tr TokenResponse
 	if err := json.Unmarshal(respBody, &tr); err != nil {
@@ -154,6 +163,26 @@ func postToken(ctx context.Context, body []byte) (*TokenResponse, error) {
 		return nil, fmt.Errorf("empty access_token in response")
 	}
 	return &tr, nil
+}
+
+// classifyTokenError turns a non-200 response from the token endpoint into an
+// error, distinguishing the terminal invalid_grant case (a dead refresh_token
+// — wrapped as ErrInvalidGrant) from every other failure (transient, worth
+// retrying). The OAuth 2.0 error body is JSON of the form {"error":"..."};
+// we read the `error` field rather than the HTTP status because Anthropic
+// returns invalid_grant under a 400.
+func classifyTokenError(status int, body []byte) error {
+	trimmed := strings.TrimSpace(string(body))
+	var oerr struct {
+		Error string `json:"error"`
+	}
+	// Body may not be JSON (proxy/5xx HTML) — ignore parse failures and fall
+	// through to the generic transient error.
+	_ = json.Unmarshal(body, &oerr)
+	if oerr.Error == "invalid_grant" {
+		return fmt.Errorf("token endpoint returned %d: %s: %w", status, trimmed, ErrInvalidGrant)
+	}
+	return fmt.Errorf("token endpoint returned %d: %s", status, trimmed)
 }
 
 // Scopes splits the space-separated scope field on a TokenResponse.

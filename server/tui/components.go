@@ -12,11 +12,15 @@ import (
 // Pair with statusLabel so the status is conveyed by character + text, not
 // color alone (matters on NO_COLOR / 8-color terminals).
 //
-// Priority: paused > expired > cooling > active. Paused wins because it's
-// an explicit user action; expired beats cooling because a dead token
-// blocks injection regardless of how soon the limit resets.
+// Priority: needs_reauth > paused > expired > cooling > active. needs_reauth
+// wins because a dead refresh_token can only be fixed by the user re-logging
+// in — no amount of waiting or resuming recovers it. Paused beats expired
+// because it's an explicit user action; expired beats cooling because a dead
+// token blocks injection regardless of how soon the limit resets.
 func statusDot(a Account, nowMs int64) string {
 	switch {
+	case a.Status == "needs_reauth":
+		return lipgloss.NewStyle().Foreground(tokenDanger).Render("⚠")
 	case a.Status == "paused":
 		return lipgloss.NewStyle().Foreground(textTertiary).Render("○")
 	case a.TokenExpired:
@@ -30,6 +34,9 @@ func statusDot(a Account, nowMs int64) string {
 
 // statusLabel renders the textual status with the same tone as statusDot.
 func statusLabel(a Account, nowMs int64) string {
+	if a.Status == "needs_reauth" {
+		return errStyle.Render("reauth required")
+	}
 	if a.Status == "paused" {
 		return dimStyle.Render("paused")
 	}

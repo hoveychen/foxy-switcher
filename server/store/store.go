@@ -28,7 +28,7 @@ type Account struct {
 	Scopes           string
 	SubscriptionType string // "max" | "pro" | "team_premium" | "team" | "free"
 	OrganizationUUID string
-	Status           string // "active" | "paused"
+	Status           string // "active" | "paused" | "needs_reauth"
 	LastUsedAt       int64  // unix millis
 	// PinnedDeviceID scopes a "Use now" pin to the device that asked for
 	// it. Only that device's selector promotes the row to the front;
@@ -792,16 +792,41 @@ func clampPercent(v float64) float64 {
 	return v
 }
 
+// Account status values. Stored verbatim in the `status` TEXT column. The
+// selector treats any value other than StatusActive as "do not route here".
+const (
+	StatusActive = "active"
+	StatusPaused = "paused"
+	// StatusNeedsReauth marks an account whose refresh_token was rejected by
+	// the token endpoint with invalid_grant — the token is dead and only the
+	// user re-authenticating can revive it. Being non-active it's already
+	// excluded from routing; unlike StatusPaused it's set by the system (the
+	// refresh scheduler), and the scheduler stops retrying it. A successful
+	// re-login flows through Upsert, which resets status back to active.
+	StatusNeedsReauth = "needs_reauth"
+)
+
 // SetStatus toggles between "active" and "paused". "paused" only suppresses
 // routing (selector skips it, credinject won't inject it) — refresh and usage
-// pollers continue to maintain the row.
+// pollers continue to maintain the row. needs_reauth is intentionally NOT a
+// valid target here: it's a system verdict set via MarkNeedsReauth, not a
+// user toggle.
 func (s *Store) SetStatus(ctx context.Context, id int64, status string) error {
-	if status != "active" && status != "paused" {
+	if status != StatusActive && status != StatusPaused {
 		return fmt.Errorf("invalid status %q", status)
 	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE accounts SET status = ?, updated_at = ? WHERE id = ?`,
 		status, time.Now().UnixMilli(), id)
+	return err
+}
+
+// MarkNeedsReauth flags an account as requiring re-authentication after its
+// refresh_token was permanently rejected (see StatusNeedsReauth). Idempotent.
+func (s *Store) MarkNeedsReauth(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE accounts SET status = ?, updated_at = ? WHERE id = ?`,
+		StatusNeedsReauth, time.Now().UnixMilli(), id)
 	return err
 }
 

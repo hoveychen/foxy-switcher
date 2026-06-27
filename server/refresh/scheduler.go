@@ -9,6 +9,7 @@ package refresh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -140,6 +141,14 @@ func (s *Scheduler) tick(ctx context.Context) {
 		if a.RefreshToken == "" {
 			continue
 		}
+		// needs_reauth is terminal: the refresh_token was rejected with
+		// invalid_grant and only the user re-authenticating can revive it.
+		// Retrying every tick is pointless and hammers the token endpoint.
+		if a.Status == store.StatusNeedsReauth {
+			s.logger.Printf("[refresh] account %d (%s): skip — needs re-auth (dead refresh_token)",
+				a.ID, a.Name)
+			continue
+		}
 		remaining := time.Duration(a.ExpiresAt-now.UnixMilli()) * time.Millisecond
 		narrate := remaining < narrateBelow
 		leased := inUse(a.ID)
@@ -172,8 +181,13 @@ func (s *Scheduler) tick(ctx context.Context) {
 		}
 		if err := s.RefreshOne(ctx, a.ID); err != nil {
 			s.logger.Printf("[refresh] account %d (%s): %v", a.ID, a.Name, err)
-			s.Bus.EmitError(activity.TypeErrorRefresh, a.ID,
-				fmt.Sprintf("Refresh %s failed: %v", a.Name, err))
+			// invalid_grant is terminal: RefreshOne already marked the account
+			// needs_reauth and emitted account.needs_reauth. Emitting
+			// error.refresh on top would double-report it as a transient blip.
+			if !errors.Is(err, authz.ErrInvalidGrant) {
+				s.Bus.EmitError(activity.TypeErrorRefresh, a.ID,
+					fmt.Sprintf("Refresh %s failed: %v", a.Name, err))
+			}
 		}
 	}
 }
@@ -198,6 +212,23 @@ func (s *Scheduler) RefreshOne(ctx context.Context, id int64) error {
 
 	tr, err := authz.RefreshToken(ctx, a.RefreshToken)
 	if err != nil {
+		// Terminal failure: the refresh_token is dead (revoked, or already
+		// rotated by a racing refresh). Flag the account so the selector stops
+		// routing to it and the scheduler stops retrying; only a user re-login
+		// (via Upsert) clears the flag. Distinct from transient 5xx/network
+		// errors, which fall through and get retried on the next tick.
+		if errors.Is(err, authz.ErrInvalidGrant) {
+			if mErr := s.st.MarkNeedsReauth(ctx, id); mErr != nil {
+				s.logger.Printf("[refresh] account %d (%s): mark needs_reauth: %v", a.ID, a.Name, mErr)
+			}
+			s.Bus.EmitError(activity.TypeAccountNeedsReauth, a.ID,
+				fmt.Sprintf("%s needs re-authentication — its refresh token was rejected (invalid_grant)", a.Name))
+			// The account just became non-active; let credinject reconcile it
+			// out of the keychain the same way a successful rotation would.
+			if s.OnChange != nil {
+				s.OnChange()
+			}
+		}
 		return err
 	}
 
