@@ -148,6 +148,7 @@
   "accounts.kebab.leased_by_other": "Held by another device",
   "accounts.kebab.use_now": "Use now",
   "accounts.kebab.refresh": "Refresh now",
+  "accounts.kebab.reauth": "Re-login",
   "accounts.kebab.resume": "Resume",
   "accounts.kebab.pause": "Pause",
   "accounts.kebab.delete": "Delete",

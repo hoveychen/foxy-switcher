@@ -220,6 +220,7 @@ function AccountCard({
   onClickCard,
   onUseNow,
   onRefresh,
+  onReauth,
   onDelete,
   onTogglePause,
   busy,
@@ -233,6 +234,7 @@ function AccountCard({
   onClickCard: () => void;
   onUseNow: () => void;
   onRefresh: () => void;
+  onReauth: () => void;
   onDelete: () => void;
   onTogglePause: () => void;
   busy: boolean;
@@ -335,6 +337,18 @@ function AccountCard({
       <KebabMenu
         busy={busy}
         items={[
+          // Re-login is the only useful action on a needs_reauth account: its
+          // refresh_token is dead, so it reruns the OAuth add flow (Upsert
+          // dedups by uuid/email and resets status to active). Admin-gated like
+          // the other write actions — agent mode does CRUD on the vault UI.
+          ...(a.status === "needs_reauth" && !disableAdminActions
+            ? [
+                {
+                  label: t("accounts.kebab.reauth"),
+                  onClick: onReauth,
+                },
+              ]
+            : []),
           {
             label: fLease
               ? t("accounts.kebab.leased_by_other")
@@ -723,6 +737,7 @@ export function AccountsPage({
                   }
                   onUseNow={() => onUseNow(a.id)}
                   onRefresh={() => onRefreshAccount(a.id)}
+                  onReauth={startLogin}
                   onDelete={() => onDelete(a.id)}
                   onTogglePause={() => onTogglePause(a)}
                   busy={busyAccountId === a.id}
