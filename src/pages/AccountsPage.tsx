@@ -56,6 +56,8 @@ function fmtRemaining(ms: number): string {
 }
 
 function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
+  if (a.status === "org_disabled")
+    return { text: t("accounts.row.status.org_disabled"), tone: "danger" };
   if (a.status === "needs_reauth")
     return { text: t("accounts.row.status.needs_reauth"), tone: "danger" };
   if (a.status !== "active") return { text: t("accounts.row.status.paused"), tone: "muted" };

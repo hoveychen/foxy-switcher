@@ -21,7 +21,7 @@ const FILTERS: Array<{ key: FilterKey; labelKey: string; types?: string }> = [
   // the user sees a paired (injected → restored) story rather than half of it.
   { key: "switches", labelKey: "activity.filters.switches", types: "cred.injected,cred.restored,cred.failed" },
   { key: "refreshes", labelKey: "activity.filters.refreshes", types: "token.refreshed,usage.polled" },
-  { key: "errors", labelKey: "activity.filters.errors", types: "error.*,account.needs_reauth" },
+  { key: "errors", labelKey: "activity.filters.errors", types: "error.*,account.needs_reauth,account.org_disabled" },
 ];
 
 function fmtTime(ms: number): string {
