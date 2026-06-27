@@ -148,6 +148,7 @@
   "accounts.kebab.leased_by_other": "已被其他设备占用",
   "accounts.kebab.use_now": "立即使用",
   "accounts.kebab.refresh": "立即刷新",
+  "accounts.kebab.reauth": "重新登录",
   "accounts.kebab.resume": "恢复",
   "accounts.kebab.pause": "暂停",
   "accounts.kebab.delete": "删除",
