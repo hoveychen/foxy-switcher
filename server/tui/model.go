@@ -174,7 +174,7 @@ func applyAccountsFilter(all []Account, key accountsFilterKey) []Account {
 	for _, a := range all {
 		switch key {
 		case accFilterActive:
-			if a.Status != "paused" && !accountIsCooling(a) {
+			if a.Status == "active" && !accountIsCooling(a) {
 				out = append(out, a)
 			}
 		case accFilterPaused:
@@ -182,7 +182,7 @@ func applyAccountsFilter(all []Account, key accountsFilterKey) []Account {
 				out = append(out, a)
 			}
 		case accFilterCooling:
-			if a.Status != "paused" && accountIsCooling(a) {
+			if a.Status == "active" && accountIsCooling(a) {
 				out = append(out, a)
 			}
 		}
