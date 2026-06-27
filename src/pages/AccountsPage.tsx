@@ -56,6 +56,8 @@ function fmtRemaining(ms: number): string {
 }
 
 function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
+  if (a.status === "needs_reauth")
+    return { text: t("accounts.row.status.needs_reauth"), tone: "danger" };
   if (a.status !== "active") return { text: t("accounts.row.status.paused"), tone: "muted" };
   if (accountIsCooling(a)) {
     const reset = accountResetAt(a, new Date(nowMs));
@@ -104,7 +106,7 @@ function matchesQuery(a: Account, q: string): boolean {
 
 function matchesStatus(a: Account, f: StatusFilter): boolean {
   if (f === "all") return true;
-  if (f === "paused") return a.status !== "active";
+  if (f === "paused") return a.status === "paused";
   if (f === "active") return a.status === "active" && !accountIsCooling(a);
   if (f === "cooling") return a.status === "active" && accountIsCooling(a);
   return true;

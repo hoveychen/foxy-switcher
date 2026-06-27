@@ -50,6 +50,8 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
       tone: "muted",
     };
   }
+  if (a.status === "needs_reauth")
+    return { text: t("drawer.status.needs_reauth"), tone: "danger" };
   if (a.status !== "active") return { text: t("drawer.status.paused"), tone: "muted" };
   if (a.token_expired) return { text: t("drawer.status.token_expired"), tone: "danger" };
   if (accountIsCooling(a)) {
