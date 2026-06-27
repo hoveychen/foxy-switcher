@@ -59,6 +59,40 @@ func (e *RateLimitError) Error() string {
 		e.Path, e.StatusCode, e.RetryAfter, e.Body)
 }
 
+// OrgDisabledError is returned by getJSON (and therefore FetchUsage /
+// FetchProfile) when the upstream responds 403 with a permission_error —
+// Anthropic's signal that "OAuth authentication is currently not allowed for
+// this organization". This is an org-level block, not a token problem:
+// refreshing or re-logging in won't fix it (the org admin disabled API/OAuth
+// access). Callers use errors.As to detect it and flag the account distinctly
+// from a transient failure or a dead refresh_token.
+type OrgDisabledError struct {
+	Path       string
+	StatusCode int
+	Body       string
+}
+
+func (e *OrgDisabledError) Error() string {
+	return fmt.Sprintf("%s: %d OAuth disabled for organization: %s",
+		e.Path, e.StatusCode, e.Body)
+}
+
+// isPermissionError reports whether a response body is an Anthropic
+// permission_error envelope: {"type":"error","error":{"type":"permission_error",...}}.
+// Paired with a 403 status it identifies the org-level OAuth block. Tolerant of
+// non-JSON bodies (returns false).
+func isPermissionError(raw []byte) bool {
+	var env struct {
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return false
+	}
+	return env.Error.Type == "permission_error"
+}
+
 // parseRetryAfter handles both forms RFC 9110 allows for the Retry-After
 // header: a non-negative integer number of seconds, or an HTTP-date. Anything
 // else (empty, malformed, in the past) returns the fallback so callers always
@@ -277,6 +311,13 @@ func getJSON(ctx context.Context, path, accessToken string) (map[string]any, err
 			Path:       path,
 			StatusCode: resp.StatusCode,
 			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), retryAfterFallback),
+			Body:       strings.TrimSpace(string(raw)),
+		}
+	}
+	if resp.StatusCode == http.StatusForbidden && isPermissionError(raw) {
+		return nil, &OrgDisabledError{
+			Path:       path,
+			StatusCode: resp.StatusCode,
 			Body:       strings.TrimSpace(string(raw)),
 		}
 	}
