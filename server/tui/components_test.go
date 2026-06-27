@@ -19,6 +19,7 @@ func TestStatusDot(t *testing.T) {
 		{"active", Account{Status: "active"}, "●"},
 		{"paused", Account{Status: "paused"}, "○"},
 		{"needs_reauth", Account{Status: "needs_reauth"}, "⚠"},
+		{"org_disabled", Account{Status: "org_disabled"}, "⊗"},
 		{"cooling", Account{
 			Status:            "active",
 			FiveHourThreshold: 80,

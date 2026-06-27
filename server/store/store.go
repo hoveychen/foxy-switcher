@@ -28,7 +28,7 @@ type Account struct {
 	Scopes           string
 	SubscriptionType string // "max" | "pro" | "team_premium" | "team" | "free"
 	OrganizationUUID string
-	Status           string // "active" | "paused" | "needs_reauth"
+	Status           string // "active" | "paused" | "needs_reauth" | "org_disabled"
 	LastUsedAt       int64  // unix millis
 	// PinnedDeviceID scopes a "Use now" pin to the device that asked for
 	// it. Only that device's selector promotes the row to the front;
@@ -804,6 +804,15 @@ const (
 	// refresh scheduler), and the scheduler stops retrying it. A successful
 	// re-login flows through Upsert, which resets status back to active.
 	StatusNeedsReauth = "needs_reauth"
+	// StatusOrgDisabled marks an account whose organization has OAuth/API
+	// access disabled (Anthropic answers the OAuth API with 403
+	// permission_error). The token still refreshes fine, but every API call —
+	// usage poll AND inference — is rejected, so routing to it just breaks the
+	// user's session. Unlike needs_reauth, re-login can't fix it (it's an org
+	// policy); the fix is at the org level or removing the account. Set by the
+	// usage poller and auto-cleared back to active on the next successful poll
+	// (so a transient block or a re-enabled org self-heals).
+	StatusOrgDisabled = "org_disabled"
 )
 
 // SetStatus toggles between "active" and "paused". "paused" only suppresses
@@ -827,6 +836,16 @@ func (s *Store) MarkNeedsReauth(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE accounts SET status = ?, updated_at = ? WHERE id = ?`,
 		StatusNeedsReauth, time.Now().UnixMilli(), id)
+	return err
+}
+
+// MarkOrgDisabled flags an account whose organization has OAuth disabled (see
+// StatusOrgDisabled). Idempotent. Cleared by the usage poller via SetStatus on
+// the next successful poll.
+func (s *Store) MarkOrgDisabled(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE accounts SET status = ?, updated_at = ? WHERE id = ?`,
+		StatusOrgDisabled, time.Now().UnixMilli(), id)
 	return err
 }
 
