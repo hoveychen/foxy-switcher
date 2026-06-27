@@ -54,6 +54,12 @@ const (
 	// Distinct from error.refresh (a transient/retryable failure) so the UI can
 	// prompt for re-login instead of implying the daemon will recover on its own.
 	TypeAccountNeedsReauth = "account.needs_reauth"
+	// TypeAccountOrgDisabled fires when an account's organization has OAuth
+	// disabled (403 permission_error) — every API call is rejected, so the
+	// account is excluded from routing. Distinct from needs_reauth because
+	// re-login can't fix an org-level block. A matching account.resumed event
+	// fires if a later poll succeeds (org re-enabled).
+	TypeAccountOrgDisabled = "account.org_disabled"
 	TypeCredInjected    = "cred.injected"
 	TypeCredRestored    = "cred.restored"
 	TypeCredFailed      = "cred.failed"

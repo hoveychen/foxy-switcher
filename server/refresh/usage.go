@@ -211,6 +211,23 @@ func (p *UsagePoller) tick(ctx context.Context) {
 						a.Name, rl.RetryAfter))
 				continue
 			}
+			var od *anthropic.OrgDisabledError
+			if errors.As(err, &od) {
+				// Org-level OAuth block (403 permission_error): every API call
+				// for this account is rejected, so routing to it just breaks the
+				// user's session. Flag it so the selector excludes it; re-login
+				// can't fix an org policy. Only act on the active→disabled edge
+				// so we emit one event per transition, not every tick — and a
+				// later successful poll (org re-enabled) auto-heals it below.
+				if a.Status != store.StatusOrgDisabled {
+					if mErr := p.st.MarkOrgDisabled(ctx, a.ID); mErr != nil {
+						p.logger.Printf("[usage] account %d (%s): mark org_disabled: %v", a.ID, a.Name, mErr)
+					}
+					p.Bus.EmitError(activity.TypeAccountOrgDisabled, a.ID,
+						fmt.Sprintf("%s disabled — its organization has OAuth access turned off (re-login won't fix this)", a.Name))
+				}
+				continue
+			}
 			p.logger.Printf("[usage] account %d (%s): %v", a.ID, a.Name, err)
 			p.Bus.EmitError(activity.TypeErrorUsage, a.ID,
 				fmt.Sprintf("Usage poll for %s failed: %v", a.Name, err))
@@ -219,6 +236,16 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		// Successful poll — drop any stale backoff so a recovered account
 		// resumes its normal cadence immediately.
 		p.clearBackoff(a.ID)
+		// Auto-heal: a poll succeeding on a previously org-disabled account means
+		// the org re-enabled OAuth, so restore it to active and let routing resume.
+		if a.Status == store.StatusOrgDisabled {
+			if sErr := p.st.SetStatus(ctx, a.ID, store.StatusActive); sErr != nil {
+				p.logger.Printf("[usage] account %d (%s): clear org_disabled: %v", a.ID, a.Name, sErr)
+			} else {
+				p.Bus.EmitInfo(activity.TypeAccountResumed, a.ID,
+					fmt.Sprintf("%s re-enabled — organization OAuth access restored", a.Name))
+			}
+		}
 		fhU, sdU, ssU := flattenUsage(u)
 		if err := writeUsage(ctx, p.st, a.ID, u); err != nil {
 			p.logger.Printf("[usage] account %d store: %v", a.ID, err)
