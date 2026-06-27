@@ -49,6 +49,11 @@ const (
 	TypeAccountDeleted  = "account.deleted"
 	TypeAccountPaused   = "account.paused"
 	TypeAccountResumed  = "account.resumed"
+	// TypeAccountNeedsReauth fires when an account's refresh_token is rejected
+	// with invalid_grant — the token is dead and the user must re-authenticate.
+	// Distinct from error.refresh (a transient/retryable failure) so the UI can
+	// prompt for re-login instead of implying the daemon will recover on its own.
+	TypeAccountNeedsReauth = "account.needs_reauth"
 	TypeCredInjected    = "cred.injected"
 	TypeCredRestored    = "cred.restored"
 	TypeCredFailed      = "cred.failed"
