@@ -297,6 +297,53 @@ func TestRevokeDevice_TokenStopsWorking(t *testing.T) {
 	}
 }
 
+// TestSuspendDevice_TokenStopsThenResumes locks the core suspend contract:
+// a suspended device's token 401s (temporary kick) but the SAME token works
+// again after resume — no re-pair, because the row and token_hash survive.
+func TestSuspendDevice_TokenStopsThenResumes(t *testing.T) {
+	f := newAuthFixture(t)
+	ctx := context.Background()
+
+	token := vaultauth.NewToken()
+	dev := store.Device{
+		ID:        vaultauth.NewID(),
+		Name:      "to-be-suspended",
+		TokenHash: vaultauth.HashToken(token),
+	}
+	if err := f.st.InsertDevice(ctx, dev); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+
+	call := func() int {
+		req, _ := http.NewRequest(http.MethodGet, f.server.URL+"/agent/v1/accounts", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := call(); got != http.StatusOK {
+		t.Fatalf("pre-suspend status: got %d want 200", got)
+	}
+
+	if err := f.st.SetDeviceDisabled(ctx, dev.ID, true); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	if got := call(); got != http.StatusUnauthorized {
+		t.Errorf("suspended token: got %d want 401", got)
+	}
+
+	if err := f.st.SetDeviceDisabled(ctx, dev.ID, false); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if got := call(); got != http.StatusOK {
+		t.Errorf("resumed token: got %d want 200", got)
+	}
+}
+
 // --- helpers -------------------------------------------------------------
 
 type cookieJar struct {

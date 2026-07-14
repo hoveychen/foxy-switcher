@@ -175,6 +175,40 @@ func (s *Store) ReleaseLease(ctx context.Context, leaseID string) error {
 	return tx.Commit()
 }
 
+// ReleaseDeviceLeases releases every lease currently held by deviceID,
+// closing each lease's open attribution segment at the release instant.
+// Used when an admin suspends a device: the accounts it was holding return
+// to the pool immediately instead of waiting for TTL expiry. Idempotent —
+// a device with no live lease is a no-op. Returns the number of leases
+// released so the caller can log/report.
+func (s *Store) ReleaseDeviceLeases(ctx context.Context, deviceID string) (int, error) {
+	if deviceID == "" {
+		return 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UnixMilli()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE lease_events SET ended_at = ?
+		   WHERE ended_at = 0
+		     AND lease_id IN (SELECT id FROM leases WHERE device_id = ?)`,
+		now, deviceID); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM leases WHERE device_id = ?`, deviceID)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // FirstActiveLease returns the account_id of an arbitrary live lease, or
 // (0, false) when no live lease exists. Used by the vault Web UI's
 // dashboard handler to surface "which account is currently being used by

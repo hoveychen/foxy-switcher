@@ -21,6 +21,10 @@ export type AdminDevice = {
   client_type?: string;
   created_at: number;
   last_seen_at: number;
+  // disabled_at is 0 for an active device and the suspend timestamp
+  // (epoch ms) for a suspended one. When non-zero the device's token is
+  // rejected until an admin resumes it (no re-pair needed).
+  disabled_at: number;
   // current_lease names the account this device is currently holding,
   // joined with account_name server-side. Absent when the device has no
   // live lease.
@@ -102,6 +106,16 @@ export const adminApi = {
     request<{ devices: AdminDevice[] }>("/admin/api/devices"),
   revokeDevice: (id: string) =>
     request<void>("/admin/api/devices/revoke", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
+  suspendDevice: (id: string) =>
+    request<void>("/admin/api/devices/suspend", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
+  resumeDevice: (id: string) =>
+    request<void>("/admin/api/devices/resume", {
       method: "POST",
       body: JSON.stringify({ id }),
     }),

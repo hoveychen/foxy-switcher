@@ -39,6 +39,8 @@ func (s *Server) RegisterAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/api/logout", s.requireSessionJSON(s.handleAPILogout))
 	mux.HandleFunc("GET /admin/api/devices", s.requireSessionJSON(s.handleAPIDevicesList))
 	mux.HandleFunc("POST /admin/api/devices/revoke", s.requireSessionJSON(s.handleAPIDevicesRevoke))
+	mux.HandleFunc("POST /admin/api/devices/suspend", s.requireSessionJSON(s.handleAPIDevicesSuspend))
+	mux.HandleFunc("POST /admin/api/devices/resume", s.requireSessionJSON(s.handleAPIDevicesResume))
 	mux.HandleFunc("POST /admin/api/devices/rename", s.requireSessionJSON(s.handleAPIDevicesRename))
 	mux.HandleFunc("GET /admin/api/pair", s.requireSessionJSON(s.handleAPIPairLookup))
 	mux.HandleFunc("POST /admin/api/pair", s.requireSessionJSON(s.handleAPIPairResolve))
@@ -193,6 +195,10 @@ type apiDeviceRow struct {
 	ClientType string `json:"client_type,omitempty"`
 	CreatedAt  int64  `json:"created_at"`
 	LastSeenAt int64  `json:"last_seen_at"`
+	// DisabledAt is 0 for an active device and the suspend timestamp
+	// (UnixMilli) for a suspended one. The DevicesPage renders a
+	// "suspended" badge and flips the action button to Resume when != 0.
+	DisabledAt int64 `json:"disabled_at"`
 	// CurrentLease names the account this device is currently leasing,
 	// joined with the account name so the admin DevicesPage can render
 	// "currently using X (12 min left)" without a second query. Nil when
@@ -243,6 +249,7 @@ func (s *Server) handleAPIDevicesList(w http.ResponseWriter, r *http.Request) {
 			ClientType: d.ClientType,
 			CreatedAt:  d.CreatedAt,
 			LastSeenAt: d.LastSeenAt,
+			DisabledAt: d.DisabledAt,
 		}
 		if l, ok := leaseByDevice[d.ID]; ok {
 			row.CurrentLease = &apiDeviceLease{
@@ -272,6 +279,62 @@ func (s *Server) handleAPIDevicesRevoke(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := s.st.DeleteDevice(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAPIDevicesSuspend temporarily kicks a device without deleting it:
+// it stamps disabled_at (so BearerAuth 401s the token) and releases any
+// leases the device holds so the accounts return to the pool immediately.
+// The row and token_hash survive, so a later Resume needs no re-pair.
+func (s *Server) handleAPIDevicesSuspend(w http.ResponseWriter, r *http.Request) {
+	var req apiRevokeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("id required"))
+		return
+	}
+	if err := s.st.SetDeviceDisabled(r.Context(), req.ID, true); err != nil {
+		if notFoundIs(err) {
+			writeError(w, http.StatusNotFound, errors.New("device not found"))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	// Free the accounts this device was holding. The device is already
+	// disabled (the authoritative kick); a release failure shouldn't undo
+	// that, but we surface it as 500 so the operator knows the pool didn't
+	// fully free — the lease will still expire on its own TTL.
+	if _, err := s.st.ReleaseDeviceLeases(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAPIDevicesResume clears disabled_at so the device's existing token
+// authenticates again — no re-pair, since the row was never deleted.
+func (s *Server) handleAPIDevicesResume(w http.ResponseWriter, r *http.Request) {
+	var req apiRevokeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("id required"))
+		return
+	}
+	if err := s.st.SetDeviceDisabled(r.Context(), req.ID, false); err != nil {
+		if notFoundIs(err) {
+			writeError(w, http.StatusNotFound, errors.New("device not found"))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

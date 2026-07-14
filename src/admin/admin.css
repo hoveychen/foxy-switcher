@@ -181,6 +181,22 @@
   color: var(--text-tertiary);
   font: var(--font-caption);
 }
+/* Inline status chip shown next to a device name (e.g. "Suspended"). */
+.admin-badge {
+  display: inline-block;
+  margin-left: var(--space-8);
+  padding: 0.1em 0.5em;
+  border-radius: var(--radius-pill, 999px);
+  font: var(--font-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+.admin-badge--muted {
+  color: var(--text-secondary);
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-subtle, var(--bg-overlay));
+}
 .admin-table__empty {
   padding: var(--space-24) var(--space-16);
   text-align: center;

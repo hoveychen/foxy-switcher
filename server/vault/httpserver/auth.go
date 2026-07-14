@@ -89,10 +89,16 @@ func BearerAuth(st *store.Store) func(http.Handler) http.Handler {
 func authenticateRequest(r *http.Request, st *store.Store) (string, bool) {
 	if token, ok := extractBearer(r); ok {
 		dev, err := st.FindDeviceByTokenHash(r.Context(), vaultauth.HashToken(token))
-		if err == nil {
+		if err == nil && dev.DisabledAt == 0 {
 			_ = st.TouchDevice(r.Context(), dev.ID)
 			return dev.ID, true
 		}
+		// A suspended device (DisabledAt != 0) matches by hash but is not
+		// authenticated: skip TouchDevice so its "last active" stays
+		// truthful, and fall through to the cookie path (an agent has no
+		// session cookie, so the request ends in 401 until an admin
+		// resumes it — no re-pair needed because the row and token_hash
+		// are preserved).
 		if !errors.Is(err, store.ErrNotFound) {
 			// SQL error is treated as "not authenticated" — better to 401
 			// than 500 from the auth layer; the operator sees the underlying

@@ -24,6 +24,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
   const [devices, setDevices] = useState<AdminDevice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -64,6 +65,55 @@ export function DevicesPage({ onUnauthorized }: Props) {
       setError(t("admin.devices.error.revoke"));
     } finally {
       setRevokingId(null);
+    }
+  }
+
+  async function suspend(d: AdminDevice) {
+    if (!confirm(tf("admin.devices.confirm_suspend", { name: d.name }))) {
+      return;
+    }
+    setTogglingId(d.id);
+    setError(null);
+    try {
+      await adminApi.suspendDevice(d.id);
+      // Mirror the server: token is now dead and its lease is freed, so
+      // drop current_lease and stamp disabled_at locally without a reload.
+      setDevices((cur) =>
+        cur
+          ? cur.map((x) =>
+              x.id === d.id
+                ? { ...x, disabled_at: Date.now(), current_lease: undefined }
+                : x,
+            )
+          : cur,
+      );
+    } catch (err) {
+      if (err instanceof AdminApiError && err.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      setError(t("admin.devices.error.suspend"));
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  async function resume(d: AdminDevice) {
+    setTogglingId(d.id);
+    setError(null);
+    try {
+      await adminApi.resumeDevice(d.id);
+      setDevices((cur) =>
+        cur ? cur.map((x) => (x.id === d.id ? { ...x, disabled_at: 0 } : x)) : cur,
+      );
+    } catch (err) {
+      if (err instanceof AdminApiError && err.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      setError(t("admin.devices.error.resume"));
+    } finally {
+      setTogglingId(null);
     }
   }
 
@@ -134,6 +184,8 @@ export function DevicesPage({ onUnauthorized }: Props) {
                 {devices.map((d) => {
                   const isEditing = editingId === d.id;
                   const isSaving = savingId === d.id;
+                  const isSuspended = d.disabled_at !== 0;
+                  const isToggling = togglingId === d.id;
                   return (
                     <tr key={d.id}>
                       <td>
@@ -159,6 +211,11 @@ export function DevicesPage({ onUnauthorized }: Props) {
                         ) : (
                           <>
                             {d.name}
+                            {isSuspended && (
+                              <span className="admin-badge admin-badge--muted">
+                                {t("admin.devices.status_suspended")}
+                              </span>
+                            )}
                             {d.hostname && d.hostname !== d.name && (
                               <span className="admin-table__sub">{d.hostname}</span>
                             )}
@@ -212,15 +269,48 @@ export function DevicesPage({ onUnauthorized }: Props) {
                                 type="button"
                                 className="admin-button"
                                 onClick={() => startEdit(d)}
-                                disabled={editingId !== null || revokingId === d.id}
+                                disabled={
+                                  editingId !== null || revokingId === d.id || isToggling
+                                }
                               >
                                 {t("admin.devices.rename")}
                               </button>
+                              {isSuspended ? (
+                                <button
+                                  type="button"
+                                  className="admin-button admin-button--primary"
+                                  onClick={() => void resume(d)}
+                                  disabled={
+                                    isToggling || editingId !== null || revokingId === d.id
+                                  }
+                                  aria-busy={isToggling}
+                                >
+                                  {isToggling
+                                    ? t("admin.devices.resuming")
+                                    : t("admin.devices.resume")}
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="admin-button"
+                                  onClick={() => void suspend(d)}
+                                  disabled={
+                                    isToggling || editingId !== null || revokingId === d.id
+                                  }
+                                  aria-busy={isToggling}
+                                >
+                                  {isToggling
+                                    ? t("admin.devices.suspending")
+                                    : t("admin.devices.suspend")}
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 className="admin-button admin-button--danger"
                                 onClick={() => revoke(d)}
-                                disabled={revokingId === d.id || editingId !== null}
+                                disabled={
+                                  revokingId === d.id || editingId !== null || isToggling
+                                }
                                 aria-busy={revokingId === d.id}
                               >
                                 {revokingId === d.id
