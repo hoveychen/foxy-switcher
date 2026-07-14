@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS devices (
   arch          TEXT    NOT NULL DEFAULT '',
   model         TEXT    NOT NULL DEFAULT '',
   app_version   TEXT    NOT NULL DEFAULT '',
-  client_type   TEXT    NOT NULL DEFAULT ''
+  client_type   TEXT    NOT NULL DEFAULT '',
+  disabled_at   INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS devices_token_hash ON devices (token_hash);
 
@@ -103,6 +104,10 @@ var authColumnMigrations = []string{
 	`ALTER TABLE devices ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE devices ADD COLUMN app_version TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE devices ADD COLUMN client_type TEXT NOT NULL DEFAULT ''`,
+	// disabled_at != 0 marks a device as suspended: BearerAuth rejects its
+	// token (temporary kick without deleting the row, so resume needs no
+	// re-pair). 0 = active.
+	`ALTER TABLE devices ADD COLUMN disabled_at INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE pairings ADD COLUMN hostname TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE pairings ADD COLUMN os TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE pairings ADD COLUMN os_version TEXT NOT NULL DEFAULT ''`,
@@ -171,6 +176,9 @@ type Device struct {
 	Model      string
 	AppVersion string
 	ClientType string
+	// DisabledAt is the suspend timestamp (UnixMilli). 0 = active; non-zero
+	// means an admin suspended the device and BearerAuth 401s its token.
+	DisabledAt int64
 }
 
 // InsertDevice records a paired device. The caller has already produced
@@ -198,10 +206,10 @@ func (s *Store) FindDeviceByTokenHash(ctx context.Context, hash string) (*Device
 	var d Device
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, token_hash, created_at, last_seen_at,
-		        hostname, os, os_version, arch, model, app_version, client_type
+		        hostname, os, os_version, arch, model, app_version, client_type, disabled_at
 		   FROM devices WHERE token_hash = ?`, hash).
 		Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt,
-			&d.Hostname, &d.OS, &d.OSVersion, &d.Arch, &d.Model, &d.AppVersion, &d.ClientType)
+			&d.Hostname, &d.OS, &d.OSVersion, &d.Arch, &d.Model, &d.AppVersion, &d.ClientType, &d.DisabledAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -238,11 +246,37 @@ func (s *Store) UpdateDeviceName(ctx context.Context, id, name string) error {
 	return nil
 }
 
+// SetDeviceDisabled suspends (disabled=true) or resumes (disabled=false) a
+// device. Suspending stamps disabled_at with now so BearerAuth rejects the
+// token; resuming clears it back to 0 and the same token works again with
+// no re-pair. Returns ErrNotFound when no row matches so the handler can
+// 404. Idempotent-ish: re-suspending refreshes the timestamp, which is
+// harmless (only zero/non-zero is load-bearing).
+func (s *Store) SetDeviceDisabled(ctx context.Context, id string, disabled bool) error {
+	if id == "" {
+		return fmt.Errorf("id required")
+	}
+	var disabledAt int64
+	if disabled {
+		disabledAt = time.Now().UnixMilli()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE devices SET disabled_at = ? WHERE id = ?`, disabledAt, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListDevices returns every paired device, newest first.
 func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, token_hash, created_at, last_seen_at,
-		        hostname, os, os_version, arch, model, app_version, client_type
+		        hostname, os, os_version, arch, model, app_version, client_type, disabled_at
 		   FROM devices ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -252,7 +286,7 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	for rows.Next() {
 		var d Device
 		if err := rows.Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt,
-			&d.Hostname, &d.OS, &d.OSVersion, &d.Arch, &d.Model, &d.AppVersion, &d.ClientType); err != nil {
+			&d.Hostname, &d.OS, &d.OSVersion, &d.Arch, &d.Model, &d.AppVersion, &d.ClientType, &d.DisabledAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
