@@ -1,6 +1,6 @@
 # Cloud Vault — Design
 
-This doc captures the plan to split the existing single-binary daemon into a **Vault** service (token storage + refresh + usage + account selection, runnable in the cloud) and an **Agent** service (credential injection into Claude Code's keychain on the user's local machine). The current single-process behavior remains the default deployment mode (Vault + Agent inside one binary, talking via in-process calls).
+This doc captures the split between a **Vault** service (token storage + refresh + usage + provider-aware account selection, runnable in the cloud) and an **Agent** service (credential injection into Claude Code and Codex CLI on the user's local machine). The current single-process behavior remains the default deployment mode (Vault + Agent inside one binary, talking via in-process calls).
 
 For the existing architecture see [architecture.md](architecture.md). This doc only covers what changes.
 
@@ -24,7 +24,7 @@ One binary, three modes via a single flag:
 |---|---|
 | `--mode=combined` (default) | Vault + Agent in-process. Identical behavior to today. |
 | `--mode=vault` | Store, refresh.Scheduler, refresh.UsagePoller, authz, selector, HTTP API. **No** credinject. |
-| `--mode=agent --vault-url=https://…` | credinject.Coordinator + reverse-sync + OAuth callback receiver + HTTP client to vault. **No** local store, no scheduler, no usage poller. |
+| `--mode=agent --vault-url=https://…` | Claude `credinject.Coordinator` + Codex `openai.RemoteManager` + reverse-sync + HTTP client to vault. **No** account store, scheduler, or usage poller. |
 
 `combined` shares a single in-memory `vault.Service` so we don't pay HTTP overhead for the local case.
 
@@ -42,8 +42,8 @@ One binary, three modes via a single flag:
          v                          |
 +------------------+                |
 |  Agent           | <--------------+
-|  credinject +    |
-|  reverse-sync +  |
+|  Claude + Codex  |
+|  injection/sync  |
 |  OAuth receiver  |
 +------------------+
 ```
@@ -67,9 +67,11 @@ Step 1 surface (landed):
 type Service interface {
     ListAccounts(ctx) ([]Account, error)
     GetAutoSwitch(ctx) (AutoSwitch, error)
-    Pick(ctx, now time.Time) (*Account, error)        // selector.Pick wrapper
+    Pick(ctx, now time.Time) (*Account, error)        // legacy Claude default
+    PickProviderForDevice(ctx, now, deviceID, provider) (*Account, error)
     MarkUsed(ctx, accountID int64) error
     UpdateTokens(ctx, accountID, accessToken, refreshToken, expiresAt) error
+    UpdateProviderCredential(ctx, accountID, accessToken, refreshToken, expiresAt, credentialJSON) error
 }
 ```
 
@@ -102,9 +104,9 @@ Step 2 agent routes:
 |---|---|
 | `GET /agent/v1/accounts` | List accounts (raw, tokens included) |
 | `GET /agent/v1/auto-switch` | Auto-switch policy |
-| `POST /agent/v1/pick` | Returns the next eligible account (selector.Pick), or 204 |
+| `POST /agent/v1/pick?provider=claude\|codex` | Returns the next eligible account for one provider, or 204; omitted provider defaults to Claude for old agents |
 | `POST /agent/v1/accounts/{id}/used` | MarkUsed |
-| `POST /agent/v1/accounts/{id}/tokens` | UpdateTokens (agent reports CC-rotated tokens) |
+| `POST /agent/v1/accounts/{id}/tokens` | Reports CLI-rotated tokens and optional provider-native credential JSON |
 | `POST /agent/v1/leases` | AcquireLease — body: `{ account_id, device_id, ttl_ms }` |
 | `POST /agent/v1/leases/{id}/renew` | RenewLease — body: `{ ttl_ms }` |
 | `DELETE /agent/v1/leases/{id}` | ReleaseLease |
@@ -113,14 +115,14 @@ Frontend routes that previously appeared on this list (login, refresh-now, setti
 
 The agent surface is also exposed in `--mode=combined`: a second device on the same LAN can `--mode=agent` against the local daemon. That's mostly a debugging convenience — the canonical multi-device topology is one cloud `--mode=vault` plus N local agents.
 
-Agent's reconcile loop (replaces today's `Coordinator.choose`):
+Each provider's reconcile loop:
 
 1. On startup: `POST /lease/pick` to acquire the next account.
-2. Inject into keychain.
+2. Acquire/renew that provider's lease, then inject into its native credential store.
 3. Subscribe to `/events`. On `account.changed` for the leased account, re-read tokens (vault has rotated them) and re-inject.
 4. Periodically `RenewLease` (every TTL/3).
 5. On `switch.requested` (e.g. user clicked "Use now" for a different account on the web UI): release current lease, pick again.
-6. Reverse-sync: every 30s read keychain blob; if access_token changed and doesn't match the last lease snapshot, `POST /lease/{lease_id}/rotation`.
+6. Reverse-sync local CLI rotations into the vault. Claude reports its token tuple; Codex also reports the complete normalized auth document.
 
 The HTTP boundary preserves today's contract: `combined` mode runs the same handlers but skips the network hop.
 
@@ -178,11 +180,12 @@ The `account_id` UNIQUE constraint is enforced absolutely — only one live row 
 Rules:
 
 - **One live lease per account.** `AcquireLease` for an already-leased account returns `vault.ErrLeaseLocked` (HTTP 409 from `/agent/v1/leases`) unless the caller is the same device — same-device acquire just refreshes the TTL on the existing row.
+- **Multiple leases per device.** There is no unique constraint on `device_id`; a paired agent normally holds one Claude lease and one Codex lease concurrently.
 - **`selector.Pick` excludes leased-elsewhere accounts.** `vault.InProc.Pick` calls `selector.PickWithFilter` with `store.IsAccountLeased` as the extra disqualifier, so a device that runs Pick never sees an account another device holds.
 - **`refresh.Scheduler` skips leased accounts** *except* when remaining lifetime drops below `InUseFallbackThreshold` (15 min). This generalises today's per-account predicate — any device with a live lease suppresses scheduler-driven rotation. The fallback covers the "agent crashed holding a stale lease, nobody is rotating CC's keychain" case.
 - **TTL**: default 60s ([credinject.DefaultLeaseTTL](../server/credinject/coordinator.go)). The reconcile loop renews on every tick (5s) so even a missed tick leaves comfortable headroom. The vault sweeper runs on a 30s timer in `main` and reclaims expired rows.
 - **Coordinator bails on contention.** If the agent's `AcquireLease` returns `ErrLeaseLocked`, the reconcile aborts without writing the keychain. The next reconcile re-runs `choose`, which calls `Pick` (which now excludes the contested account) and lands on a different free candidate.
-- **Token rotation single-source-of-truth**: only Vault's refresh.Scheduler (and explicit `RefreshNow`) call `authz.RefreshToken`. Agents only report CC-side rotations via `UpdateTokens`, which writes the new tokens into the store without re-issuing them. This eliminates the refresh_token race entirely — Vault serialises via the existing `refresh.Scheduler` per-account mutex, agents never hit the OAuth endpoint.
+- **Token rotation single-source-of-truth**: vault schedulers perform provider refreshes while agents report rotations observed from the local CLIs. Provider-aware credential updates keep Codex's id token and metadata in sync with the common token columns.
 
 Shutdown: when an agent exits gracefully, `RestoreOnShutdown` calls `ReleaseLease` so the account can be picked up by another device immediately rather than waiting for TTL.
 
@@ -191,7 +194,7 @@ Shutdown: when an agent exits gracefully, `RestoreOnShutdown` calls `ReleaseLeas
 Step 5 keeps the frontend untouched. Instead, `--mode=agent` is a transparent reverse proxy:
 
 - Local listener on the same port the Tauri sidecar always used.
-- `GET /healthz` and `GET /api/cred/status` served locally — those are the only routes whose answer depends on *this* machine (the cred-status surface reflects what credinject did to the local keychain, not anything stored on the vault).
+- `GET /healthz` and `GET /api/cred/status` served locally — status includes the locally injected Claude and Codex account IDs.
 - Everything else under `/` proxies to the vault, with `Authorization: Bearer <device_token>` injected on every request. Streaming routes (the activity SSE) work because `httputil.ReverseProxy` already handles them.
 - Upstream-unreachable failures surface as `502 {"error":"vault unreachable: …"}` so the React error toast renders cleanly.
 

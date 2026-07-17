@@ -26,6 +26,7 @@ Foxy Switcher takes that loop off your hands. Enroll each subscription once. The
 - **Manual override** — flip Auto Switch off and pick the account yourself with one click.
 - **Safe by default** — Foxy atomically swaps provider-native credentials and restores the pre-Foxy Claude and Codex logins on shutdown.
 - **GUI and TUI** — full desktop app, plus a terminal UI for headless / SSH setups.
+- **Remote vault, both providers** — paired agents can lease and inject one Claude and one Codex account concurrently from the same self-hosted vault.
 
 ## Install
 
