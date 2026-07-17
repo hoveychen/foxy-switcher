@@ -16,11 +16,17 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const (
+	ProviderClaude = "claude"
+	ProviderCodex  = "codex"
+)
+
 // Account is the in-memory representation of a row in the accounts table.
 // Token fields are stored unencrypted; the SQLite file lives at 0600 inside
 // ~/.foxy-switcher.
 type Account struct {
 	ID               int64
+	Provider         string // "claude" | "codex"
 	Name             string
 	AccessToken      string
 	RefreshToken     string
@@ -99,6 +105,7 @@ func (a Account) TokenExpired(now time.Time) bool {
 const tableSchema = `
 CREATE TABLE IF NOT EXISTS accounts (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider                   TEXT    NOT NULL DEFAULT 'claude',
   name                       TEXT    NOT NULL,
   access_token               TEXT    NOT NULL,
   refresh_token              TEXT    NOT NULL,
@@ -137,12 +144,15 @@ CREATE TABLE IF NOT EXISTS accounts (
 // yet have an account_uuid (older installs before the next UsagePoller tick
 // fills it in).
 const indexSchema = `
-CREATE INDEX IF NOT EXISTS accounts_status_lru
-  ON accounts (status, last_used_at);
-CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_uniq
-  ON accounts (email) WHERE email != '';
-CREATE UNIQUE INDEX IF NOT EXISTS accounts_uuid_uniq
-  ON accounts (account_uuid) WHERE account_uuid != '';
+DROP INDEX IF EXISTS accounts_status_lru;
+DROP INDEX IF EXISTS accounts_email_uniq;
+DROP INDEX IF EXISTS accounts_uuid_uniq;
+CREATE INDEX IF NOT EXISTS accounts_provider_status_lru
+  ON accounts (provider, status, last_used_at);
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_provider_email_uniq
+  ON accounts (provider, email) WHERE email != '';
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_provider_uuid_uniq
+  ON accounts (provider, account_uuid) WHERE account_uuid != '';
 `
 
 // kvSchema holds simple daemon-wide key/value settings (auto-switch toggle,
@@ -182,6 +192,7 @@ const UsageHistoryRetention = 7 * 24 * time.Hour
 // order and is idempotent (failures with "duplicate column" are silently
 // ignored, so re-running on an already-migrated DB is fine).
 var columnMigrations = []string{
+	`ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'`,
 	`ALTER TABLE accounts ADD COLUMN email TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN full_name TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN organization_name TEXT NOT NULL DEFAULT ''`,
@@ -303,6 +314,7 @@ func migrateLegacyOrgUnique(db *sql.DB) error {
 BEGIN TRANSACTION;
 CREATE TABLE accounts_new (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider                   TEXT    NOT NULL DEFAULT 'claude',
   name                       TEXT    NOT NULL,
   access_token               TEXT    NOT NULL,
   refresh_token              TEXT    NOT NULL,
@@ -335,7 +347,7 @@ CREATE TABLE accounts_new (
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
-  id, name, access_token, refresh_token, expires_at, scopes,
+  id, provider, name, access_token, refresh_token, expires_at, scopes,
   subscription_type, organization_uuid, status, cooldown_until,
   last_used_at, last_429_at, created_at, updated_at,
   email, full_name, organization_name, plan,
@@ -378,6 +390,7 @@ func migrateDropCooldownColumns(db *sql.DB) error {
 BEGIN TRANSACTION;
 CREATE TABLE accounts_new (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider                   TEXT    NOT NULL DEFAULT 'claude',
   name                       TEXT    NOT NULL,
   access_token               TEXT    NOT NULL,
   refresh_token              TEXT    NOT NULL,
@@ -408,7 +421,7 @@ CREATE TABLE accounts_new (
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
-  id, name, access_token, refresh_token, expires_at, scopes,
+  id, provider, name, access_token, refresh_token, expires_at, scopes,
   subscription_type, organization_uuid, status,
   last_used_at, created_at, updated_at,
   email, full_name, organization_name, plan,
@@ -453,6 +466,9 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Both keys are skipped when their value is empty, so accounts that haven't
 // surfaced either field coexist as distinct rows.
 func (s *Store) Upsert(ctx context.Context, a *Account) error {
+	if a.Provider == "" {
+		a.Provider = ProviderClaude
+	}
 	now := time.Now().UnixMilli()
 	if a.CreatedAt == 0 {
 		a.CreatedAt = now
@@ -471,10 +487,12 @@ func (s *Store) Upsert(ctx context.Context, a *Account) error {
 	var existingID int64
 	err = tx.QueryRowContext(ctx, `
 SELECT id FROM accounts
- WHERE (? != '' AND account_uuid = ?)
-    OR (? != '' AND account_uuid = '' AND email = ?)
+ WHERE provider = ?
+   AND ((? != '' AND account_uuid = ?)
+    OR (? != '' AND account_uuid = '' AND email = ?))
  ORDER BY id
  LIMIT 1`,
+		a.Provider,
 		a.AccountUUID, a.AccountUUID,
 		a.Email, a.Email,
 	).Scan(&existingID)
@@ -486,6 +504,7 @@ SELECT id FROM accounts
 		a.ID = existingID
 		if _, err := tx.ExecContext(ctx, `
 UPDATE accounts SET
+  provider = ?,
   name = ?,
   access_token = ?, refresh_token = ?, expires_at = ?,
   scopes = ?, subscription_type = ?, organization_uuid = ?,
@@ -494,7 +513,7 @@ UPDATE accounts SET
   status = 'active',
   updated_at = ?
 WHERE id = ?`,
-			a.Name,
+			a.Provider, a.Name,
 			a.AccessToken, a.RefreshToken, a.ExpiresAt,
 			a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 			a.Email, a.FullName, a.OrganizationName, a.Plan,
@@ -528,13 +547,13 @@ WHERE id = ?`,
 
 	res, err := tx.ExecContext(ctx, `
 INSERT INTO accounts
-  (name, access_token, refresh_token, expires_at, scopes, subscription_type,
+  (provider, name, access_token, refresh_token, expires_at, scopes, subscription_type,
    organization_uuid, status, last_used_at,
    created_at, updated_at,
    email, full_name, organization_name, plan, account_uuid, rate_limit_tier,
    five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.Provider, a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
 		a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 		ifEmpty(a.Status, "active"), a.LastUsedAt,
 		a.CreatedAt, a.UpdatedAt,
@@ -587,7 +606,9 @@ UPDATE accounts
          WHEN account_uuid = ''
               AND ? != ''
               AND NOT EXISTS (
-                SELECT 1 FROM accounts WHERE account_uuid = ? AND id != ?
+                SELECT 1 FROM accounts
+                 WHERE provider = (SELECT provider FROM accounts WHERE id = ?)
+                   AND account_uuid = ? AND id != ?
               )
            THEN ?
          ELSE account_uuid
@@ -596,7 +617,7 @@ UPDATE accounts
  WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, q,
 		email, fullName, organizationName, plan, subscriptionType, rateLimitTier,
-		accountUUID, accountUUID, id, accountUUID,
+		accountUUID, id, accountUUID, id, accountUUID,
 		time.Now().UnixMilli(), id)
 	return err
 }
@@ -858,7 +879,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 }
 
 const selectColumns = `
-id, name, access_token, refresh_token, expires_at, scopes,
+id, provider, name, access_token, refresh_token, expires_at, scopes,
 subscription_type, organization_uuid, status,
 last_used_at, created_at, updated_at,
 email, full_name, organization_name, plan,
@@ -872,6 +893,16 @@ account_uuid, rate_limit_tier, pinned_device_id`
 // List returns every row ordered by id (stable insertion order).
 func (s *Store) List(ctx context.Context) ([]Account, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+selectColumns+` FROM accounts ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAccounts(rows)
+}
+
+// ListProvider returns one credential pool without mixing providers.
+func (s *Store) ListProvider(ctx context.Context, provider string) ([]Account, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+selectColumns+` FROM accounts WHERE provider = ? ORDER BY id`, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -903,7 +934,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 	for rows.Next() {
 		var a Account
 		if err := rows.Scan(
-			&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.ExpiresAt,
+			&a.ID, &a.Provider, &a.Name, &a.AccessToken, &a.RefreshToken, &a.ExpiresAt,
 			&a.Scopes, &a.SubscriptionType,
 			&a.OrganizationUUID, &a.Status, &a.LastUsedAt,
 			&a.CreatedAt, &a.UpdatedAt,

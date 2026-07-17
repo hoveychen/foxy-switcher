@@ -26,7 +26,12 @@ var ErrNoAvailable = errors.New("no available account")
 // the store; the caller should call store.MarkUsed after the inject succeeds
 // so the LRU clock advances.
 func Pick(ctx context.Context, st *store.Store, now time.Time) (*store.Account, error) {
-	return PickWithFilter(ctx, st, now, "", nil)
+	return PickProviderWithFilter(ctx, st, store.ProviderClaude, now, "", nil)
+}
+
+// PickProvider selects from exactly one provider pool.
+func PickProvider(ctx context.Context, st *store.Store, provider string, now time.Time) (*store.Account, error) {
+	return PickProviderWithFilter(ctx, st, provider, now, "", nil)
 }
 
 // PickWithFilter is Pick with an extra disqualifier the caller can apply
@@ -42,7 +47,12 @@ func Pick(ctx context.Context, st *store.Store, now time.Time) (*store.Account, 
 // reconcile tick from stampeding onto a freshly-pinned account. "" means
 // the caller has no device identity; only LRU order applies.
 func PickWithFilter(ctx context.Context, st *store.Store, now time.Time, deviceID string, extraSkip func(store.Account) bool) (*store.Account, error) {
-	accs, err := st.List(ctx)
+	return PickProviderWithFilter(ctx, st, store.ProviderClaude, now, deviceID, extraSkip)
+}
+
+// PickProviderWithFilter is PickWithFilter scoped to one provider pool.
+func PickProviderWithFilter(ctx context.Context, st *store.Store, provider string, now time.Time, deviceID string, extraSkip func(store.Account) bool) (*store.Account, error) {
+	accs, err := st.ListProvider(ctx, provider)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}

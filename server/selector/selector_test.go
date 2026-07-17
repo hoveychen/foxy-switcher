@@ -153,3 +153,39 @@ func TestPickAllOverThresholdReturnsErrNoAvailable(t *testing.T) {
 		t.Fatalf("expected ErrNoAvailable, got %v", err)
 	}
 }
+
+func TestPickProviderKeepsClaudeAndCodexPoolsIsolated(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	claude := &store.Account{
+		Provider: store.ProviderClaude, Name: "claude", AccountUUID: "same-user",
+		AccessToken: "claude-at", RefreshToken: "claude-rt", ExpiresAt: now.Add(time.Hour).UnixMilli(),
+	}
+	codex := &store.Account{
+		Provider: store.ProviderCodex, Name: "codex", AccountUUID: "same-user",
+		AccessToken: "codex-at", RefreshToken: "codex-rt", ExpiresAt: now.Add(time.Hour).UnixMilli(),
+	}
+	for _, account := range []*store.Account{claude, codex} {
+		if err := st.Upsert(ctx, account); err != nil {
+			t.Fatalf("upsert %s: %v", account.Provider, err)
+		}
+	}
+
+	gotDefault, err := Pick(ctx, st, now)
+	if err != nil {
+		t.Fatalf("Pick default: %v", err)
+	}
+	if gotDefault.ID != claude.ID {
+		t.Fatalf("default pool picked provider %q", gotDefault.Provider)
+	}
+
+	gotCodex, err := PickProvider(ctx, st, store.ProviderCodex, now)
+	if err != nil {
+		t.Fatalf("PickProvider codex: %v", err)
+	}
+	if gotCodex.ID != codex.ID {
+		t.Fatalf("codex pool picked provider %q", gotCodex.Provider)
+	}
+}
