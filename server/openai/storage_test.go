@@ -151,3 +151,12 @@ func TestReadCredentialMode(t *testing.T) {
 		t.Fatalf("mode = %q", got)
 	}
 }
+
+func TestWindowsVerbatimPathMatchesRustCanonicalizeShape(t *testing.T) {
+	if got := windowsVerbatimPath(`C:\Users\boss\.codex`); got != `\\?\C:\Users\boss\.codex` {
+		t.Fatalf("drive path = %q", got)
+	}
+	if got := windowsVerbatimPath(`\\server\share\.codex`); got != `\\?\UNC\server\share\.codex` {
+		t.Fatalf("UNC path = %q", got)
+	}
+}

@@ -330,8 +330,25 @@ func homeHash(home string) string {
 	if err != nil {
 		canonical = filepath.Clean(home)
 	}
+	// Rust's std::fs::canonicalize returns Windows paths in verbatim form.
+	// Codex hashes that exact string, so mirror it before hashing or Foxy will
+	// look under a different keyring account on Windows.
+	if runtime.GOOS == "windows" && filepath.IsAbs(canonical) {
+		canonical = windowsVerbatimPath(canonical)
+	}
 	sum := sha256.Sum256([]byte(canonical))
 	return fmt.Sprintf("%x", sum)[:16]
+}
+
+func windowsVerbatimPath(path string) string {
+	path = strings.ReplaceAll(path, "/", `\`)
+	if strings.HasPrefix(path, `\\?\`) {
+		return path
+	}
+	if strings.HasPrefix(path, `\\`) {
+		return `\\?\UNC\` + strings.TrimPrefix(path, `\\`)
+	}
+	return `\\?\` + path
 }
 
 func removeIfExists(path string) error {

@@ -29,7 +29,7 @@ Technical reference for Foxy Switcher — what runs where, the HTTP surface, and
 | [server/store/](../server/store/) | SQLite schema for accounts, tokens, cooldowns, usage snapshots |
 | [server/authz/](../server/authz/) | PKCE state store for the OAuth login flow |
 | [server/anthropic/](../server/anthropic/) | Anthropic OAuth + profile + usage API client |
-| [server/openai/](../server/openai/) | Codex auth.json parsing, OpenAI refresh + usage client, atomic injection and restore |
+| [server/openai/](../server/openai/) | Codex file/keyring/secrets storage, OpenAI refresh + usage client, atomic injection and restore |
 | [server/selector/](../server/selector/) | Picks the next eligible account inside one provider pool, preferring LRU |
 | [server/refresh/](../server/refresh/) | Provider-aware token refresh and usage polling |
 | [server/credinject/](../server/credinject/) | Owns Claude Code's keychain entry while running; restores native login on shutdown |
@@ -83,7 +83,7 @@ Daemon flags (see [server/main.go](../server/main.go)):
 - **macOS**: the daemon writes Claude Code's existing keychain entry under `com.anthropic.claude-code` (see [server/credinject/darwin.go](../server/credinject/darwin.go)).
 - **Linux / Windows**: the daemon replaces `~/.claude/.credentials.json` (mode 0600, atomic via `.tmp` + rename) and clears `primaryApiKey` in `~/.claude.json` so Claude Code falls through to the OAuth path (see [server/credinject/other.go](../server/credinject/other.go)).
 - The user's pre-existing native login is captured before the first inject and restored on shutdown via `Coordinator.RestoreOnShutdown`.
-- **Codex**: [`server/openai.Manager`](../server/openai/manager.go) atomically replaces the file-backed `CODEX_HOME/auth.json` (normally `~/.codex/auth.json`). It reverse-syncs token rotations written by Codex CLI and restores the original file on shutdown. Keyring-backed Codex credentials are not imported in this release.
+- **Codex**: [`server/openai.Manager`](../server/openai/manager.go) follows `cli_auth_credentials_store`: plaintext `CODEX_HOME/auth.json`, direct OS keyring (`Codex Auth`), or the encrypted `secrets/codex_auth.age` format whose passphrase lives in the OS keyring (`codex`). It reverse-syncs token rotations written by Codex CLI and restores the original logical credential on shutdown.
 
 Deep dive on macOS keychain layout: [keychain-credentials-pool.md](keychain-credentials-pool.md).
 
@@ -96,7 +96,7 @@ All endpoints bind to `127.0.0.1:<port>` — read the port from `~/.foxy-switche
 | `GET /api/accounts` | List provider-tagged accounts with status, expiry, usage snapshot, and local in-use state |
 | `POST /api/accounts/login` | Start a Claude PKCE flow, returns `{ state, authorize_url }` |
 | `POST /api/accounts/callback` | Complete Claude PKCE — body `{ state, pasted }` |
-| `POST /api/accounts/import-codex` | Import the current file-backed Codex CLI ChatGPT login |
+| `POST /api/accounts/import-codex` | Import the current Codex CLI ChatGPT login from its configured credential store |
 | `DELETE /api/accounts/{id}` | Remove an account |
 | `POST /api/accounts/{id}/pause` | Pause routing while continuing credential maintenance |
 | `POST /api/accounts/{id}/resume` | Re-activate routing |
@@ -128,8 +128,9 @@ Returns `ErrNoAvailable` when every account is unusable. The matching provider m
 └── original-creds*   # snapshot of the user's pre-inject native login
 
 ~/.codex/
-├── auth.json                 # live Codex CLI credentials (file mode)
-└── auth.json.foxy-backup     # temporary native snapshot while Foxy manages Codex
+├── auth.json                 # live credentials in file mode
+├── secrets/codex_auth.age    # encrypted credentials in secrets-keyring mode
+└── auth.json.foxy-backup     # temporary logical snapshot while Foxy manages Codex
 ```
 
 `state.db` is chmod'd to `0600`.
