@@ -465,7 +465,7 @@ export function AccountDrawer({
         <h3 className="drawer-section-title">{t("drawer.section.usage")}</h3>
         <div className="usage-list">
           <UsageBar
-            label={t("drawer.usage.5h")}
+            label={t(account.provider === "codex" ? "accounts.usage.primary" : "drawer.usage.5h")}
             win={account.five_hour}
             nowMs={nowMs}
             threshold={account.five_hour_threshold}
@@ -473,25 +473,27 @@ export function AccountDrawer({
             readOnly={disableAdminActions}
           />
           <UsageBar
-            label={t("drawer.usage.7d_opus")}
+            label={t(account.provider === "codex" ? "accounts.usage.secondary" : "drawer.usage.7d_opus")}
             win={account.seven_day}
             nowMs={nowMs}
             threshold={account.seven_day_threshold}
             onCommitThreshold={(pct) => commit("seven_day", pct)}
             readOnly={disableAdminActions}
           />
-          <UsageBar
-            label={t("drawer.usage.7d_sonnet")}
-            win={account.seven_day_sonnet}
-            nowMs={nowMs}
-            threshold={account.seven_day_sonnet_threshold}
-            onCommitThreshold={(pct) => commit("seven_day_sonnet", pct)}
-            readOnly={disableAdminActions}
-          />
+          {account.provider !== "codex" && (
+            <UsageBar
+              label={t("drawer.usage.7d_sonnet")}
+              win={account.seven_day_sonnet}
+              nowMs={nowMs}
+              threshold={account.seven_day_sonnet_threshold}
+              onCommitThreshold={(pct) => commit("seven_day_sonnet", pct)}
+              readOnly={disableAdminActions}
+            />
+          )}
         </div>
       </div>
 
-      <AttributionSection accountId={account.id} />
+      {account.provider !== "codex" && <AttributionSection accountId={account.id} />}
 
       <div className="drawer-section">
         <h3 className="drawer-section-title">{t("drawer.section.details")}</h3>

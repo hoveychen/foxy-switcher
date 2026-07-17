@@ -16,11 +16,17 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const (
+	ProviderClaude = "claude"
+	ProviderCodex  = "codex"
+)
+
 // Account is the in-memory representation of a row in the accounts table.
 // Token fields are stored unencrypted; the SQLite file lives at 0600 inside
 // ~/.foxy-switcher.
 type Account struct {
 	ID               int64
+	Provider         string // "claude" | "codex"
 	Name             string
 	AccessToken      string
 	RefreshToken     string
@@ -56,6 +62,11 @@ type Account struct {
 	// can distinguish personal Max 5x from Max 20x; subscription_type maps
 	// both to "max".
 	RateLimitTier string
+	// CredentialJSON stores the provider-native credential document when a
+	// provider needs more than the common access/refresh token tuple. Codex
+	// accounts keep their complete auth.json here so id_token and refresh
+	// metadata survive switching; Claude rows leave it empty.
+	CredentialJSON string
 
 	// Usage fields refreshed periodically from /api/oauth/usage.
 	// Utilization is 0–100 (percent). ResetsAt is RFC3339; empty when the
@@ -99,6 +110,7 @@ func (a Account) TokenExpired(now time.Time) bool {
 const tableSchema = `
 CREATE TABLE IF NOT EXISTS accounts (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider                   TEXT    NOT NULL DEFAULT 'claude',
   name                       TEXT    NOT NULL,
   access_token               TEXT    NOT NULL,
   refresh_token              TEXT    NOT NULL,
@@ -126,6 +138,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
+  credential_json            TEXT    NOT NULL DEFAULT '',
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 `
@@ -137,12 +150,15 @@ CREATE TABLE IF NOT EXISTS accounts (
 // yet have an account_uuid (older installs before the next UsagePoller tick
 // fills it in).
 const indexSchema = `
-CREATE INDEX IF NOT EXISTS accounts_status_lru
-  ON accounts (status, last_used_at);
-CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_uniq
-  ON accounts (email) WHERE email != '';
-CREATE UNIQUE INDEX IF NOT EXISTS accounts_uuid_uniq
-  ON accounts (account_uuid) WHERE account_uuid != '';
+DROP INDEX IF EXISTS accounts_status_lru;
+DROP INDEX IF EXISTS accounts_email_uniq;
+DROP INDEX IF EXISTS accounts_uuid_uniq;
+CREATE INDEX IF NOT EXISTS accounts_provider_status_lru
+  ON accounts (provider, status, last_used_at);
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_provider_email_uniq
+  ON accounts (provider, email) WHERE email != '';
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_provider_uuid_uniq
+  ON accounts (provider, account_uuid) WHERE account_uuid != '';
 `
 
 // kvSchema holds simple daemon-wide key/value settings (auto-switch toggle,
@@ -182,6 +198,7 @@ const UsageHistoryRetention = 7 * 24 * time.Hour
 // order and is idempotent (failures with "duplicate column" are silently
 // ignored, so re-running on an already-migrated DB is fine).
 var columnMigrations = []string{
+	`ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'`,
 	`ALTER TABLE accounts ADD COLUMN email TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN full_name TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN organization_name TEXT NOT NULL DEFAULT ''`,
@@ -206,6 +223,7 @@ var columnMigrations = []string{
 	// because subscription_type can't tell personal Max 5x from Max 20x.
 	// Older rows backfill on the next UsagePoller tick.
 	`ALTER TABLE accounts ADD COLUMN rate_limit_tier TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN credential_json TEXT NOT NULL DEFAULT ''`,
 	// pinned_device_id scopes a "Use now" pin to the requesting device so
 	// other devices' reconcile ticks don't race to grab the account.
 	`ALTER TABLE accounts ADD COLUMN pinned_device_id TEXT NOT NULL DEFAULT ''`,
@@ -303,6 +321,7 @@ func migrateLegacyOrgUnique(db *sql.DB) error {
 BEGIN TRANSACTION;
 CREATE TABLE accounts_new (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider                   TEXT    NOT NULL DEFAULT 'claude',
   name                       TEXT    NOT NULL,
   access_token               TEXT    NOT NULL,
   refresh_token              TEXT    NOT NULL,
@@ -332,10 +351,11 @@ CREATE TABLE accounts_new (
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
+  credential_json            TEXT    NOT NULL DEFAULT '',
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
-  id, name, access_token, refresh_token, expires_at, scopes,
+  id, provider, name, access_token, refresh_token, expires_at, scopes,
   subscription_type, organization_uuid, status, cooldown_until,
   last_used_at, last_429_at, created_at, updated_at,
   email, full_name, organization_name, plan,
@@ -344,7 +364,7 @@ INSERT INTO accounts_new SELECT
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier, pinned_device_id FROM accounts;
+  account_uuid, rate_limit_tier, credential_json, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -378,6 +398,7 @@ func migrateDropCooldownColumns(db *sql.DB) error {
 BEGIN TRANSACTION;
 CREATE TABLE accounts_new (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider                   TEXT    NOT NULL DEFAULT 'claude',
   name                       TEXT    NOT NULL,
   access_token               TEXT    NOT NULL,
   refresh_token              TEXT    NOT NULL,
@@ -405,10 +426,11 @@ CREATE TABLE accounts_new (
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
+  credential_json            TEXT    NOT NULL DEFAULT '',
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
-  id, name, access_token, refresh_token, expires_at, scopes,
+  id, provider, name, access_token, refresh_token, expires_at, scopes,
   subscription_type, organization_uuid, status,
   last_used_at, created_at, updated_at,
   email, full_name, organization_name, plan,
@@ -417,7 +439,7 @@ INSERT INTO accounts_new SELECT
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier, pinned_device_id FROM accounts;
+  account_uuid, rate_limit_tier, credential_json, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -453,6 +475,9 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Both keys are skipped when their value is empty, so accounts that haven't
 // surfaced either field coexist as distinct rows.
 func (s *Store) Upsert(ctx context.Context, a *Account) error {
+	if a.Provider == "" {
+		a.Provider = ProviderClaude
+	}
 	now := time.Now().UnixMilli()
 	if a.CreatedAt == 0 {
 		a.CreatedAt = now
@@ -471,10 +496,12 @@ func (s *Store) Upsert(ctx context.Context, a *Account) error {
 	var existingID int64
 	err = tx.QueryRowContext(ctx, `
 SELECT id FROM accounts
- WHERE (? != '' AND account_uuid = ?)
-    OR (? != '' AND account_uuid = '' AND email = ?)
+ WHERE provider = ?
+   AND ((? != '' AND account_uuid = ?)
+    OR (? != '' AND account_uuid = '' AND email = ?))
  ORDER BY id
  LIMIT 1`,
+		a.Provider,
 		a.AccountUUID, a.AccountUUID,
 		a.Email, a.Email,
 	).Scan(&existingID)
@@ -486,19 +513,20 @@ SELECT id FROM accounts
 		a.ID = existingID
 		if _, err := tx.ExecContext(ctx, `
 UPDATE accounts SET
+  provider = ?,
   name = ?,
   access_token = ?, refresh_token = ?, expires_at = ?,
   scopes = ?, subscription_type = ?, organization_uuid = ?,
   email = ?, full_name = ?, organization_name = ?, plan = ?,
-  account_uuid = ?, rate_limit_tier = ?,
+  account_uuid = ?, rate_limit_tier = ?, credential_json = ?,
   status = 'active',
   updated_at = ?
 WHERE id = ?`,
-			a.Name,
+			a.Provider, a.Name,
 			a.AccessToken, a.RefreshToken, a.ExpiresAt,
 			a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 			a.Email, a.FullName, a.OrganizationName, a.Plan,
-			a.AccountUUID, a.RateLimitTier,
+			a.AccountUUID, a.RateLimitTier, a.CredentialJSON,
 			a.UpdatedAt, existingID,
 		); err != nil {
 			return err
@@ -528,18 +556,18 @@ WHERE id = ?`,
 
 	res, err := tx.ExecContext(ctx, `
 INSERT INTO accounts
-  (name, access_token, refresh_token, expires_at, scopes, subscription_type,
+  (provider, name, access_token, refresh_token, expires_at, scopes, subscription_type,
    organization_uuid, status, last_used_at,
    created_at, updated_at,
-   email, full_name, organization_name, plan, account_uuid, rate_limit_tier,
+   email, full_name, organization_name, plan, account_uuid, rate_limit_tier, credential_json,
    five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.Provider, a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
 		a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 		ifEmpty(a.Status, "active"), a.LastUsedAt,
 		a.CreatedAt, a.UpdatedAt,
 		a.Email, a.FullName, a.OrganizationName, a.Plan,
-		a.AccountUUID, a.RateLimitTier,
+		a.AccountUUID, a.RateLimitTier, a.CredentialJSON,
 		clampPercent(a.FiveHourThreshold), clampPercent(a.SevenDayThreshold), clampPercent(a.SevenDaySonnetThreshold),
 	)
 	if err != nil {
@@ -561,6 +589,17 @@ UPDATE accounts
    SET access_token = ?, refresh_token = ?, expires_at = ?, updated_at = ?
  WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, q, accessToken, refreshToken, expiresAt, time.Now().UnixMilli(), id)
+	return err
+}
+
+// UpdateProviderCredential atomically keeps the common token columns and the
+// provider-native credential document in sync.
+func (s *Store) UpdateProviderCredential(ctx context.Context, id int64, accessToken, refreshToken string, expiresAt int64, credentialJSON string) error {
+	const q = `
+UPDATE accounts
+   SET access_token = ?, refresh_token = ?, expires_at = ?, credential_json = ?, updated_at = ?
+ WHERE id = ?`
+	_, err := s.db.ExecContext(ctx, q, accessToken, refreshToken, expiresAt, credentialJSON, time.Now().UnixMilli(), id)
 	return err
 }
 
@@ -587,7 +626,9 @@ UPDATE accounts
          WHEN account_uuid = ''
               AND ? != ''
               AND NOT EXISTS (
-                SELECT 1 FROM accounts WHERE account_uuid = ? AND id != ?
+                SELECT 1 FROM accounts
+                 WHERE provider = (SELECT provider FROM accounts WHERE id = ?)
+                   AND account_uuid = ? AND id != ?
               )
            THEN ?
          ELSE account_uuid
@@ -596,7 +637,7 @@ UPDATE accounts
  WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, q,
 		email, fullName, organizationName, plan, subscriptionType, rateLimitTier,
-		accountUUID, accountUUID, id, accountUUID,
+		accountUUID, id, accountUUID, id, accountUUID,
 		time.Now().UnixMilli(), id)
 	return err
 }
@@ -858,7 +899,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 }
 
 const selectColumns = `
-id, name, access_token, refresh_token, expires_at, scopes,
+id, provider, name, access_token, refresh_token, expires_at, scopes,
 subscription_type, organization_uuid, status,
 last_used_at, created_at, updated_at,
 email, full_name, organization_name, plan,
@@ -867,11 +908,21 @@ seven_day_util, seven_day_resets_at,
 seven_day_sonnet_util, seven_day_sonnet_resets_at,
 usage_fetched_at,
 five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-account_uuid, rate_limit_tier, pinned_device_id`
+account_uuid, rate_limit_tier, credential_json, pinned_device_id`
 
 // List returns every row ordered by id (stable insertion order).
 func (s *Store) List(ctx context.Context) ([]Account, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+selectColumns+` FROM accounts ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAccounts(rows)
+}
+
+// ListProvider returns one credential pool without mixing providers.
+func (s *Store) ListProvider(ctx context.Context, provider string) ([]Account, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+selectColumns+` FROM accounts WHERE provider = ? ORDER BY id`, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -903,7 +954,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 	for rows.Next() {
 		var a Account
 		if err := rows.Scan(
-			&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.ExpiresAt,
+			&a.ID, &a.Provider, &a.Name, &a.AccessToken, &a.RefreshToken, &a.ExpiresAt,
 			&a.Scopes, &a.SubscriptionType,
 			&a.OrganizationUUID, &a.Status, &a.LastUsedAt,
 			&a.CreatedAt, &a.UpdatedAt,
@@ -913,7 +964,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
-			&a.AccountUUID, &a.RateLimitTier, &a.PinnedDeviceID,
+			&a.AccountUUID, &a.RateLimitTier, &a.CredentialJSON, &a.PinnedDeviceID,
 		); err != nil {
 			return nil, err
 		}

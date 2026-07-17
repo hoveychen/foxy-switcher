@@ -145,6 +145,8 @@ export interface UsageWindow {
 
 export interface Account {
   id: number;
+  provider: "claude" | "codex";
+  in_use: boolean;
   name: string;
   status: string;
   // Derived flag: access_token has passed expires_at. Set server-side so the
@@ -657,6 +659,11 @@ export const apiClient = {
     api<{ account: Account }>("/api/accounts/callback", {
       method: "POST",
       json: { state, pasted },
+    }),
+
+  importCodex: () =>
+    api<{ account: Account }>("/api/accounts/import-codex", {
+      method: "POST",
     }),
 
   refreshAccount: (id: number) =>

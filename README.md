@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/foxy-icon.png" alt="Foxy Switcher" width="128" />
   <h1>Foxy Switcher</h1>
-  <p><strong>An account pool for Claude Code. Stop logging in and out.</strong></p>
+  <p><strong>Subscription account pools for Claude Code and Codex CLI.</strong></p>
   <p>
     <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" />
     <img alt="Status" src="https://img.shields.io/badge/status-beta-orange" />
@@ -10,7 +10,7 @@
 
 ---
 
-If you keep multiple Claude subscriptions, Foxy Switcher pools them together and quietly hands Claude Code whichever one still has runway. When an account trips a 5-hour or 7-day cap, the next one slides in. When you quit, your original login is restored — exactly as you left it.
+If you keep multiple Claude or Codex subscriptions, Foxy Switcher maintains an independent pool for each CLI and quietly selects an account that still has runway. When you quit, your original Claude and Codex logins are restored exactly as you left them.
 
 ## Why
 
@@ -20,11 +20,11 @@ Foxy Switcher takes that loop off your hands. Enroll each subscription once. The
 
 ## Features
 
-- **Pool any number of Claude subscriptions** — personal, team, premium. Add each once via the standard Claude OAuth flow.
+- **Pool Claude and Codex subscriptions** — Claude accounts use the standard OAuth flow; Codex accounts import the current ChatGPT subscription login from Codex CLI.
 - **Automatic rotation** — least-recently-used policy with a cooldown lane for accounts that just hit a cap.
-- **Live usage at a glance** — see each account's 5-hour, 7-day, and 7-day Sonnet windows side by side, so you know who's about to cool down.
+- **Live usage at a glance** — Claude shows its 5-hour, 7-day, and Sonnet windows; Codex shows the primary and secondary windows reported by ChatGPT.
 - **Manual override** — flip Auto Switch off and pick the account yourself with one click.
-- **Safe by default** — Foxy never leaves Claude Code in a foreign state. Clean exit, crash, or force-quit, your original keychain entry comes back.
+- **Safe by default** — Foxy atomically swaps provider-native credentials and restores the pre-Foxy Claude and Codex logins on shutdown.
 - **GUI and TUI** — full desktop app, plus a terminal UI for headless / SSH setups.
 
 ## Install
@@ -48,9 +48,17 @@ Build instructions for sidecar binaries and platform bundles live in [docs/archi
 
 ## Quick start
 
-1. **Launch the app** and click **Add account**. Your browser opens the standard Claude login.
+1. **Launch the app** and click **Add Claude**. Your browser opens the standard Claude login.
 2. **Repeat** for each subscription you want in the pool.
 3. **Open Claude Code** as you normally would. Foxy is already standing in for one of your accounts; when it caps out, the next one takes over.
+
+For Codex subscriptions:
+
+1. Sign in to the account with `codex login`.
+2. Click **Import Codex** in Foxy.
+3. To add another account, run `codex logout`, sign in to the next account, and click **Import Codex** again.
+
+Codex import currently requires file-backed credentials at `~/.codex/auth.json`. If you explicitly configured keyring storage, set `cli_auth_credentials_store = "file"` in `~/.codex/config.toml` and run `codex login` again before importing.
 
 Want to take over manually? Toggle **Auto Switch** off and click **Use now** on any account.
 
@@ -59,14 +67,14 @@ Want to take over manually? Toggle **Auto Switch** off and click **Use now** on 
 **Does this need my password?**
 No. Foxy Switcher uses Claude's official OAuth login — the same flow `claude login` runs. It never sees your password.
 
-**Will it conflict with my normal Claude Code login?**
-No. On startup Foxy snapshots whatever you had logged in. On exit — clean, crash, or force-quit — your original credentials go back exactly where they were.
+**Will it conflict with my normal Claude Code or Codex login?**
+No. Foxy snapshots the provider's native credentials before its first switch. On exit, the original credentials go back exactly where they were.
 
 **What if every account in the pool is exhausted?**
 The daemon detects that and restores your native login, so Claude Code falls back to your normal account instead of getting stuck.
 
 **Is my data sent anywhere?**
-Everything stays on your machine. The daemon only talks to Anthropic's official OAuth and usage APIs — the same endpoints Claude Code uses.
+Everything stays on your machine. The daemon only talks to the official Anthropic and OpenAI authentication and usage endpoints used by their CLIs.
 
 **Does it work without the GUI?**
 Yes. Run `foxy-switcher` headless and manage the pool from a terminal with `foxy-switcher tui`.

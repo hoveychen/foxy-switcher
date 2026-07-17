@@ -13,8 +13,8 @@ Technical reference for Foxy Switcher — what runs where, the HTTP surface, and
                                    v    v    v
                            +-------+ +--+--+ +------------+
                            | SQLite| | OS  | | Anthropic  |
-                           | state | | key | | OAuth +    |
-                           | .db   | | chn | | usage API  |
+                           | state | | key | | Anthropic /|
+                           | .db   | | chn | | OpenAI APIs|
                            +-------+ +-----+ +------------+
 ```
 
@@ -29,8 +29,9 @@ Technical reference for Foxy Switcher — what runs where, the HTTP surface, and
 | [server/store/](../server/store/) | SQLite schema for accounts, tokens, cooldowns, usage snapshots |
 | [server/authz/](../server/authz/) | PKCE state store for the OAuth login flow |
 | [server/anthropic/](../server/anthropic/) | Anthropic OAuth + profile + usage API client |
-| [server/selector/](../server/selector/) | Picks the next account — skip disabled / in-cooldown, prefer LRU |
-| [server/refresh/](../server/refresh/) | `Scheduler` refreshes expiring tokens; `UsagePoller` pulls 5h / 7d / 7d-Sonnet windows |
+| [server/openai/](../server/openai/) | Codex auth.json parsing, OpenAI refresh + usage client, atomic injection and restore |
+| [server/selector/](../server/selector/) | Picks the next eligible account inside one provider pool, preferring LRU |
+| [server/refresh/](../server/refresh/) | Provider-aware token refresh and usage polling |
 | [server/credinject/](../server/credinject/) | Owns Claude Code's keychain entry while running; restores native login on shutdown |
 | [server/httpapi/](../server/httpapi/) | The localhost HTTP surface |
 | [server/tui/](../server/tui/) | `tui` subcommand — terminal client for the same API |
@@ -82,6 +83,7 @@ Daemon flags (see [server/main.go](../server/main.go)):
 - **macOS**: the daemon writes Claude Code's existing keychain entry under `com.anthropic.claude-code` (see [server/credinject/darwin.go](../server/credinject/darwin.go)).
 - **Linux / Windows**: the daemon replaces `~/.claude/.credentials.json` (mode 0600, atomic via `.tmp` + rename) and clears `primaryApiKey` in `~/.claude.json` so Claude Code falls through to the OAuth path (see [server/credinject/other.go](../server/credinject/other.go)).
 - The user's pre-existing native login is captured before the first inject and restored on shutdown via `Coordinator.RestoreOnShutdown`.
+- **Codex**: [`server/openai.Manager`](../server/openai/manager.go) atomically replaces the file-backed `CODEX_HOME/auth.json` (normally `~/.codex/auth.json`). It reverse-syncs token rotations written by Codex CLI and restores the original file on shutdown. Keyring-backed Codex credentials are not imported in this release.
 
 Deep dive on macOS keychain layout: [keychain-credentials-pool.md](keychain-credentials-pool.md).
 
@@ -91,13 +93,13 @@ All endpoints bind to `127.0.0.1:<port>` — read the port from `~/.foxy-switche
 
 | Method + Path | Purpose |
 | --- | --- |
-| `GET /api/accounts` | List accounts with status, expiry, cooldown, usage snapshot |
-| `POST /api/accounts/login` | Start a PKCE flow, returns `{ state, authorize_url }` |
-| `POST /api/accounts/callback` | Complete PKCE — body `{ state, code }`, enrolls the account |
+| `GET /api/accounts` | List provider-tagged accounts with status, expiry, usage snapshot, and local in-use state |
+| `POST /api/accounts/login` | Start a Claude PKCE flow, returns `{ state, authorize_url }` |
+| `POST /api/accounts/callback` | Complete Claude PKCE — body `{ state, pasted }` |
+| `POST /api/accounts/import-codex` | Import the current file-backed Codex CLI ChatGPT login |
 | `DELETE /api/accounts/{id}` | Remove an account |
-| `POST /api/accounts/{id}/disable` | Mark inactive (skipped by the selector) |
-| `POST /api/accounts/{id}/enable` | Re-activate |
-| `POST /api/accounts/{id}/cooldown` | Manually park an account in cooldown |
+| `POST /api/accounts/{id}/pause` | Pause routing while continuing credential maintenance |
+| `POST /api/accounts/{id}/resume` | Re-activate routing |
 | `POST /api/accounts/{id}/refresh` | Refresh access_token + usage snapshot now |
 | `POST /api/accounts/{id}/select` | Promote to front of LRU queue (one-shot) |
 | `GET /api/cred/status` | Current credinject state — which account is injected, last error |
@@ -105,17 +107,17 @@ All endpoints bind to `127.0.0.1:<port>` — read the port from `~/.foxy-switche
 
 ## Selection strategy
 
-[`selector.Pick`](../server/selector/selector.go):
+[`selector.PickProvider`](../server/selector/selector.go) evaluates each provider independently:
 
 1. Skip accounts with `status != "active"`.
-2. Skip accounts whose `cooldown_until` is still in the future.
+2. Skip expired tokens and accounts whose measured usage reached a configured threshold.
 3. From the rest, return the one with the smallest `last_used_at` (LRU).
 
-Returns `ErrNoAvailable` when every account is unusable — the credinject coordinator treats this as the trigger to restore native credentials so Claude Code can fall back to the user's own login.
+Returns `ErrNoAvailable` when every account is unusable. The matching provider manager then restores that CLI's native credentials.
 
 ## Usage tracking
 
-`refresh.UsagePoller` polls Anthropic's usage API and stores three windows per account: `five_hour`, `seven_day`, `seven_day_sonnet`. Each window carries `utilization` on a **0–100 scale** (not 0–1) and `resets_at`. The frontend uses the peak of the three to color-code each row (warn ≥ 75, danger ≥ 90).
+`refresh.UsagePoller` polls the account's provider. Claude stores `five_hour`, `seven_day`, and `seven_day_sonnet`; Codex maps ChatGPT's `primary_window` and `secondary_window` onto the first two storage slots. Every window carries utilization on a **0–100 scale** and an RFC3339 reset time.
 
 ## Data layout
 
@@ -124,6 +126,10 @@ Returns `ErrNoAvailable` when every account is unusable — the credinject coord
 ├── state.db          # SQLite — accounts, tokens, usage, last_used_at
 ├── port              # current daemon listen port (atomic write)
 └── original-creds*   # snapshot of the user's pre-inject native login
+
+~/.codex/
+├── auth.json                 # live Codex CLI credentials (file mode)
+└── auth.json.foxy-backup     # temporary native snapshot while Foxy manages Codex
 ```
 
 `state.db` is chmod'd to `0600`.
@@ -143,5 +149,5 @@ foxy-switcher/
 
 - All HTTP listens on `127.0.0.1` only; CORS is wildcard because there's no remote-attacker model and no cookies are used.
 - `state.db` and the port file are mode `0600`.
-- The daemon never persists raw passwords — only OAuth refresh + access tokens.
+- The daemon never persists raw passwords. `state.db` contains OAuth access/refresh tokens and complete Codex auth documents, and is therefore mode `0600`.
 - `--no-cred-inject` lets you run alongside a real native login without clobbering it (useful for debugging the API surface in isolation).

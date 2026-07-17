@@ -25,6 +25,7 @@ type LoginState =
 type Tone = "ok" | "warn" | "danger" | "muted";
 
 type StatusFilter = "all" | "active" | "paused" | "cooling";
+type ProviderFilter = "all" | "claude" | "codex";
 
 type ViewMode = "grid" | "list";
 
@@ -44,6 +45,12 @@ const STATUS_FILTERS: Array<{ key: StatusFilter; labelKey: string }> = [
   { key: "active", labelKey: "accounts.filters.active" },
   { key: "paused", labelKey: "accounts.filters.paused" },
   { key: "cooling", labelKey: "accounts.filters.cooling" },
+];
+
+const PROVIDER_FILTERS: Array<{ key: ProviderFilter; labelKey: string }> = [
+  { key: "all", labelKey: "accounts.providers.all" },
+  { key: "claude", labelKey: "accounts.providers.claude" },
+  { key: "codex", labelKey: "accounts.providers.codex" },
 ];
 
 function fmtRemaining(ms: number): string {
@@ -329,12 +336,20 @@ function AccountCard({
         </div>
       </div>
       <div className="account-card-usage">
-        <UsageMiniBar label={t("drawer.usage.5h")} win={a.five_hour} />
-        <UsageMiniBar label={t("drawer.usage.7d_opus")} win={a.seven_day} />
         <UsageMiniBar
-          label={t("drawer.usage.7d_sonnet")}
-          win={a.seven_day_sonnet}
+          label={t(a.provider === "codex" ? "accounts.usage.primary" : "drawer.usage.5h")}
+          win={a.five_hour}
         />
+        <UsageMiniBar
+          label={t(a.provider === "codex" ? "accounts.usage.secondary" : "drawer.usage.7d_opus")}
+          win={a.seven_day}
+        />
+        {a.provider !== "codex" && (
+          <UsageMiniBar
+            label={t("drawer.usage.7d_sonnet")}
+            win={a.seven_day_sonnet}
+          />
+        )}
       </div>
       <KebabMenu
         busy={busy}
@@ -477,6 +492,8 @@ export function AccountsPage({
   const [copied, setCopied] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [providerFilter, setProviderFilter] = useState<ProviderFilter>("all");
+  const [codexImporting, setCodexImporting] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
 
   const setViewModePersisted = useCallback((mode: ViewMode) => {
@@ -494,13 +511,16 @@ export function AccountsPage({
   const activeAccount =
     managedAccountId !== 0
       ? accounts.find((a) => a.id === managedAccountId) ?? null
-      : null;
+      : accounts.find((a) => a.in_use) ?? null;
 
   const filtered = useMemo(() => {
     return accounts.filter(
-      (a) => matchesQuery(a, search) && matchesStatus(a, statusFilter),
+      (a) =>
+        (providerFilter === "all" || a.provider === providerFilter) &&
+        matchesQuery(a, search) &&
+        matchesStatus(a, statusFilter),
     );
-  }, [accounts, search, statusFilter, nowMs]);
+  }, [accounts, search, statusFilter, providerFilter, nowMs]);
 
   const startLogin = useCallback(async () => {
     // In agent mode the daemon proxies admin writes to the vault, which
@@ -520,6 +540,20 @@ export function AccountsPage({
       setLoginState({ phase: "error", message: String(e) });
     }
   }, [disableAdminActions]);
+
+  const importCodex = useCallback(async () => {
+    if (disableAdminActions || vaultMode) return;
+    setCodexImporting(true);
+    try {
+      await apiClient.importCodex();
+      setLoginState({ phase: "idle" });
+      await onRefresh();
+    } catch (e) {
+      setLoginState({ phase: "error", message: String(e) });
+    } finally {
+      setCodexImporting(false);
+    }
+  }, [disableAdminActions, vaultMode, onRefresh]);
 
   useEffect(() => {
     if (addAccountTick === 0) return;
@@ -598,19 +632,45 @@ export function AccountsPage({
         onAutoSwitchToggle={onAutoSwitchToggle}
         actions={
           disableAdminActions ? null : (
-            <button
-              className="btn btn-primary"
-              onClick={startLogin}
-              disabled={modalOpen}
-            >
-              <Icon d={ICON_PLUS} />
-              {t("accounts.add_button")}
-            </button>
+            <div className="accounts-add-actions">
+              {!vaultMode && (
+                <button
+                  className="btn btn-secondary"
+                  onClick={importCodex}
+                  disabled={modalOpen || codexImporting}
+                >
+                  {codexImporting && <span className="spinner" aria-hidden />}
+                  {t("accounts.import_codex")}
+                </button>
+              )}
+              <button
+                className="btn btn-primary"
+                onClick={startLogin}
+                disabled={modalOpen || codexImporting}
+              >
+                <Icon d={ICON_PLUS} />
+                {t("accounts.add_claude")}
+              </button>
+            </div>
           )
         }
       />
       <div className="page">
         <div className="accounts-toolbar">
+          <div className="filter-chips" role="tablist" aria-label={t("accounts.providers.aria")}>
+            {PROVIDER_FILTERS.map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                role="tab"
+                aria-selected={providerFilter === f.key}
+                className={`filter-chip ${providerFilter === f.key ? "active" : ""}`}
+                onClick={() => setProviderFilter(f.key)}
+              >
+                {t(f.labelKey)}
+              </button>
+            ))}
+          </div>
           <label className="search-input">
             <Icon d={ICON_SEARCH} />
             <input
@@ -700,10 +760,17 @@ export function AccountsPage({
                 <div className="list-empty">
                   <p>{t("accounts.empty.no_pool")}</p>
                   {!disableAdminActions && (
-                    <button className="btn btn-secondary" onClick={startLogin}>
-                      <Icon d={ICON_PLUS} />
-                      {t("accounts.empty.add_first")}
-                    </button>
+                    <div className="accounts-add-actions">
+                      {!vaultMode && (
+                        <button className="btn btn-secondary" onClick={importCodex}>
+                          {t("accounts.import_codex")}
+                        </button>
+                      )}
+                      <button className="btn btn-primary" onClick={startLogin}>
+                        <Icon d={ICON_PLUS} />
+                        {t("accounts.add_claude")}
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -717,6 +784,7 @@ export function AccountsPage({
                   onClick={() => {
                     setSearch("");
                     setStatusFilter("all");
+                    setProviderFilter("all");
                   }}
                 >
                   {t("accounts.empty.clear_filters")}
@@ -731,7 +799,7 @@ export function AccountsPage({
                   key={a.id}
                   a={a}
                   nowMs={nowMs}
-                  isInUse={a.id === managedAccountId}
+                  isInUse={a.in_use || a.id === managedAccountId}
                   isSelected={a.id === selectedAccountId}
                   vaultMode={vaultMode}
                   onClickCard={() =>
@@ -739,7 +807,7 @@ export function AccountsPage({
                   }
                   onUseNow={() => onUseNow(a.id)}
                   onRefresh={() => onRefreshAccount(a.id)}
-                  onReauth={startLogin}
+                  onReauth={a.provider === "codex" ? importCodex : startLogin}
                   onDelete={() => onDelete(a.id)}
                   onTogglePause={() => onTogglePause(a)}
                   busy={busyAccountId === a.id}

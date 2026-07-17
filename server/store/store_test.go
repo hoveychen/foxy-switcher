@@ -711,3 +711,33 @@ func TestFirstActiveLease(t *testing.T) {
 		t.Fatalf("expected longest-held lease (bob, id=%d); got id=%d", b.ID, id)
 	}
 }
+
+func TestProviderDefaultsAndDedupAreProviderScoped(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	claude := &Account{Name: "claude", AccountUUID: "user-1", Email: "same@example.com", AccessToken: "cat", RefreshToken: "crt", ExpiresAt: 1}
+	if err := st.Upsert(ctx, claude); err != nil {
+		t.Fatalf("upsert legacy/default provider: %v", err)
+	}
+	if claude.Provider != ProviderClaude {
+		t.Fatalf("default provider = %q, want %q", claude.Provider, ProviderClaude)
+	}
+
+	codex := &Account{Provider: ProviderCodex, Name: "codex", AccountUUID: "user-1", Email: "same@example.com", AccessToken: "oat", RefreshToken: "ort", ExpiresAt: 1}
+	if err := st.Upsert(ctx, codex); err != nil {
+		t.Fatalf("upsert codex with same identity: %v", err)
+	}
+	if codex.ID == claude.ID {
+		t.Fatalf("provider-scoped identities collapsed onto id %d", codex.ID)
+	}
+
+	claudeRows, err := st.ListProvider(ctx, ProviderClaude)
+	if err != nil || len(claudeRows) != 1 || claudeRows[0].ID != claude.ID {
+		t.Fatalf("ListProvider claude = %+v, %v", claudeRows, err)
+	}
+	codexRows, err := st.ListProvider(ctx, ProviderCodex)
+	if err != nil || len(codexRows) != 1 || codexRows[0].ID != codex.ID {
+		t.Fatalf("ListProvider codex = %+v, %v", codexRows, err)
+	}
+}

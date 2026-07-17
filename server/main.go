@@ -4,11 +4,12 @@
 // fine as a standalone binary for headless setups.
 //
 // CLI surface (cobra-managed; `foxy-switcher --help` lists everything):
-//   foxy-switcher                    # default: TUI (embeds a daemon if none is running)
-//   foxy-switcher tui                # explicit TUI subcommand (same as default)
-//   foxy-switcher server [flags]     # daemon for the desktop app / headless API consumers
-//   foxy-switcher pair --vault-url=… # device-flow pairing for agent mode
-//   foxy-switcher unpair             # forget a paired vault, fall back to local mode
+//
+//	foxy-switcher                    # default: TUI (embeds a daemon if none is running)
+//	foxy-switcher tui                # explicit TUI subcommand (same as default)
+//	foxy-switcher server [flags]     # daemon for the desktop app / headless API consumers
+//	foxy-switcher pair --vault-url=… # device-flow pairing for agent mode
+//	foxy-switcher unpair             # forget a paired vault, fall back to local mode
 //
 // Backwards compat: `foxy-switcher --server [flags]` (the form the Tauri
 // sidecar passes) is rewritten to `foxy-switcher server [flags]` at startup.
@@ -33,6 +34,7 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/authz"
 	"github.com/hoveychen/foxy-switcher/server/credinject"
 	"github.com/hoveychen/foxy-switcher/server/httpapi"
+	openai "github.com/hoveychen/foxy-switcher/server/openai"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
 	"github.com/hoveychen/foxy-switcher/server/store"
 	"github.com/hoveychen/foxy-switcher/server/tui"
@@ -279,6 +281,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// and talks to vault via HTTP.
 	suppressCredInject := opts.NoCredInject || opts.Mode == modeVault
 	var cc *credinject.Coordinator
+	var codexManager *openai.Manager
 	if !suppressCredInject {
 		backend, err := credinject.NewBackend()
 		if err != nil {
@@ -298,6 +301,12 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 				logger.Printf("warning: restore native credentials: %v", err)
 			}
 		}()
+		if authPath, pathErr := openai.DefaultAuthPath(); pathErr != nil {
+			logger.Printf("warning: resolve Codex auth.json path: %v (Codex injection disabled)", pathErr)
+		} else {
+			codexManager = openai.NewManager(st, authPath, logger)
+			server.Codex = codexManager
+		}
 	}
 
 	if opts.ParentPID > 0 {
@@ -312,11 +321,25 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 		// Wire callbacks BEFORE Start so the spawned goroutines see them on
 		// their first tick. Trigger() is non-blocking and idempotent, so it's
 		// safe to fire even before cc.Run starts consuming.
-		rf.OnChange = cc.Trigger
-		up.OnChange = cc.Trigger
+		notifyCredentialManagers := func() {
+			cc.Trigger()
+			if codexManager != nil {
+				go func() {
+					if err := codexManager.Reconcile(ctx); err != nil {
+						logger.Printf("[codex] triggered reconcile: %v", err)
+					}
+				}()
+			}
+		}
+		rf.OnChange = notifyCredentialManagers
+		up.OnChange = notifyCredentialManagers
 		// rf.IsAccountInUse already points at the lease store; the
 		// coordinator now feeds the same store via vault.AcquireLease.
 		go cc.Run(ctx)
+		if codexManager != nil {
+			codexManager.Start(ctx)
+			defer codexManager.Stop()
+		}
 	} else {
 		logger.Print("--no-cred-inject: keychain lifecycle disabled")
 	}
