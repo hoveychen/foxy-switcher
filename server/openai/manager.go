@@ -127,6 +127,29 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	return m.st.MarkUsed(ctx, selected.ID)
 }
 
+// ManagedAccountID reports which stored Codex account currently matches the
+// live auth.json. It is read-only and returns zero for native/unknown logins.
+func (m *Manager) ManagedAccountID(ctx context.Context) int64 {
+	raw, err := os.ReadFile(m.authPath)
+	if err != nil {
+		return 0
+	}
+	auth, err := ParseAuthFile(raw)
+	if err != nil {
+		return 0
+	}
+	accounts, err := m.st.ListProvider(ctx, store.ProviderCodex)
+	if err != nil {
+		return 0
+	}
+	for i := range accounts {
+		if accounts[i].AccountUUID == auth.Tokens.AccountID {
+			return accounts[i].ID
+		}
+	}
+	return 0
+}
+
 func (m *Manager) syncCurrent(ctx context.Context, accounts []store.Account) error {
 	raw, err := os.ReadFile(m.authPath)
 	if err != nil {

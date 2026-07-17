@@ -1157,6 +1157,12 @@
   margin-bottom: var(--space-5);
 }
 
+.accounts-add-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
 .search-input {
   display: inline-flex;
   align-items: center;

@@ -613,7 +613,7 @@ export default function App() {
           <AccountDrawer
             account={selectedAccount}
             nowMs={now}
-            isInUse={selectedAccount.id === managedAccountId}
+            isInUse={selectedAccount.in_use || selectedAccount.id === managedAccountId}
             busy={busyAccountId === selectedAccount.id}
             disableAdminActions={disableAdminActions}
             onClose={() => setSelectedAccountId(null)}

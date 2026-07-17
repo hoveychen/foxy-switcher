@@ -102,7 +102,7 @@ export function DashboardPage({
   // agent-singular hero/topbar and surface every active lease instead.
   vaultMode?: boolean;
 }) {
-  const active = accounts.find((a) => a.id === managedAccountId) ?? null;
+  const active = accounts.find((a) => a.id === managedAccountId) ?? accounts.find((a) => a.in_use) ?? null;
   const leasedAccounts = accounts.filter((a) => !!a.lease);
   const greet = greeting(new Date(nowMs));
   const firstName = active?.full_name?.split(" ")[0];
@@ -391,7 +391,7 @@ export function DashboardPage({
                     key={a.id}
                     a={a}
                     nowMs={nowMs}
-                    isActive={a.id === managedAccountId}
+                    isActive={a.in_use || a.id === managedAccountId}
                     vaultMode={vaultMode}
                   />
                 ))}

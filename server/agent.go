@@ -192,6 +192,7 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	for _, path := range []string{
 		"POST /api/accounts/login",
 		"POST /api/accounts/callback",
+		"POST /api/accounts/import-codex",
 		"DELETE /api/accounts/{id}",
 		"POST /api/accounts/{id}/pause",
 		"POST /api/accounts/{id}/resume",

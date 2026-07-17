@@ -305,6 +305,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 			logger.Printf("warning: resolve Codex auth.json path: %v (Codex injection disabled)", pathErr)
 		} else {
 			codexManager = openai.NewManager(st, authPath, logger)
+			server.Codex = codexManager
 		}
 	}
 

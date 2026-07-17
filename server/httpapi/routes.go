@@ -18,6 +18,7 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/anthropic"
 	"github.com/hoveychen/foxy-switcher/server/authz"
 	"github.com/hoveychen/foxy-switcher/server/credinject"
+	openai "github.com/hoveychen/foxy-switcher/server/openai"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
 	"github.com/hoveychen/foxy-switcher/server/selector"
 	"github.com/hoveychen/foxy-switcher/server/store"
@@ -74,6 +75,7 @@ type Server struct {
 	// treats "" the same as "combined").
 	Mode     string
 	VaultURL string
+	Codex    *openai.Manager
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {
@@ -87,6 +89,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/accounts", s.handleListAccounts)
 	mux.HandleFunc("POST /api/accounts/login", s.handleLoginStart)
 	mux.HandleFunc("POST /api/accounts/callback", s.handleLoginCallback)
+	mux.HandleFunc("POST /api/accounts/import-codex", s.handleImportCodex)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /api/accounts/{id}/resume", s.handleResume)
@@ -162,6 +165,7 @@ type accountLeaseView struct {
 
 type accountView struct {
 	ID               int64  `json:"id"`
+	Provider         string `json:"provider"`
 	Name             string `json:"name"`
 	ExpiresAt        int64  `json:"expires_at"`
 	Scopes           string `json:"scopes"`
@@ -208,6 +212,7 @@ type accountView struct {
 	// holder". Nil when no live lease exists. Populated by
 	// handleListAccounts via store.ListAccountsWithLeases.
 	Lease *accountLeaseView `json:"lease,omitempty"`
+	InUse bool              `json:"in_use"`
 	// Tokens are deliberately omitted from the UI surface.
 }
 
@@ -241,7 +246,7 @@ type attributionView struct {
 
 func toView(a store.Account) accountView {
 	view := accountView{
-		ID: a.ID, Name: a.Name, ExpiresAt: a.ExpiresAt, Scopes: a.Scopes,
+		ID: a.ID, Provider: a.Provider, Name: a.Name, ExpiresAt: a.ExpiresAt, Scopes: a.Scopes,
 		SubscriptionType: a.SubscriptionType,
 		RateLimitTier:    a.RateLimitTier,
 		OrganizationUUID: a.OrganizationUUID,
@@ -276,8 +281,13 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]accountView, len(accs))
+	var codexManagedID int64
+	if s.Codex != nil {
+		codexManagedID = s.Codex.ManagedAccountID(r.Context())
+	}
 	for i, av := range accs {
 		v := toView(av.Account)
+		v.InUse = av.Account.Provider == store.ProviderCodex && av.Account.ID == codexManagedID
 		if av.Lease != nil {
 			v.Lease = &accountLeaseView{
 				DeviceID:   av.Lease.DeviceID,
@@ -290,6 +300,36 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		out[i] = v
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+}
+
+func (s *Server) handleImportCodex(w http.ResponseWriter, r *http.Request) {
+	if s.Mode == "vault" {
+		http.Error(w, "Codex accounts must be imported on the device running Codex CLI", http.StatusConflict)
+		return
+	}
+	path, err := openai.DefaultAuthPath()
+	if err != nil {
+		http.Error(w, "resolve Codex auth.json: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a, err := openai.ImportCurrent(path)
+	if err != nil {
+		http.Error(w, "import current Codex login: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.Upsert(r.Context(), a); err != nil {
+		http.Error(w, "save Codex account: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Bus.EmitInfo(activity.TypeAccountAdded, a.ID,
+		fmt.Sprintf("Imported %s (%s)", a.Name, a.Plan))
+	if s.Codex != nil {
+		if err := s.Codex.Reconcile(r.Context()); err != nil {
+			http.Error(w, "activate Codex account: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"account": toView(*a)})
 }
 
 // deviceView is the JSON shape /api/devices returns. Mirrors the columns
@@ -461,7 +501,11 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Bus.EmitInfo(activity.TypeAccountAdded, a.ID,
 		fmt.Sprintf("Added %s (%s)", a.Name, a.Plan))
-	s.Cred.Trigger()
+	if a.Provider == store.ProviderCodex && s.Codex != nil {
+		_ = s.Codex.Reconcile(r.Context())
+	} else {
+		s.Cred.Trigger()
+	}
 
 	// Best-effort initial usage pull so the new card lights up immediately
 	// instead of waiting for the next 5-minute tick. Failures are logged
@@ -561,8 +605,10 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// something more useful than the raw ID — this is the user's only
 	// post-hoc record of which account this was.
 	name := fmt.Sprintf("#%d", id)
+	provider := store.ProviderClaude
 	if a, err := s.Store.Get(r.Context(), id); err == nil {
 		name = a.Name
+		provider = a.Provider
 	}
 	if err := s.Store.Delete(r.Context(), id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -570,7 +616,10 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Bus.EmitWarn(activity.TypeAccountDeleted, id,
 		fmt.Sprintf("Deleted %s", name))
-	s.Cred.Trigger()
+	if err := s.triggerProvider(r.Context(), provider); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -593,8 +642,10 @@ func (s *Server) setStatus(w http.ResponseWriter, r *http.Request, status string
 		return
 	}
 	name := fmt.Sprintf("#%d", id)
+	provider := store.ProviderClaude
 	if a, err := s.Store.Get(r.Context(), id); err == nil {
 		name = a.Name
+		provider = a.Provider
 	}
 	if status == "paused" {
 		s.Bus.EmitInfo(activity.TypeAccountPaused, id,
@@ -603,7 +654,10 @@ func (s *Server) setStatus(w http.ResponseWriter, r *http.Request, status string
 		s.Bus.EmitInfo(activity.TypeAccountResumed, id,
 			fmt.Sprintf("Resumed %s", name))
 	}
-	s.Cred.Trigger()
+	if err := s.triggerProvider(r.Context(), provider); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -617,9 +671,12 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	s.Cred.Trigger()
 	a, err := s.Store.Get(r.Context(), id)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.triggerProvider(r.Context(), a.Provider); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -627,13 +684,31 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 	// failure: the user's primary intent (rotate token) succeeded, and
 	// usage will come in on the next 5-minute tick if Anthropic is
 	// transient-erroring right now.
-	if u, err := anthropic.FetchUsage(r.Context(), a.AccessToken); err == nil {
-		_ = applyUsage(r.Context(), s.Store, a.ID, u)
-		if updated, err := s.Store.Get(r.Context(), id); err == nil {
-			a = updated
+	if a.Provider == store.ProviderCodex {
+		if u, usageErr := openai.FetchUsage(r.Context(), a.AccessToken, a.AccountUUID); usageErr == nil {
+			_ = applyCodexUsage(r.Context(), s.Store, a.ID, u)
 		}
+	} else if u, usageErr := anthropic.FetchUsage(r.Context(), a.AccessToken); usageErr == nil {
+		_ = applyUsage(r.Context(), s.Store, a.ID, u)
+	}
+	if updated, getErr := s.Store.Get(r.Context(), id); getErr == nil {
+		a = updated
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"account": toView(*a)})
+}
+
+func applyCodexUsage(ctx context.Context, st *store.Store, id int64, u *openai.Usage) error {
+	var primaryUtil, secondaryUtil float64
+	var primaryReset, secondaryReset string
+	if u.Primary != nil {
+		primaryUtil = u.Primary.UsedPercent
+		primaryReset = u.Primary.ResetAt.Format(time.RFC3339)
+	}
+	if u.Secondary != nil {
+		secondaryUtil = u.Secondary.UsedPercent
+		secondaryReset = u.Secondary.ResetAt.Format(time.RFC3339)
+	}
+	return st.SetUsage(ctx, id, primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "")
 }
 
 // handleSelect promotes one account to the front of the LRU queue so the
@@ -664,8 +739,19 @@ func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.Cred.Trigger()
+	if err := s.triggerProvider(r.Context(), a.Provider); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) triggerProvider(ctx context.Context, provider string) error {
+	if provider == store.ProviderCodex && s.Codex != nil {
+		return s.Codex.Reconcile(ctx)
+	}
+	s.Cred.Trigger()
+	return nil
 }
 
 // pinDeviceID resolves which device a /select pin should be scoped to:
