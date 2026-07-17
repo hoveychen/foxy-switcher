@@ -26,7 +26,7 @@ type backupFile struct {
 // user's pre-Foxy credentials when the pool is unavailable or Foxy stops.
 type Manager struct {
 	st         *store.Store
-	authPath   string
+	storage    CredentialStorage
 	backupPath string
 	logger     *log.Logger
 	mu         sync.Mutex
@@ -35,11 +35,15 @@ type Manager struct {
 }
 
 func NewManager(st *store.Store, authPath string, logger *log.Logger) *Manager {
+	return NewManagerWithStorage(st, &fileCredentialStorage{authPath: authPath}, logger)
+}
+
+func NewManagerWithStorage(st *store.Store, storage CredentialStorage, logger *log.Logger) *Manager {
 	if logger == nil {
 		logger = log.Default()
 	}
 	return &Manager{
-		st: st, authPath: authPath, backupPath: authPath + ".foxy-backup",
+		st: st, storage: storage, backupPath: storage.BackupPath(),
 		logger: logger, stop: make(chan struct{}), done: make(chan struct{}),
 	}
 }
@@ -108,30 +112,33 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("Codex account %d credential: %w", selected.ID, err)
 	}
-	current, _ := os.ReadFile(m.authPath)
+	current, existed, err := m.storage.Load()
+	if err != nil {
+		return fmt.Errorf("load Codex credentials from %s: %w", m.storage.Kind(), err)
+	}
 	if have, parseErr := ParseAuthFile(current); parseErr == nil &&
 		have.Tokens.AccountID == want.Tokens.AccountID &&
 		have.Tokens.AccessToken == want.Tokens.AccessToken {
 		return nil
 	}
-	if err := m.ensureBackup(current); err != nil {
+	if err := m.ensureBackup(current, existed); err != nil {
 		return err
 	}
 	raw, err := want.Marshal()
 	if err != nil {
 		return err
 	}
-	if err := atomicWrite(m.authPath, raw, 0o600); err != nil {
+	if err := m.storage.Save(raw); err != nil {
 		return err
 	}
 	return m.st.MarkUsed(ctx, selected.ID)
 }
 
 // ManagedAccountID reports which stored Codex account currently matches the
-// live auth.json. It is read-only and returns zero for native/unknown logins.
+// live Codex credential storage. It returns zero for native/unknown logins.
 func (m *Manager) ManagedAccountID(ctx context.Context) int64 {
-	raw, err := os.ReadFile(m.authPath)
-	if err != nil {
+	raw, found, err := m.storage.Load()
+	if err != nil || !found {
 		return 0
 	}
 	auth, err := ParseAuthFile(raw)
@@ -151,9 +158,12 @@ func (m *Manager) ManagedAccountID(ctx context.Context) int64 {
 }
 
 func (m *Manager) syncCurrent(ctx context.Context, accounts []store.Account) error {
-	raw, err := os.ReadFile(m.authPath)
+	raw, found, err := m.storage.Load()
 	if err != nil {
 		return err
+	}
+	if !found {
+		return nil
 	}
 	auth, err := ParseAuthFile(raw)
 	if err != nil {
@@ -178,14 +188,13 @@ func (m *Manager) syncCurrent(ctx context.Context, accounts []store.Account) err
 	return nil
 }
 
-func (m *Manager) ensureBackup(current []byte) error {
+func (m *Manager) ensureBackup(current []byte, existed bool) error {
 	if _, err := os.Stat(m.backupPath); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	_, statErr := os.Stat(m.authPath)
-	backup := backupFile{Existed: statErr == nil, Data: current}
+	backup := backupFile{Existed: existed, Data: current}
 	raw, err := json.Marshal(backup)
 	if err != nil {
 		return err
@@ -212,11 +221,13 @@ func (m *Manager) restoreLocked() error {
 		return fmt.Errorf("parse Codex credential backup: %w", err)
 	}
 	if backup.Existed {
-		if err := atomicWrite(m.authPath, backup.Data, 0o600); err != nil {
+		if err := m.storage.Save(backup.Data); err != nil {
 			return err
 		}
-	} else if err := os.Remove(m.authPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	} else {
+		if err := m.storage.Delete(); err != nil {
+			return err
+		}
 	}
 	return os.Remove(m.backupPath)
 }

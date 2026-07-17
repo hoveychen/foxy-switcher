@@ -179,6 +179,51 @@ func TestManagerInjectsReverseSyncsAndRestoresNativeAuth(t *testing.T) {
 	}
 }
 
+func TestManagerRestoresDirectKeyringCredentials(t *testing.T) {
+	dir := t.TempDir()
+	kr := &memoryKeyring{}
+	storage := &directKeyringStorage{
+		codexHome: dir, authPath: filepath.Join(dir, "auth.json"), keyring: kr,
+	}
+	native := authJSON(t, "native-keyring", "")
+	if err := storage.Save(native); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	managedAuth, _ := ParseAuthFile(authJSON(t, "managed-keyring", ""))
+	managed, _ := managedAuth.Account()
+	if err := st.Upsert(context.Background(), managed); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManagerWithStorage(st, storage, nil)
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	injected, found, err := storage.Load()
+	if err != nil || !found {
+		t.Fatalf("load injected: %v, %v", found, err)
+	}
+	parsed, _ := ParseAuthFile(injected)
+	if parsed.Tokens.AccountID != "managed-keyring" {
+		t.Fatalf("injected account = %q", parsed.Tokens.AccountID)
+	}
+	if err := m.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	restored, found, err := storage.Load()
+	if err != nil || !found {
+		t.Fatalf("load restored: %v, %v", found, err)
+	}
+	parsed, _ = ParseAuthFile(restored)
+	if parsed.Tokens.AccountID != "native-keyring" {
+		t.Fatalf("restored account = %q", parsed.Tokens.AccountID)
+	}
+}
+
 func jsonEqual(a, b any) bool {
 	aa, _ := json.Marshal(a)
 	bb, _ := json.Marshal(b)

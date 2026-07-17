@@ -89,14 +89,26 @@ func (a *AuthFile) Marshal() ([]byte, error) {
 }
 
 func DefaultAuthPath() (string, error) {
-	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
-		return filepath.Join(home, "auth.json"), nil
-	}
-	home, err := os.UserHomeDir()
+	home, err := defaultCodexHome()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".codex", "auth.json"), nil
+	return filepath.Join(home, "auth.json"), nil
+}
+
+func ImportCurrentStorage(storage CredentialStorage) (*store.Account, error) {
+	data, found, err := storage.Load()
+	if err != nil {
+		return nil, fmt.Errorf("read Codex credentials from %s: %w", storage.Kind(), err)
+	}
+	if !found {
+		return nil, fmt.Errorf("no Codex credentials found in %s", storage.Kind())
+	}
+	auth, err := ParseAuthFile(data)
+	if err != nil {
+		return nil, err
+	}
+	return auth.Account()
 }
 
 func ImportCurrent(path string) (*store.Account, error) {
