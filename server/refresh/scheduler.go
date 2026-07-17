@@ -17,6 +17,7 @@ import (
 
 	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/authz"
+	openai "github.com/hoveychen/foxy-switcher/server/openai"
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
 
@@ -209,6 +210,9 @@ func (s *Scheduler) RefreshOne(ctx context.Context, id int64) error {
 	if a.RefreshToken == "" {
 		return nil
 	}
+	if a.Provider == store.ProviderCodex {
+		return s.refreshCodex(ctx, a)
+	}
 
 	tr, err := authz.RefreshToken(ctx, a.RefreshToken)
 	if err != nil {
@@ -251,6 +255,42 @@ func (s *Scheduler) RefreshOne(ctx context.Context, id int64) error {
 	s.Bus.EmitInfo(activity.TypeTokenRefreshed, a.ID,
 		fmt.Sprintf("Rotated %s — next expiry in %s",
 			a.Name, time.Until(time.UnixMilli(expiresAt)).Round(time.Second)))
+	if s.OnChange != nil {
+		s.OnChange()
+	}
+	return nil
+}
+
+func (s *Scheduler) refreshCodex(ctx context.Context, a *store.Account) error {
+	auth, err := openai.ParseAuthFile([]byte(a.CredentialJSON))
+	if err != nil {
+		return err
+	}
+	if err := openai.Refresh(ctx, auth); err != nil {
+		if openai.IsPermanentRefreshError(err) {
+			if markErr := s.st.MarkNeedsReauth(ctx, a.ID); markErr != nil {
+				s.logger.Printf("[refresh] Codex account %d: mark needs_reauth: %v", a.ID, markErr)
+			}
+			if s.OnChange != nil {
+				s.OnChange()
+			}
+		}
+		return err
+	}
+	raw, err := auth.Marshal()
+	if err != nil {
+		return err
+	}
+	updated, err := auth.Account()
+	if err != nil {
+		return err
+	}
+	if err := s.st.UpdateProviderCredential(ctx, a.ID,
+		updated.AccessToken, updated.RefreshToken, updated.ExpiresAt, string(raw)); err != nil {
+		return err
+	}
+	s.Bus.EmitInfo(activity.TypeTokenRefreshed, a.ID,
+		fmt.Sprintf("Rotated %s Codex credentials", a.Name))
 	if s.OnChange != nil {
 		s.OnChange()
 	}

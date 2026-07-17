@@ -62,6 +62,11 @@ type Account struct {
 	// can distinguish personal Max 5x from Max 20x; subscription_type maps
 	// both to "max".
 	RateLimitTier string
+	// CredentialJSON stores the provider-native credential document when a
+	// provider needs more than the common access/refresh token tuple. Codex
+	// accounts keep their complete auth.json here so id_token and refresh
+	// metadata survive switching; Claude rows leave it empty.
+	CredentialJSON string
 
 	// Usage fields refreshed periodically from /api/oauth/usage.
 	// Utilization is 0–100 (percent). ResetsAt is RFC3339; empty when the
@@ -133,6 +138,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
+  credential_json            TEXT    NOT NULL DEFAULT '',
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 `
@@ -217,6 +223,7 @@ var columnMigrations = []string{
 	// because subscription_type can't tell personal Max 5x from Max 20x.
 	// Older rows backfill on the next UsagePoller tick.
 	`ALTER TABLE accounts ADD COLUMN rate_limit_tier TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN credential_json TEXT NOT NULL DEFAULT ''`,
 	// pinned_device_id scopes a "Use now" pin to the requesting device so
 	// other devices' reconcile ticks don't race to grab the account.
 	`ALTER TABLE accounts ADD COLUMN pinned_device_id TEXT NOT NULL DEFAULT ''`,
@@ -344,6 +351,7 @@ CREATE TABLE accounts_new (
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
+  credential_json            TEXT    NOT NULL DEFAULT '',
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
@@ -356,7 +364,7 @@ INSERT INTO accounts_new SELECT
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier, pinned_device_id FROM accounts;
+  account_uuid, rate_limit_tier, credential_json, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -418,6 +426,7 @@ CREATE TABLE accounts_new (
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
+  credential_json            TEXT    NOT NULL DEFAULT '',
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
@@ -430,7 +439,7 @@ INSERT INTO accounts_new SELECT
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier, pinned_device_id FROM accounts;
+  account_uuid, rate_limit_tier, credential_json, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -509,7 +518,7 @@ UPDATE accounts SET
   access_token = ?, refresh_token = ?, expires_at = ?,
   scopes = ?, subscription_type = ?, organization_uuid = ?,
   email = ?, full_name = ?, organization_name = ?, plan = ?,
-  account_uuid = ?, rate_limit_tier = ?,
+  account_uuid = ?, rate_limit_tier = ?, credential_json = ?,
   status = 'active',
   updated_at = ?
 WHERE id = ?`,
@@ -517,7 +526,7 @@ WHERE id = ?`,
 			a.AccessToken, a.RefreshToken, a.ExpiresAt,
 			a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 			a.Email, a.FullName, a.OrganizationName, a.Plan,
-			a.AccountUUID, a.RateLimitTier,
+			a.AccountUUID, a.RateLimitTier, a.CredentialJSON,
 			a.UpdatedAt, existingID,
 		); err != nil {
 			return err
@@ -550,15 +559,15 @@ INSERT INTO accounts
   (provider, name, access_token, refresh_token, expires_at, scopes, subscription_type,
    organization_uuid, status, last_used_at,
    created_at, updated_at,
-   email, full_name, organization_name, plan, account_uuid, rate_limit_tier,
+   email, full_name, organization_name, plan, account_uuid, rate_limit_tier, credential_json,
    five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Provider, a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
 		a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 		ifEmpty(a.Status, "active"), a.LastUsedAt,
 		a.CreatedAt, a.UpdatedAt,
 		a.Email, a.FullName, a.OrganizationName, a.Plan,
-		a.AccountUUID, a.RateLimitTier,
+		a.AccountUUID, a.RateLimitTier, a.CredentialJSON,
 		clampPercent(a.FiveHourThreshold), clampPercent(a.SevenDayThreshold), clampPercent(a.SevenDaySonnetThreshold),
 	)
 	if err != nil {
@@ -580,6 +589,17 @@ UPDATE accounts
    SET access_token = ?, refresh_token = ?, expires_at = ?, updated_at = ?
  WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, q, accessToken, refreshToken, expiresAt, time.Now().UnixMilli(), id)
+	return err
+}
+
+// UpdateProviderCredential atomically keeps the common token columns and the
+// provider-native credential document in sync.
+func (s *Store) UpdateProviderCredential(ctx context.Context, id int64, accessToken, refreshToken string, expiresAt int64, credentialJSON string) error {
+	const q = `
+UPDATE accounts
+   SET access_token = ?, refresh_token = ?, expires_at = ?, credential_json = ?, updated_at = ?
+ WHERE id = ?`
+	_, err := s.db.ExecContext(ctx, q, accessToken, refreshToken, expiresAt, credentialJSON, time.Now().UnixMilli(), id)
 	return err
 }
 
@@ -888,7 +908,7 @@ seven_day_util, seven_day_resets_at,
 seven_day_sonnet_util, seven_day_sonnet_resets_at,
 usage_fetched_at,
 five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-account_uuid, rate_limit_tier, pinned_device_id`
+account_uuid, rate_limit_tier, credential_json, pinned_device_id`
 
 // List returns every row ordered by id (stable insertion order).
 func (s *Store) List(ctx context.Context) ([]Account, error) {
@@ -944,7 +964,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
-			&a.AccountUUID, &a.RateLimitTier, &a.PinnedDeviceID,
+			&a.AccountUUID, &a.RateLimitTier, &a.CredentialJSON, &a.PinnedDeviceID,
 		); err != nil {
 			return nil, err
 		}

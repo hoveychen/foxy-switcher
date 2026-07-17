@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/anthropic"
+	openai "github.com/hoveychen/foxy-switcher/server/openai"
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
 
@@ -169,6 +171,13 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		if !p.canPoll(a.ID) {
 			continue
 		}
+		if a.Provider == store.ProviderCodex {
+			if p.pollCodex(ctx, a) {
+				polled++
+				changed = true
+			}
+			continue
+		}
 		// Backfill profile for accounts that predate the profile-fetching
 		// feature, or that predate rate_limit_tier. Plan / AccountUUID /
 		// RateLimitTier all get backfilled together since they come from
@@ -267,6 +276,39 @@ func (p *UsagePoller) tick(ctx context.Context) {
 	if changed && p.OnChange != nil {
 		p.OnChange()
 	}
+}
+
+func (p *UsagePoller) pollCodex(ctx context.Context, a store.Account) bool {
+	u, err := openai.FetchUsage(ctx, a.AccessToken, a.AccountUUID)
+	if err != nil {
+		p.logger.Printf("[usage] Codex account %d (%s): %v", a.ID, a.Name, err)
+		p.Bus.EmitError(activity.TypeErrorUsage, a.ID,
+			fmt.Sprintf("Usage poll for %s failed: %v", a.Name, err))
+		return false
+	}
+	var primaryUtil, secondaryUtil float64
+	var primaryReset, secondaryReset string
+	if u.Primary != nil {
+		primaryUtil = u.Primary.UsedPercent
+		primaryReset = u.Primary.ResetAt.Format(time.RFC3339)
+	}
+	if u.Secondary != nil {
+		secondaryUtil = u.Secondary.UsedPercent
+		secondaryReset = u.Secondary.ResetAt.Format(time.RFC3339)
+	}
+	if err := p.st.SetUsage(ctx, a.ID,
+		primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, ""); err != nil {
+		p.logger.Printf("[usage] Codex account %d store: %v", a.ID, err)
+		return false
+	}
+	if u.PlanType != "" && u.PlanType != a.SubscriptionType {
+		_ = p.st.SetProfile(ctx, a.ID, a.AccountUUID, a.Email, a.FullName,
+			a.OrganizationName, "Codex "+strings.ToUpper(u.PlanType[:1])+u.PlanType[1:], u.PlanType, "")
+	}
+	if err := p.st.AppendUsageHistory(ctx, a.ID, time.Now().UnixMilli(), primaryUtil, secondaryUtil, 0); err != nil {
+		p.logger.Printf("[usage] Codex account %d history: %v", a.ID, err)
+	}
+	return true
 }
 
 func pluralS(n int) string {
