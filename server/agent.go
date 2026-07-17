@@ -20,6 +20,7 @@ import (
 
 	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/credinject"
+	openai "github.com/hoveychen/foxy-switcher/server/openai"
 	"github.com/hoveychen/foxy-switcher/server/store"
 	"github.com/hoveychen/foxy-switcher/server/vault/httpclient"
 )
@@ -74,6 +75,7 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 
 	suppressCredInject := opts.NoCredInject
 	var cc *credinject.Coordinator
+	var codexRemote *openai.RemoteManager
 	if !suppressCredInject {
 		backend, err := credinject.NewBackend()
 		if err != nil {
@@ -93,6 +95,21 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		// the vault's global auto-switch and silently ignore the user's
 		// per-agent choice.
 		cc.SetAutoSwitchSource(agentStore.GetAutoSwitch)
+		settings, settingsErr := agentStore.GetSettings(ctx)
+		if settingsErr != nil {
+			return fmt.Errorf("load agent settings: %w", settingsErr)
+		}
+		cc.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
+		codexStorage, storageErr := openai.DefaultCredentialStorage()
+		if storageErr != nil {
+			logger.Printf("warning: resolve Codex credential storage: %v (remote Codex injection disabled)", storageErr)
+		} else {
+			codexRemote = openai.NewRemoteManager(client, codexStorage, cfg.DeviceID, logger)
+			codexRemote.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
+			codexRemote.SetAutoSwitchSource(agentStore.GetAutoSwitch)
+			codexRemote.Start(ctx)
+			defer codexRemote.Stop()
+		}
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
 				logger.Printf("warning: restore native credentials: %v", err)
@@ -124,7 +141,16 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/cred/status", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSONResponse(w, http.StatusOK, cc.Status())
+		statusRaw, _ := json.Marshal(cc.Status())
+		var status map[string]any
+		_ = json.Unmarshal(statusRaw, &status)
+		if status == nil {
+			status = map[string]any{}
+		}
+		if codexRemote != nil {
+			status["codex_managed_account_id"] = codexRemote.ManagedAccountID()
+		}
+		writeJSONResponse(w, http.StatusOK, status)
 	})
 	// /api/about gets answered locally so the Settings → Vault card sees
 	// mode=agent + this device's upstream URL. Forwarding to the vault
@@ -161,9 +187,15 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	// back so the desktop's "in use" highlight tracks local injection
 	// even when vault lags a tick behind. Other devices' entries pass
 	// through verbatim.
-	proxy.ModifyResponse = patchDashboardInUseSelf(
+	proxy.ModifyResponse = patchAgentInUseSelf(
 		cc.DeviceID(),
-		func() int64 { return cc.Status().ManagedAccountID },
+		func() []int64 {
+			ids := []int64{cc.Status().ManagedAccountID}
+			if codexRemote != nil {
+				ids = append(ids, codexRemote.ManagedAccountID())
+			}
+			return ids
+		},
 	)
 	for _, path := range []string{
 		"GET /api/accounts",
@@ -208,7 +240,12 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	// interval, restore-on-quit, switch policy). The agent's own store
 	// (backed by agent-activity.db) already exposes Get/Set helpers, so
 	// we wire those directly here — no need to reach the vault.
-	registerLocalPrefRoutes(mux, agentStore)
+	registerLocalPrefRoutes(mux, agentStore, func(settings store.Settings) {
+		cc.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
+		if codexRemote != nil {
+			codexRemote.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
+		}
+	})
 	// Anything else (typo, unmapped path) falls through to ServeMux's
 	// default 404 — agent mode shouldn't be a generic vault proxy.
 
@@ -328,15 +365,21 @@ func newVaultAPIProxy(target *url.URL, token string) *httputil.ReverseProxy {
 // deviceID is the agent's own ID (Coordinator.DeviceID()); accountIDFn
 // is read on every response so a mid-flight rotation lands immediately.
 func patchDashboardInUseSelf(deviceID string, accountIDFn func() int64) func(*http.Response) error {
+	return patchAgentInUseSelf(deviceID, func() []int64 { return []int64{accountIDFn()} })
+}
+
+func patchAgentInUseSelf(deviceID string, accountIDsFn func() []int64) func(*http.Response) error {
 	return func(resp *http.Response) error {
 		if resp.StatusCode != http.StatusOK {
 			return nil
 		}
-		// Match against the original request path the agent's mux saw,
-		// which still bears the /api/* prefix the desktop frontend uses.
-		// Using the (post-rewrite) URL.Path would force us to track the
-		// /agent/v1 prefix here too, which is a layering smell.
-		if resp.Request == nil || !strings.HasSuffix(resp.Request.URL.Path, "/api/dashboard") {
+		if resp.Request == nil {
+			return nil
+		}
+		path := resp.Request.URL.Path
+		isDashboard := strings.HasSuffix(path, "/api/dashboard")
+		isAccounts := strings.HasSuffix(path, "/api/accounts")
+		if !isDashboard && !isAccounts {
 			return nil
 		}
 		body, err := io.ReadAll(resp.Body)
@@ -349,9 +392,15 @@ func patchDashboardInUseSelf(deviceID string, accountIDFn func() int64) func(*ht
 			resp.ContentLength = int64(len(b))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
 		}
-		accID := accountIDFn()
-		if accID == 0 {
-			// Nothing injected locally — vault is authoritative.
+		ids := make([]int64, 0, 2)
+		idSet := make(map[int64]bool, 2)
+		for _, id := range accountIDsFn() {
+			if id > 0 && !idSet[id] {
+				ids = append(ids, id)
+				idSet[id] = true
+			}
+		}
+		if len(ids) == 0 {
 			rewriteBody(body)
 			return nil
 		}
@@ -361,33 +410,40 @@ func patchDashboardInUseSelf(deviceID string, accountIDFn func() int64) func(*ht
 			rewriteBody(body)
 			return nil
 		}
-		kpis, ok := doc["kpis"].(map[string]any)
-		if !ok {
-			rewriteBody(body)
-			return nil
-		}
-		rawList, _ := kpis["in_use"].([]any)
-		var patched bool
-		for _, item := range rawList {
-			entry, ok := item.(map[string]any)
+		if isAccounts {
+			rawAccounts, _ := doc["accounts"].([]any)
+			for _, item := range rawAccounts {
+				account, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				id, _ := account["id"].(float64)
+				account["in_use"] = idSet[int64(id)]
+			}
+		} else {
+			kpis, ok := doc["kpis"].(map[string]any)
 			if !ok {
-				continue
+				rewriteBody(body)
+				return nil
 			}
-			if mine, _ := entry["mine"].(bool); mine {
-				entry["account_id"] = accID
-				patched = true
-				break
+			rawList, _ := kpis["in_use"].([]any)
+			filtered := make([]any, 0, len(rawList)+len(ids))
+			for _, item := range rawList {
+				entry, ok := item.(map[string]any)
+				if ok {
+					if mine, _ := entry["mine"].(bool); mine {
+						continue
+					}
+				}
+				filtered = append(filtered, item)
 			}
-		}
-		if !patched {
-			rawList = append(rawList, map[string]any{
-				"account_id":  accID,
-				"device_id":   deviceID,
-				"device_name": "",
-				"mine":        true,
-				"expires_at":  0,
-			})
-			kpis["in_use"] = rawList
+			for _, id := range ids {
+				filtered = append(filtered, map[string]any{
+					"account_id": id, "device_id": deviceID,
+					"device_name": "", "mine": true, "expires_at": 0,
+				})
+			}
+			kpis["in_use"] = filtered
 		}
 		out, err := json.Marshal(doc)
 		if err != nil {
@@ -410,7 +466,7 @@ func patchDashboardInUseSelf(deviceID string, accountIDFn func() int64) func(*ht
 // Wire format mirrors httpapi.Server's /api/settings + /api/auto-switch
 // exactly so the desktop frontend doesn't need to special-case agent
 // mode — same JSON shape, same paths.
-func registerLocalPrefRoutes(mux *http.ServeMux, st *store.Store) {
+func registerLocalPrefRoutes(mux *http.ServeMux, st *store.Store, onSettings ...func(store.Settings)) {
 	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		v, err := st.GetSettings(r.Context())
 		if err != nil {
@@ -441,6 +497,11 @@ func registerLocalPrefRoutes(mux *http.ServeMux, st *store.Store) {
 			writeJSONResponse(w, http.StatusInternalServerError,
 				map[string]string{"error": err.Error()})
 			return
+		}
+		for _, notify := range onSettings {
+			if notify != nil {
+				notify(out)
+			}
 		}
 		writeJSONResponse(w, http.StatusOK, out)
 	})

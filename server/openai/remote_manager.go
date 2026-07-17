@@ -29,6 +29,8 @@ type RemoteManager struct {
 	mu               sync.Mutex
 	currentAccountID int64
 	currentLeaseID   string
+	restoreOnQuit    bool
+	autoSwitchSource func(context.Context) (vault.AutoSwitch, error)
 	stop             chan struct{}
 	done             chan struct{}
 }
@@ -39,7 +41,7 @@ func NewRemoteManager(svc vault.Service, storage CredentialStorage, deviceID str
 	}
 	return &RemoteManager{
 		svc: svc, storage: storage, deviceID: deviceID, logger: logger,
-		stop: make(chan struct{}), done: make(chan struct{}),
+		restoreOnQuit: true, stop: make(chan struct{}), done: make(chan struct{}),
 	}
 }
 
@@ -52,16 +54,34 @@ func (m *RemoteManager) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
-				_ = m.Restore()
+				_ = m.shutdown()
 				return
 			case <-m.stop:
-				_ = m.Restore()
+				_ = m.shutdown()
 				return
 			case <-ticker.C:
 				m.reconcileLogged(ctx)
 			}
 		}
 	}()
+}
+
+func (m *RemoteManager) SetRestoreOnQuit(value bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.restoreOnQuit = value
+}
+
+func (m *RemoteManager) SetAutoSwitchSource(source func(context.Context) (vault.AutoSwitch, error)) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.autoSwitchSource = source
 }
 
 func (m *RemoteManager) Stop() {
@@ -86,7 +106,22 @@ func (m *RemoteManager) Reconcile(ctx context.Context) error {
 	if err := m.reverseSync(ctx); err != nil {
 		m.logger.Printf("[codex-agent] reverse sync skipped: %v", err)
 	}
-	selected, err := m.svc.PickProviderForDevice(ctx, time.Now(), m.deviceID, store.ProviderCodex)
+	accounts, err := m.svc.ListAccounts(ctx)
+	if err != nil {
+		return err
+	}
+	auto := vault.AutoSwitch{Enabled: true, Policy: "lru"}
+	if m.autoSwitchSource != nil {
+		if value, autoErr := m.autoSwitchSource(ctx); autoErr == nil {
+			auto = value
+		}
+	} else if value, autoErr := m.svc.GetAutoSwitch(ctx); autoErr == nil {
+		auto = value
+	}
+	selected, err := chooseStickyCodex(accounts, m.currentAccountID, m.deviceID, auto.Enabled, time.Now())
+	if err == nil && selected == nil {
+		selected, err = m.svc.PickProviderForDevice(ctx, time.Now(), m.deviceID, store.ProviderCodex)
+	}
 	if err != nil {
 		if errors.Is(err, selector.ErrNoAvailable) {
 			return m.restoreLocked(ctx)
@@ -203,10 +238,23 @@ func (m *RemoteManager) Restore() error {
 	return m.restoreLocked(context.Background())
 }
 
+func (m *RemoteManager) shutdown() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.restoreOnQuit {
+		return m.restoreLocked(context.Background())
+	}
+	return m.releaseLeaseLocked(context.Background())
+}
+
 func (m *RemoteManager) restoreLocked(ctx context.Context) error {
 	if err := restoreCredentialBackup(m.storage); err != nil {
 		return err
 	}
+	return m.releaseLeaseLocked(ctx)
+}
+
+func (m *RemoteManager) releaseLeaseLocked(ctx context.Context) error {
 	if m.currentLeaseID != "" {
 		if err := m.svc.ReleaseLease(ctx, m.currentLeaseID); err != nil {
 			return err

@@ -305,6 +305,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 			logger.Printf("warning: resolve Codex credential storage: %v (Codex injection disabled)", storageErr)
 		} else {
 			codexManager = openai.NewManagerWithStorage(st, codexStorage, logger)
+			codexManager.SetDeviceID(cc.DeviceID())
 			server.Codex = codexManager
 			server.CodexStorage = codexStorage
 		}
