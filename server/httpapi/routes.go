@@ -73,9 +73,10 @@ type Server struct {
 	// frontend's Settings → Vault card can show what topology this
 	// daemon is running. Set by main; safe to leave empty (frontend
 	// treats "" the same as "combined").
-	Mode     string
-	VaultURL string
-	Codex    *openai.Manager
+	Mode         string
+	VaultURL     string
+	Codex        *openai.Manager
+	CodexStorage openai.CredentialStorage
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {
@@ -307,12 +308,16 @@ func (s *Server) handleImportCodex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Codex accounts must be imported on the device running Codex CLI", http.StatusConflict)
 		return
 	}
-	path, err := openai.DefaultAuthPath()
-	if err != nil {
-		http.Error(w, "resolve Codex auth.json: "+err.Error(), http.StatusInternalServerError)
-		return
+	storage := s.CodexStorage
+	if storage == nil {
+		var err error
+		storage, err = openai.DefaultCredentialStorage()
+		if err != nil {
+			http.Error(w, "resolve Codex credential storage: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
-	a, err := openai.ImportCurrent(path)
+	a, err := openai.ImportCurrentStorage(storage)
 	if err != nil {
 		http.Error(w, "import current Codex login: "+err.Error(), http.StatusBadRequest)
 		return

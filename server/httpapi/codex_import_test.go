@@ -20,6 +20,9 @@ func TestImportCodexAddsProviderScopedAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CODEX_HOME", codexHome)
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(`cli_auth_credentials_store = "file"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	jwt := testCodexJWT(t, "codex-account", "codex@example.com", "plus")
 	raw, _ := json.Marshal(map[string]any{
 		"auth_mode": "chatgpt",

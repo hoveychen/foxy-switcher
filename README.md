@@ -58,7 +58,7 @@ For Codex subscriptions:
 2. Click **Import Codex** in Foxy.
 3. To add another account, run `codex logout`, sign in to the next account, and click **Import Codex** again.
 
-Codex import currently requires file-backed credentials at `~/.codex/auth.json`. If you explicitly configured keyring storage, set `cli_auth_credentials_store = "file"` in `~/.codex/config.toml` and run `codex login` again before importing.
+Foxy follows Codex's `cli_auth_credentials_store` setting. File, direct OS keyring, and Codex's encrypted `secrets/codex_auth.age` backend are all supported; `auto` prefers keyring and falls back to `auth.json`, matching Codex CLI.
 
 Want to take over manually? Toggle **Auto Switch** off and click **Use now** on any account.
 

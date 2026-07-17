@@ -301,11 +301,12 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 				logger.Printf("warning: restore native credentials: %v", err)
 			}
 		}()
-		if authPath, pathErr := openai.DefaultAuthPath(); pathErr != nil {
-			logger.Printf("warning: resolve Codex auth.json path: %v (Codex injection disabled)", pathErr)
+		if codexStorage, storageErr := openai.DefaultCredentialStorage(); storageErr != nil {
+			logger.Printf("warning: resolve Codex credential storage: %v (Codex injection disabled)", storageErr)
 		} else {
-			codexManager = openai.NewManager(st, authPath, logger)
+			codexManager = openai.NewManagerWithStorage(st, codexStorage, logger)
 			server.Codex = codexManager
+			server.CodexStorage = codexStorage
 		}
 	}
 
