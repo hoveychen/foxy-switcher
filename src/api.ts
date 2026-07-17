@@ -692,6 +692,7 @@ export const apiClient = {
   credStatus: () =>
     api<{
       managed_account_id: number;
+      codex_managed_account_id?: number;
       native_backup_present: boolean;
       injected_at: number;
       marker_state: "intact" | "overwritten" | "missing" | "sidecar-missing" | "unknown" | "";

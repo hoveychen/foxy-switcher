@@ -64,7 +64,11 @@ func (s *InProc) Pick(ctx context.Context, now time.Time) (*Account, error) {
 // leased account" behaviour for callers that don't yet plumb device
 // identity through.
 func (s *InProc) PickForDevice(ctx context.Context, now time.Time, deviceID string) (*Account, error) {
-	return selector.PickWithFilter(ctx, s.st, now, deviceID, func(a Account) bool {
+	return s.PickProviderForDevice(ctx, now, deviceID, store.ProviderClaude)
+}
+
+func (s *InProc) PickProviderForDevice(ctx context.Context, now time.Time, deviceID, provider string) (*Account, error) {
+	return selector.PickProviderWithFilter(ctx, s.st, provider, now, deviceID, func(a Account) bool {
 		if deviceID == "" {
 			return s.st.IsAccountLeased(a.ID)
 		}
@@ -78,6 +82,10 @@ func (s *InProc) MarkUsed(ctx context.Context, accountID int64) error {
 
 func (s *InProc) UpdateTokens(ctx context.Context, accountID int64, accessToken, refreshToken string, expiresAt int64) error {
 	return s.st.UpdateTokens(ctx, accountID, accessToken, refreshToken, expiresAt)
+}
+
+func (s *InProc) UpdateProviderCredential(ctx context.Context, accountID int64, accessToken, refreshToken string, expiresAt int64, credentialJSON string) error {
+	return s.st.UpdateProviderCredential(ctx, accountID, accessToken, refreshToken, expiresAt, credentialJSON)
 }
 
 func (s *InProc) AcquireLease(ctx context.Context, accountID int64, deviceID string, ttl time.Duration) (Lease, error) {

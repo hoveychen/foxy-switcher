@@ -70,11 +70,19 @@ func (c *Client) GetAutoSwitch(ctx context.Context) (vault.AutoSwitch, error) {
 }
 
 func (c *Client) Pick(ctx context.Context, _ time.Time) (*vault.Account, error) {
+	return c.pickProvider(ctx, "")
+}
+
+func (c *Client) pickProvider(ctx context.Context, provider string) (*vault.Account, error) {
 	// 204 from the server = no eligible account. The inproc path returns
 	// selector.ErrNoAvailable in that case; mirror it so the coordinator's
 	// errors.Is check works regardless of which Service implementation it
 	// holds.
-	resp, err := c.do(ctx, http.MethodPost, "/agent/v1/pick", nil)
+	path := "/agent/v1/pick"
+	if provider != "" {
+		path += "?provider=" + url.QueryEscape(provider)
+	}
+	resp, err := c.do(ctx, http.MethodPost, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -103,15 +111,24 @@ func (c *Client) PickForDevice(ctx context.Context, now time.Time, _ string) (*v
 	return c.Pick(ctx, now)
 }
 
+func (c *Client) PickProviderForDevice(ctx context.Context, _ time.Time, _ string, provider string) (*vault.Account, error) {
+	return c.pickProvider(ctx, provider)
+}
+
 func (c *Client) MarkUsed(ctx context.Context, id int64) error {
 	return c.postNoBody(ctx, "/agent/v1/accounts/"+strconv.FormatInt(id, 10)+"/used")
 }
 
 func (c *Client) UpdateTokens(ctx context.Context, id int64, accessToken, refreshToken string, expiresAt int64) error {
+	return c.UpdateProviderCredential(ctx, id, accessToken, refreshToken, expiresAt, "")
+}
+
+func (c *Client) UpdateProviderCredential(ctx context.Context, id int64, accessToken, refreshToken string, expiresAt int64, credentialJSON string) error {
 	body := map[string]any{
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
-		"expires_at":    expiresAt,
+		"access_token":    accessToken,
+		"refresh_token":   refreshToken,
+		"expires_at":      expiresAt,
+		"credential_json": credentialJSON,
 	}
 	return c.postJSON(ctx, "/agent/v1/accounts/"+strconv.FormatInt(id, 10)+"/tokens", body, nil)
 }

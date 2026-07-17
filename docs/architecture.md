@@ -84,6 +84,7 @@ Daemon flags (see [server/main.go](../server/main.go)):
 - **Linux / Windows**: the daemon replaces `~/.claude/.credentials.json` (mode 0600, atomic via `.tmp` + rename) and clears `primaryApiKey` in `~/.claude.json` so Claude Code falls through to the OAuth path (see [server/credinject/other.go](../server/credinject/other.go)).
 - The user's pre-existing native login is captured before the first inject and restored on shutdown via `Coordinator.RestoreOnShutdown`.
 - **Codex**: [`server/openai.Manager`](../server/openai/manager.go) follows `cli_auth_credentials_store`: plaintext `CODEX_HOME/auth.json`, direct OS keyring (`Codex Auth`), or the encrypted `secrets/codex_auth.age` format whose passphrase lives in the OS keyring (`codex`). It reverse-syncs token rotations written by Codex CLI and restores the original logical credential on shutdown.
+- **Remote agent mode** runs the Claude coordinator and [`openai.RemoteManager`](../server/openai/remote_manager.go) together. Each provider acquires and renews its own vault lease, so one device may use Claude Code and Codex CLI concurrently without sharing credentials or LRU state.
 
 Deep dive on macOS keychain layout: [keychain-credentials-pool.md](keychain-credentials-pool.md).
 

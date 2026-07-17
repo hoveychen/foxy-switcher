@@ -125,6 +125,27 @@ func TestRoundtrip_PickReturnsLRU(t *testing.T) {
 	}
 }
 
+func TestRoundtrip_PickProviderReturnsCodexCredential(t *testing.T) {
+	f := newRoundtripFixture(t)
+	seedAccount(t, f.st, "claude")
+	codex := &store.Account{
+		Provider: store.ProviderCodex, Name: "codex", Email: "codex@example.com",
+		AccessToken: "codex-at", RefreshToken: "codex-rt",
+		ExpiresAt: time.Now().Add(2 * time.Hour).UnixMilli(), Status: store.StatusActive,
+		AccountUUID: "codex-account", CredentialJSON: `{"auth_mode":"chatgpt"}`,
+	}
+	if err := f.st.Upsert(context.Background(), codex); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.client.PickProviderForDevice(context.Background(), time.Now(), "ignored", store.ProviderCodex)
+	if err != nil {
+		t.Fatalf("PickProviderForDevice: %v", err)
+	}
+	if got.ID != codex.ID || got.Provider != store.ProviderCodex || got.CredentialJSON != codex.CredentialJSON {
+		t.Fatalf("Codex credential mismatch: %+v", got)
+	}
+}
+
 func TestRoundtrip_MarkUsed(t *testing.T) {
 	f := newRoundtripFixture(t)
 	a := seedAccount(t, f.st, "alpha")
@@ -153,6 +174,20 @@ func TestRoundtrip_UpdateTokens(t *testing.T) {
 	got, _ := f.st.Get(context.Background(), a.ID)
 	if got.AccessToken != "at-NEW" || got.RefreshToken != "rt-NEW" || got.ExpiresAt != newExpiry {
 		t.Errorf("UpdateTokens not applied: %+v", got)
+	}
+}
+
+func TestRoundtrip_UpdateProviderCredential(t *testing.T) {
+	f := newRoundtripFixture(t)
+	a := seedAccount(t, f.st, "alpha")
+	newExpiry := time.Now().Add(8 * time.Hour).UnixMilli()
+	if err := f.client.UpdateProviderCredential(context.Background(), a.ID,
+		"at-NEW", "rt-NEW", newExpiry, `{"tokens":"rotated"}`); err != nil {
+		t.Fatalf("UpdateProviderCredential: %v", err)
+	}
+	got, _ := f.st.Get(context.Background(), a.ID)
+	if got.CredentialJSON != `{"tokens":"rotated"}` {
+		t.Fatalf("credential_json not applied: %q", got.CredentialJSON)
 	}
 }
 

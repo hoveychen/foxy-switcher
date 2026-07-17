@@ -268,6 +268,49 @@ func TestPatchDashboardInUseSelf_NonDashboardPathPasses(t *testing.T) {
 	}
 }
 
+func TestPatchAgentInUseSelf_MarksClaudeAndCodexAccounts(t *testing.T) {
+	hook := patchAgentInUseSelf("dev-self", func() []int64 { return []int64{11, 22} })
+	body := []byte(`{"accounts":[{"id":11,"provider":"claude","in_use":false},{"id":22,"provider":"codex","in_use":false},{"id":33,"provider":"codex","in_use":true}]}`)
+	req := httptest.NewRequest(http.MethodGet, "http://agent.local/api/accounts", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{},
+		Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body)), Request: req,
+	}
+	if err := hook(resp); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Accounts []struct {
+			ID    int64 `json:"id"`
+			InUse bool  `json:"in_use"`
+		} `json:"accounts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Accounts) != 3 || !doc.Accounts[0].InUse || !doc.Accounts[1].InUse || doc.Accounts[2].InUse {
+		t.Fatalf("patched accounts = %+v", doc.Accounts)
+	}
+}
+
+func TestPatchAgentInUseSelf_DashboardIncludesBothProviders(t *testing.T) {
+	hook := patchAgentInUseSelf("dev-self", func() []int64 { return []int64{11, 22} })
+	body := `{"kpis":{"pool_size":3,"in_use":[{"account_id":7,"device_id":"other","mine":false},{"account_id":1,"device_id":"dev-self","mine":true}]}}`
+	inUse, _ := runDashboardPatch(t, hook, body)
+	if len(inUse) != 3 {
+		t.Fatalf("in_use = %+v", inUse)
+	}
+	want := map[int64]bool{11: true, 22: true}
+	for _, entry := range inUse {
+		if entry["mine"] == true {
+			delete(want, asInt64(entry["account_id"]))
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing local provider entries: %+v", want)
+	}
+}
+
 // asInt64 unwraps a JSON-decoded number (always float64 in interface{})
 // to int64 for compactly comparing account_id assertions.
 func asInt64(v any) int64 {
@@ -295,7 +338,8 @@ func TestRegisterLocalPrefRoutes_RoundTrip(t *testing.T) {
 	defer st.Close()
 
 	mux := http.NewServeMux()
-	registerLocalPrefRoutes(mux, st)
+	var notified store.Settings
+	registerLocalPrefRoutes(mux, st, func(settings store.Settings) { notified = settings })
 
 	// /api/settings: GET defaults, PUT a patch, GET reads back the
 	// merged shape.
@@ -324,6 +368,9 @@ func TestRegisterLocalPrefRoutes_RoundTrip(t *testing.T) {
 	}
 	if echoed.Theme != "dark" {
 		t.Errorf("PUT echo: theme=%q want dark", echoed.Theme)
+	}
+	if notified.Theme != "dark" {
+		t.Errorf("settings callback theme=%q want dark", notified.Theme)
 	}
 
 	// Verify the GET sees the persisted value.

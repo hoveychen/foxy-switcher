@@ -28,6 +28,7 @@ type Manager struct {
 	st         *store.Store
 	storage    CredentialStorage
 	backupPath string
+	deviceID   string
 	logger     *log.Logger
 	mu         sync.Mutex
 	stop       chan struct{}
@@ -98,7 +99,14 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	if err := m.syncCurrent(ctx, accounts); err != nil {
 		m.logger.Printf("[codex] reverse sync skipped: %v", err)
 	}
-	selected, err := selector.PickProvider(ctx, m.st, store.ProviderCodex, time.Now())
+	auto, autoErr := m.st.GetAutoSwitch(ctx)
+	if autoErr != nil {
+		auto = store.DefaultAutoSwitch
+	}
+	selected, err := chooseStickyCodex(accounts, m.managedAccountID(accounts), m.deviceID, auto.Enabled, time.Now())
+	if err == nil && selected == nil {
+		selected, err = selector.PickProvider(ctx, m.st, store.ProviderCodex, time.Now())
+	}
 	if err != nil {
 		if errors.Is(err, selector.ErrNoAvailable) {
 			return m.restoreLocked()
@@ -132,6 +140,32 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		return err
 	}
 	return m.st.MarkUsed(ctx, selected.ID)
+}
+
+func (m *Manager) SetDeviceID(deviceID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deviceID = deviceID
+}
+
+func (m *Manager) managedAccountID(accounts []store.Account) int64 {
+	raw, found, err := m.storage.Load()
+	if err != nil || !found {
+		return 0
+	}
+	auth, err := ParseAuthFile(raw)
+	if err != nil {
+		return 0
+	}
+	for i := range accounts {
+		if accounts[i].Provider == store.ProviderCodex && accounts[i].AccountUUID == auth.Tokens.AccountID {
+			return accounts[i].ID
+		}
+	}
+	return 0
 }
 
 // ManagedAccountID reports which stored Codex account currently matches the
