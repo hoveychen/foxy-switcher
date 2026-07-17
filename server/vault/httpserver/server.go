@@ -319,7 +319,15 @@ func (s *Server) handlePick(w http.ResponseWriter, r *http.Request) {
 		// behaviour (filter every leased account).
 		devID = ""
 	}
-	a, err := s.svc.PickForDevice(r.Context(), time.Now(), devID)
+	provider := r.URL.Query().Get("provider")
+	if provider == "" {
+		provider = store.ProviderClaude
+	}
+	if provider != store.ProviderClaude && provider != store.ProviderCodex {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q", provider))
+		return
+	}
+	a, err := s.svc.PickProviderForDevice(r.Context(), time.Now(), devID, provider)
 	if err != nil {
 		if errors.Is(err, selector.ErrNoAvailable) {
 			// 204 — no account is currently eligible. Agent treats this as
@@ -347,9 +355,10 @@ func (s *Server) handleMarkUsed(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateTokensReq struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresAt    int64  `json:"expires_at"`
+	AccessToken    string `json:"access_token"`
+	RefreshToken   string `json:"refresh_token"`
+	ExpiresAt      int64  `json:"expires_at"`
+	CredentialJSON string `json:"credential_json"`
 }
 
 func (s *Server) handleUpdateTokens(w http.ResponseWriter, r *http.Request) {
@@ -363,7 +372,7 @@ func (s *Server) handleUpdateTokens(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
 		return
 	}
-	if err := s.svc.UpdateTokens(r.Context(), id, req.AccessToken, req.RefreshToken, req.ExpiresAt); err != nil {
+	if err := s.svc.UpdateProviderCredential(r.Context(), id, req.AccessToken, req.RefreshToken, req.ExpiresAt, req.CredentialJSON); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

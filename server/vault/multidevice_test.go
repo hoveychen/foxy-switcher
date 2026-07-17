@@ -148,6 +148,32 @@ func TestAcquireLease_SameDeviceRenewsInPlace(t *testing.T) {
 	}
 }
 
+func TestSameDeviceCanLeaseClaudeAndCodexSimultaneously(t *testing.T) {
+	st := openTestStore(t)
+	svc := NewInProc(st)
+	ctx := context.Background()
+	claude := seedAccount(t, st, "claude")
+	codex := &store.Account{
+		Provider: store.ProviderCodex, Name: "codex", AccountUUID: "codex-id",
+		AccessToken: "codex-at", RefreshToken: "codex-rt",
+		ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Status: store.StatusActive,
+	}
+	if err := st.Upsert(ctx, codex); err != nil {
+		t.Fatal(err)
+	}
+	first, err := svc.AcquireLease(ctx, claude.ID, "device-both", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.AcquireLease(ctx, codex.ID, "device-both", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || first.AccountID == second.AccountID {
+		t.Fatalf("provider leases collapsed: %+v %+v", first, second)
+	}
+}
+
 // TestSweepLeases_ReclaimsExpiredRows confirms the sweeper actually clears
 // expired rows so the unique account_id index unblocks the next acquire.
 func TestSweepLeases_ReclaimsExpiredRows(t *testing.T) {

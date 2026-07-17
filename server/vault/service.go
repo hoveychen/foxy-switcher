@@ -82,6 +82,11 @@ type Service interface {
 	// substitutes the caller's device id automatically.
 	PickForDevice(ctx context.Context, now time.Time, deviceID string) (*Account, error)
 
+	// PickProviderForDevice is the provider-aware form used by agents that
+	// manage Claude and Codex simultaneously. Legacy Pick/PickForDevice keep
+	// selecting Claude so older agents never receive a Codex credential.
+	PickProviderForDevice(ctx context.Context, now time.Time, deviceID, provider string) (*Account, error)
+
 	// MarkUsed bumps last_used_at on the account so the LRU tiebreaker
 	// reflects real pool usage. Called after a switch lands successfully.
 	MarkUsed(ctx context.Context, accountID int64) error
@@ -92,6 +97,10 @@ type Service interface {
 	// store.UpdateTokens — keeping the names parallel avoids gratuitous
 	// translation between the two surfaces.
 	UpdateTokens(ctx context.Context, accountID int64, accessToken, refreshToken string, expiresAt int64) error
+
+	// UpdateProviderCredential also persists the provider-native document
+	// (Codex auth JSON) observed after the local CLI rotates credentials.
+	UpdateProviderCredential(ctx context.Context, accountID int64, accessToken, refreshToken string, expiresAt int64, credentialJSON string) error
 
 	// AcquireLease records that a device intends to inject accountID. The
 	// returned Lease ID is what callers later pass to Renew / Release. A
