@@ -666,6 +666,23 @@ export const apiClient = {
       method: "POST",
     }),
 
+  // Codex device-code login: start returns a one-time code to show the user
+  // plus an opaque session to poll with. Unlike importCodex it needs no local
+  // Codex CLI, so it works in the vault web UI.
+  startCodexLogin: () =>
+    api<{
+      session: string;
+      user_code: string;
+      verification_url: string;
+      interval: number;
+    }>("/api/accounts/codex-login", { method: "POST" }),
+
+  pollCodexLogin: (session: string) =>
+    api<{ status: "pending" | "complete"; account?: Account }>(
+      "/api/accounts/codex-login/poll",
+      { method: "POST", json: { session } },
+    ),
+
   refreshAccount: (id: number) =>
     api<{ account: Account }>(`/api/accounts/${id}/refresh`, { method: "POST" }),
 
