@@ -1,0 +1,7 @@
+# pnpm 11 approves package build scripts via `allowBuilds` here in
+# pnpm-workspace.yaml (the old package.json `pnpm.onlyBuiltDependencies` key is
+# no longer read). esbuild's postinstall fetches its platform binary, which
+# vite needs — without this a fresh checkout / git worktree installs with the
+# build script blocked and `vite build` fails.
+allowBuilds:
+  esbuild: true
