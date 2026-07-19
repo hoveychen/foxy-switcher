@@ -1,7 +1,8 @@
 // Package selector picks which account in the pool credinject should inject
 // next. The strategy is intentionally simple — skip any account that's
 // paused, has an expired token, or has reached one of its per-window
-// utilization thresholds, then prefer the least-recently-used candidate.
+// utilization thresholds, then prefer the candidate with the most weekly
+// runway (lowest 7-day utilization), breaking ties least-recently-used.
 // Swap in a smarter scorer (rate-limit-tier weighting, fancier per-window
 // scoring) by replacing Pick.
 package selector
@@ -71,14 +72,21 @@ func PickProviderWithFilter(ctx context.Context, st *store.Store, provider strin
 		return nil, ErrNoAvailable
 	}
 
-	// Pinned-for-this-device first, then least-recently-used. Tie-break by
-	// id for stability.
+	// Pinned-for-this-device first, then the account with the most long-window
+	// runway (lowest 7-day utilization), then least-recently-used, tie-broken
+	// by id for stability. The 7-day window is Claude's weekly cap; for Codex
+	// the usage poller stores the weekly "secondary" window in the same
+	// SevenDayUtil field, so this ranking prefers weekly headroom for both
+	// providers rather than shortest-window (5h / primary) headroom.
 	pinnedForMe := func(a store.Account) bool {
 		return deviceID != "" && a.PinnedDeviceID == deviceID
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if pi, pj := pinnedForMe(candidates[i]), pinnedForMe(candidates[j]); pi != pj {
 			return pi
+		}
+		if candidates[i].SevenDayUtil != candidates[j].SevenDayUtil {
+			return candidates[i].SevenDayUtil < candidates[j].SevenDayUtil
 		}
 		if candidates[i].LastUsedAt != candidates[j].LastUsedAt {
 			return candidates[i].LastUsedAt < candidates[j].LastUsedAt

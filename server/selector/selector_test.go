@@ -189,3 +189,48 @@ func TestPickProviderKeepsClaudeAndCodexPoolsIsolated(t *testing.T) {
 		t.Fatalf("codex pool picked provider %q", gotCodex.Provider)
 	}
 }
+
+// TestPickPrefersLowestSevenDayOverLRU pins the rotation policy: among eligible
+// candidates the account with the most weekly runway (lowest 7-day utilization)
+// wins, even when it was used more recently than a higher-utilization peer.
+// LRU is only the tiebreaker. This holds for Codex too, since the usage poller
+// stores Codex's weekly "secondary" window in the same SevenDayUtil field.
+func TestPickPrefersLowestSevenDayOverLRU(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// stale: high 7-day utilization but least-recently-used (the old LRU
+	// favourite). fresh: low 7-day utilization but most-recently-used.
+	stale := &store.Account{Name: "stale-high7d", Email: "s@x", AccessToken: "at-s", RefreshToken: "rt", ExpiresAt: now.Add(2 * time.Hour).UnixMilli()}
+	if err := st.Upsert(ctx, stale); err != nil {
+		t.Fatalf("upsert stale: %v", err)
+	}
+	fresh := &store.Account{Name: "fresh-low7d", Email: "f@x", AccessToken: "at-f", RefreshToken: "rt", ExpiresAt: now.Add(2 * time.Hour).UnixMilli()}
+	if err := st.Upsert(ctx, fresh); err != nil {
+		t.Fatalf("upsert fresh: %v", err)
+	}
+
+	// Both eligible (well under the default 7-day threshold); only the 7-day
+	// utilization differs. resets_at must be non-empty so the value counts.
+	if err := st.SetUsage(ctx, stale.ID, 0, "", 50.0, "2026-05-07T00:00:00Z", 0, ""); err != nil {
+		t.Fatalf("set usage stale: %v", err)
+	}
+	if err := st.SetUsage(ctx, fresh.ID, 0, "", 10.0, "2026-05-07T00:00:00Z", 0, ""); err != nil {
+		t.Fatalf("set usage fresh: %v", err)
+	}
+
+	// Make `fresh` the MOST-recently-used so plain LRU would reject it and
+	// pick `stale` instead. The new policy must still pick `fresh`.
+	if err := st.MarkUsed(ctx, fresh.ID); err != nil {
+		t.Fatalf("mark used fresh: %v", err)
+	}
+
+	got, err := Pick(ctx, st, now)
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if got.ID != fresh.ID {
+		t.Fatalf("expected lowest-7day account %d (fresh-low7d), got %d — rotation must prefer weekly runway over LRU", fresh.ID, got.ID)
+	}
+}

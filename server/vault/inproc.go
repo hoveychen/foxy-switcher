@@ -45,7 +45,8 @@ func (s *InProc) GetAutoSwitch(ctx context.Context) (AutoSwitch, error) {
 	return s.st.GetAutoSwitch(ctx)
 }
 
-// Pick returns the LRU eligible account that no other device currently has
+// Pick returns the eligible account with the most weekly runway (lowest
+// 7-day utilization, LRU-tiebroken) that no other device currently has
 // a live lease on. Same-device-leased accounts are NOT excluded — the
 // caller's sticky path (in credinject.choose) wants to keep using its own
 // account, and treating its own lease as a disqualifier would force a
