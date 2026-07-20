@@ -117,6 +117,36 @@ export function DevicesPage({ onUnauthorized }: Props) {
     }
   }
 
+  // Toggle one provider in a device's allowlist. The vault releases the
+  // device's leases so the change takes effect on its next reconcile.
+  async function setProviders(
+    d: AdminDevice,
+    next: { allow_claude: boolean; allow_codex: boolean },
+  ) {
+    setTogglingId(d.id);
+    setError(null);
+    try {
+      await adminApi.setDeviceProviders(d.id, next.allow_claude, next.allow_codex);
+      setDevices((cur) =>
+        cur
+          ? cur.map((x) =>
+              x.id === d.id
+                ? { ...x, ...next, current_lease: undefined }
+                : x,
+            )
+          : cur,
+      );
+    } catch (err) {
+      if (err instanceof AdminApiError && err.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      setError(t("admin.devices.error.providers"));
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
   function startEdit(d: AdminDevice) {
     setEditingId(d.id);
     setEditingName(d.name);
@@ -172,6 +202,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
                 <tr>
                   <th>{t("admin.devices.col.name")}</th>
                   <th>{t("admin.devices.col.current_account")}</th>
+                  <th>{t("admin.devices.col.providers")}</th>
                   <th>{t("admin.devices.col.os")}</th>
                   <th>{t("admin.devices.col.arch")}</th>
                   <th>{t("admin.devices.col.app")}</th>
@@ -227,6 +258,38 @@ export function DevicesPage({ onUnauthorized }: Props) {
                           ? d.current_lease.account_name ||
                             `#${d.current_lease.account_id}`
                           : "—"}
+                      </td>
+                      <td>
+                        <span className="admin-providers admin-providers--inline">
+                          <label className="admin-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={d.allow_claude}
+                              disabled={isToggling}
+                              onChange={(e) =>
+                                void setProviders(d, {
+                                  allow_claude: e.target.checked,
+                                  allow_codex: d.allow_codex,
+                                })
+                              }
+                            />
+                            {t("admin.pair.provider_claude")}
+                          </label>
+                          <label className="admin-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={d.allow_codex}
+                              disabled={isToggling}
+                              onChange={(e) =>
+                                void setProviders(d, {
+                                  allow_claude: d.allow_claude,
+                                  allow_codex: e.target.checked,
+                                })
+                              }
+                            />
+                            {t("admin.pair.provider_codex")}
+                          </label>
+                        </span>
                       </td>
                       <td>
                         {d.os || "—"}

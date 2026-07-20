@@ -210,3 +210,32 @@
   color: var(--text-secondary);
   font: var(--font-body);
 }
+
+/* Per-device provider allowlist controls (PairPage approval + DevicesPage). */
+.admin-providers {
+  border: 1px solid var(--border, #d0d0d0);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 12px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+.admin-providers legend {
+  font: var(--font-body);
+  color: var(--text-secondary);
+  padding: 0 4px;
+}
+.admin-providers--inline {
+  border: none;
+  padding: 0;
+  margin: 0;
+  gap: 4px 14px;
+}
+.admin-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  cursor: pointer;
+}
