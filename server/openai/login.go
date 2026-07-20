@@ -1,155 +1,127 @@
 package openai
 
 import (
-	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
 
-// Device-code login endpoints. They are vars (not consts) so tests can point
-// them at an httptest server. The paths mirror codex-rs
-// login/src/device_code_auth.rs: usercode/token live under
-// "{issuer}/api/accounts/deviceauth/*", the OAuth exchange reuses TokenURL,
-// and the exchange redirect_uri is "{issuer}/deviceauth/callback".
-var (
-	DeviceUserCodeURL   = "https://auth.openai.com/api/accounts/deviceauth/usercode"
-	DeviceTokenURL      = "https://auth.openai.com/api/accounts/deviceauth/token"
-	DeviceRedirectURI   = "https://auth.openai.com/deviceauth/callback"
-	DeviceVerificionURL = "https://auth.openai.com/codex/device"
-)
+// Codex login uses the standard OAuth authorization-code + PKCE flow that
+// `codex login` itself uses — not the device-code flow. Device-code auth is a
+// ChatGPT workspace toggle that admins can (and often do) disable, which
+// surfaces as "contact your workspace admin to enable device code
+// authentication"; the authorization-code flow has no such gate.
+//
+// The parameters mirror codex-rs login/src/server.rs: authorize at
+// {issuer}/oauth/authorize with a loopback redirect_uri, then exchange the
+// returned code at TokenURL reusing that same redirect_uri. In a remote/vault
+// deployment the loopback never resolves, so the user copies the failed
+// callback URL from their browser's address bar (it still carries
+// ?code=...&state=...) and pastes it back — the web equivalent of the CLI's
+// localhost listener. This mirrors the Claude paste-code login in server/authz.
 
-// ErrAuthorizationPending is returned by PollDeviceLogin while the user has not
-// yet entered and approved the one-time code. Callers wait DeviceAuth.Interval
-// seconds and poll again.
-var ErrAuthorizationPending = errors.New("Codex device authorization pending")
+// CodexAuthorizeURL is a var (not const) so tests can point it at an httptest
+// server.
+var CodexAuthorizeURL = "https://auth.openai.com/oauth/authorize"
 
-// ErrDeviceCodeUnsupported is returned when the issuer does not enable the
-// device-code flow (usercode returns 404). Callers should fall back to the
-// local `codex login` import path.
-var ErrDeviceCodeUnsupported = errors.New("device code login is not enabled for this Codex server")
+// CodexRedirectURI is the loopback callback codex-rs registers with the OAuth
+// client. It must be sent identically on the authorize request and the token
+// exchange, so it lives here as the single source of truth.
+const CodexRedirectURI = "http://localhost:1455/auth/callback"
 
-// DeviceAuth is the user-facing half of a device-code login: show UserCode and
-// point the user at VerificationURL, then poll with the opaque DeviceAuthID.
-type DeviceAuth struct {
-	DeviceAuthID    string `json:"device_auth_id"`
-	UserCode        string `json:"user_code"`
-	VerificationURL string `json:"verification_url"`
-	Interval        int    `json:"interval"`
+// codexOAuthScopes mirrors the scope set codex-rs requests.
+const codexOAuthScopes = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+
+// AuthorizeURL builds the consent URL the user opens in their browser. It
+// mirrors codex-rs: response_type=code, S256 PKCE, the loopback redirect_uri,
+// and the id_token_add_organizations / codex_cli_simplified_flow flags that
+// make ChatGPT attach the workspace/org claims Codex needs.
+func AuthorizeURL(codeChallenge, state string) string {
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", codexOAuthClientID)
+	q.Set("redirect_uri", CodexRedirectURI)
+	q.Set("scope", codexOAuthScopes)
+	q.Set("code_challenge", codeChallenge)
+	q.Set("code_challenge_method", "S256")
+	q.Set("id_token_add_organizations", "true")
+	q.Set("codex_cli_simplified_flow", "true")
+	q.Set("state", state)
+	return CodexAuthorizeURL + "?" + q.Encode()
 }
 
-// StartDeviceLogin requests a one-time user code from the ChatGPT issuer. It
-// mirrors request_user_code + request_device_code in codex-rs: POST
-// {client_id} as JSON, and derive the verification URL client-side.
-func StartDeviceLogin(ctx context.Context) (*DeviceAuth, error) {
-	body, err := json.Marshal(map[string]string{"client_id": codexOAuthClientID})
-	if err != nil {
-		return nil, err
+// NewPKCEPair returns a fresh (verifier, challenge) PKCE pair. The verifier is
+// the secret kept server-side; the challenge goes into the authorize URL.
+func NewPKCEPair() (verifier, challenge string, err error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", fmt.Errorf("pkce verifier: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, DeviceUserCodeURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("content-type", "application/json")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, ErrDeviceCodeUnsupported
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("Codex device code request failed: HTTP %d", resp.StatusCode)
-	}
-	var out struct {
-		DeviceAuthID string  `json:"device_auth_id"`
-		UserCode     string  `json:"user_code"`
-		UserCodeAlt  string  `json:"usercode"`
-		Interval     flexInt `json:"interval"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("parse Codex device code response: %w", err)
-	}
-	code := out.UserCode
-	if code == "" {
-		code = out.UserCodeAlt
-	}
-	if out.DeviceAuthID == "" || code == "" {
-		return nil, errors.New("Codex device code response is missing device_auth_id or user_code")
-	}
-	interval := int(out.Interval)
-	if interval <= 0 {
-		interval = 5
-	}
-	return &DeviceAuth{
-		DeviceAuthID:    out.DeviceAuthID,
-		UserCode:        code,
-		VerificationURL: DeviceVerificionURL,
-		Interval:        interval,
-	}, nil
+	verifier = base64.RawURLEncoding.EncodeToString(buf)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(sum[:])
+	return verifier, challenge, nil
 }
 
-// PollDeviceLogin performs a single poll of the device token endpoint. While
-// the user has not approved the code it returns ErrAuthorizationPending; once
-// approved it exchanges the returned authorization code for tokens and builds a
-// store.Account (ChatGPT subscription), ready to persist.
-func PollDeviceLogin(ctx context.Context, da *DeviceAuth) (*store.Account, error) {
-	if da == nil || da.DeviceAuthID == "" || da.UserCode == "" {
-		return nil, errors.New("Codex device login not started")
+// NewState returns a base64url random string used as the OAuth state, echoed
+// back via the redirect to defeat cross-flow paste accidents.
+func NewState() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
 	}
-	body, err := json.Marshal(map[string]string{
-		"device_auth_id": da.DeviceAuthID,
-		"user_code":      da.UserCode,
-	})
-	if err != nil {
-		return nil, err
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// ParsePastedCode extracts the authorization code and state from whatever the
+// user pasted back. OpenAI redirects to the loopback callback with code+state
+// as query params, so the user typically pastes the whole URL
+// ("http://localhost:1455/auth/callback?code=...&state=...") copied from the
+// browser address bar. For resilience we also accept a bare query string
+// ("code=...&state=...") or the "code#state" fragment form used by the Claude
+// flow.
+func ParsePastedCode(pasted string) (code, state string, err error) {
+	pasted = strings.TrimSpace(pasted)
+	if pasted == "" {
+		return "", "", errors.New("empty code")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, DeviceTokenURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	// Full URL with a query string.
+	if u, perr := url.Parse(pasted); perr == nil && u.RawQuery != "" {
+		if c := u.Query().Get("code"); c != "" {
+			return c, u.Query().Get("state"), nil
+		}
 	}
-	req.Header.Set("content-type", "application/json")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
+	// Bare "code=...&state=..." query string.
+	if q, perr := url.ParseQuery(pasted); perr == nil {
+		if c := q.Get("code"); c != "" {
+			return c, q.Get("state"), nil
+		}
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
+	// "code#state" fallback (mirrors the Claude paste form).
+	if i := strings.IndexByte(pasted, '#'); i > 0 && i < len(pasted)-1 {
+		return pasted[:i], pasted[i+1:], nil
 	}
-	// 403/404 means the user has not finished entering the code yet — mirror
-	// codex-rs poll_for_token, which treats both as "keep polling".
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
-		return nil, ErrAuthorizationPending
+	return "", "", errors.New("could not find an authorization code — copy the whole callback URL from your browser's address bar")
+}
+
+// CompleteLogin exchanges the pasted authorization code (with the PKCE verifier
+// kept from AuthorizeURL) for tokens and builds a store.Account ready to
+// persist. The redirect_uri must match the one used to obtain the code.
+func CompleteLogin(ctx context.Context, verifier, code string) (*store.Account, error) {
+	if verifier == "" || code == "" {
+		return nil, errors.New("Codex login not started or missing authorization code")
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("Codex device auth failed: HTTP %d", resp.StatusCode)
-	}
-	var code struct {
-		AuthorizationCode string `json:"authorization_code"`
-		CodeVerifier      string `json:"code_verifier"`
-	}
-	if err := json.Unmarshal(raw, &code); err != nil {
-		return nil, fmt.Errorf("parse Codex device token response: %w", err)
-	}
-	if code.AuthorizationCode == "" || code.CodeVerifier == "" {
-		return nil, errors.New("Codex device token response is missing authorization_code or code_verifier")
-	}
-	tokens, err := exchangeAuthorizationCode(ctx, code.AuthorizationCode, code.CodeVerifier, DeviceRedirectURI)
+	tokens, err := exchangeAuthorizationCode(ctx, code, verifier, CodexRedirectURI)
 	if err != nil {
 		return nil, err
 	}
@@ -163,8 +135,7 @@ func PollDeviceLogin(ctx context.Context, da *DeviceAuth) (*store.Account, error
 
 // exchangeAuthorizationCode swaps an authorization code for id/access/refresh
 // tokens against the OAuth token endpoint. redirect_uri must match the value
-// bound to the code (the device-auth callback for the device flow). Codex is a
-// public client, so no client_secret is sent.
+// bound to the code. Codex is a public client, so no client_secret is sent.
 func exchangeAuthorizationCode(ctx context.Context, code, verifier, redirectURI string) (*TokenData, error) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
@@ -209,28 +180,4 @@ func exchangeAuthorizationCode(ctx context.Context, code, verifier, redirectURI 
 		td.AccountID = claims.Auth.ChatGPTAccountID
 	}
 	return td, nil
-}
-
-// flexInt accepts either a JSON number or a numeric JSON string. codex-rs sends
-// the poll interval as a quoted string ("5"); older/newer servers may send a
-// bare number, so we tolerate both.
-type flexInt int
-
-func (f *flexInt) UnmarshalJSON(b []byte) error {
-	s := strings.TrimSpace(string(b))
-	if s == "" || s == "null" {
-		*f = 0
-		return nil
-	}
-	s = strings.Trim(s, `"`)
-	if s == "" {
-		*f = 0
-		return nil
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return err
-	}
-	*f = flexInt(n)
-	return nil
 }

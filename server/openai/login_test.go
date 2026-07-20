@@ -3,68 +3,100 @@ package openai
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
 
-// withDeviceEndpoints points the device-code + exchange vars at a mock server
-// and restores them (and httpClient) on cleanup.
-func withDeviceEndpoints(t *testing.T, srv *httptest.Server) {
+// withOAuthEndpoints points the authorize + exchange vars at a mock server and
+// restores them (and httpClient) on cleanup.
+func withOAuthEndpoints(t *testing.T, srv *httptest.Server) {
 	t.Helper()
 	old := struct {
-		uc, tok, redirect, verify, token string
-		client                           *http.Client
-	}{DeviceUserCodeURL, DeviceTokenURL, DeviceRedirectURI, DeviceVerificionURL, TokenURL, httpClient}
-	DeviceUserCodeURL = srv.URL + "/api/accounts/deviceauth/usercode"
-	DeviceTokenURL = srv.URL + "/api/accounts/deviceauth/token"
-	DeviceRedirectURI = srv.URL + "/deviceauth/callback"
-	DeviceVerificionURL = srv.URL + "/codex/device"
+		authorize, token string
+		client           *http.Client
+	}{CodexAuthorizeURL, TokenURL, httpClient}
+	CodexAuthorizeURL = srv.URL + "/oauth/authorize"
 	TokenURL = srv.URL + "/oauth/token"
 	httpClient = srv.Client()
 	t.Cleanup(func() {
-		DeviceUserCodeURL, DeviceTokenURL, DeviceRedirectURI, DeviceVerificionURL, TokenURL, httpClient =
-			old.uc, old.tok, old.redirect, old.verify, old.token, old.client
+		CodexAuthorizeURL, TokenURL, httpClient = old.authorize, old.token, old.client
 	})
 }
 
-func TestDeviceLoginHappyPath(t *testing.T) {
-	polls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/accounts/deviceauth/usercode":
-			var body map[string]string
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["client_id"] != codexOAuthClientID {
-				t.Errorf("usercode client_id = %q", body["client_id"])
-			}
-			// interval is a STRING on the wire (mirrors codex-rs).
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"device_auth_id": "dev-123",
-				"user_code":      "WXYZ-1234",
-				"interval":       "5",
-			})
-		case "/api/accounts/deviceauth/token":
-			var body map[string]string
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["device_auth_id"] != "dev-123" || body["user_code"] != "WXYZ-1234" {
-				t.Errorf("poll body = %+v", body)
-			}
-			polls++
-			if polls < 2 {
-				// Not approved yet — codex-rs treats 403 as "keep polling".
-				w.WriteHeader(http.StatusForbidden)
+func TestAuthorizeURLParams(t *testing.T) {
+	raw := AuthorizeURL("chal-abc", "state-xyz")
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse authorize url: %v", err)
+	}
+	q := u.Query()
+	want := map[string]string{
+		"response_type":              "code",
+		"client_id":                  codexOAuthClientID,
+		"redirect_uri":               CodexRedirectURI,
+		"scope":                      codexOAuthScopes,
+		"code_challenge":             "chal-abc",
+		"code_challenge_method":      "S256",
+		"id_token_add_organizations": "true",
+		"codex_cli_simplified_flow":  "true",
+		"state":                      "state-xyz",
+	}
+	for k, v := range want {
+		if got := q.Get(k); got != v {
+			t.Errorf("authorize %s = %q, want %q", k, got, v)
+		}
+	}
+}
+
+func TestNewPKCEPairChallengeIsSHA256(t *testing.T) {
+	v, c, err := NewPKCEPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v == "" || c == "" || v == c {
+		t.Fatalf("verifier/challenge look wrong: v=%q c=%q", v, c)
+	}
+}
+
+func TestParsePastedCode(t *testing.T) {
+	cases := []struct {
+		name, in, code, state string
+		wantErr               bool
+	}{
+		{name: "full url", in: "http://localhost:1455/auth/callback?code=abc123&state=st1", code: "abc123", state: "st1"},
+		{name: "trailing space", in: "  http://localhost:1455/auth/callback?code=abc&state=st  ", code: "abc", state: "st"},
+		{name: "bare query", in: "code=xyz&state=st2", code: "xyz", state: "st2"},
+		{name: "code#state form", in: "cccc#ssss", code: "cccc", state: "ssss"},
+		{name: "empty", in: "", wantErr: true},
+		{name: "no code", in: "http://localhost:1455/auth/callback?state=only", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, state, err := ParsePastedCode(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got code=%q state=%q", code, state)
+				}
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"authorization_code": "auth-code-abc",
-				"code_challenge":     "chal",
-				"code_verifier":      "verifier-xyz",
-			})
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if code != tc.code || state != tc.state {
+				t.Fatalf("got code=%q state=%q, want code=%q state=%q", code, state, tc.code, tc.state)
+			}
+		})
+	}
+}
+
+func TestCompleteLoginExchangesAndBuildsAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
 		case "/oauth/token":
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("parse exchange form: %v", err)
@@ -75,6 +107,7 @@ func TestDeviceLoginHappyPath(t *testing.T) {
 			if r.Form.Get("grant_type") != "authorization_code" ||
 				r.Form.Get("code") != "auth-code-abc" ||
 				r.Form.Get("code_verifier") != "verifier-xyz" ||
+				r.Form.Get("redirect_uri") != CodexRedirectURI ||
 				r.Form.Get("client_id") != codexOAuthClientID {
 				t.Errorf("exchange form = %+v", r.Form)
 			}
@@ -90,27 +123,11 @@ func TestDeviceLoginHappyPath(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	withDeviceEndpoints(t, srv)
+	withOAuthEndpoints(t, srv)
 
-	da, err := StartDeviceLogin(context.Background())
+	account, err := CompleteLogin(context.Background(), "verifier-xyz", "auth-code-abc")
 	if err != nil {
-		t.Fatalf("StartDeviceLogin: %v", err)
-	}
-	if da.UserCode != "WXYZ-1234" || da.DeviceAuthID != "dev-123" || da.Interval != 5 {
-		t.Fatalf("device auth mismatch: %+v", da)
-	}
-	if da.VerificationURL != srv.URL+"/codex/device" {
-		t.Fatalf("verification url = %q", da.VerificationURL)
-	}
-
-	// First poll: pending.
-	if _, err := PollDeviceLogin(context.Background(), da); !errors.Is(err, ErrAuthorizationPending) {
-		t.Fatalf("first poll err = %v, want ErrAuthorizationPending", err)
-	}
-	// Second poll: approved -> exchange -> account.
-	account, err := PollDeviceLogin(context.Background(), da)
-	if err != nil {
-		t.Fatalf("second poll: %v", err)
+		t.Fatalf("CompleteLogin: %v", err)
 	}
 	if account.Provider != store.ProviderCodex {
 		t.Fatalf("provider = %v", account.Provider)
@@ -127,14 +144,11 @@ func TestDeviceLoginHappyPath(t *testing.T) {
 	}
 }
 
-func TestStartDeviceLoginUnsupported(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r) // 404 == device flow disabled on this issuer
-	}))
-	defer srv.Close()
-	withDeviceEndpoints(t, srv)
-
-	if _, err := StartDeviceLogin(context.Background()); !errors.Is(err, ErrDeviceCodeUnsupported) {
-		t.Fatalf("err = %v, want ErrDeviceCodeUnsupported", err)
+func TestCompleteLoginMissingArgs(t *testing.T) {
+	if _, err := CompleteLogin(context.Background(), "", "code"); err == nil {
+		t.Fatal("want error for empty verifier")
+	}
+	if _, err := CompleteLogin(context.Background(), "verifier", ""); err == nil {
+		t.Fatal("want error for empty code")
 	}
 }
