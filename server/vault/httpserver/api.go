@@ -42,6 +42,7 @@ func (s *Server) RegisterAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/api/devices/suspend", s.requireSessionJSON(s.handleAPIDevicesSuspend))
 	mux.HandleFunc("POST /admin/api/devices/resume", s.requireSessionJSON(s.handleAPIDevicesResume))
 	mux.HandleFunc("POST /admin/api/devices/rename", s.requireSessionJSON(s.handleAPIDevicesRename))
+	mux.HandleFunc("POST /admin/api/devices/providers", s.requireSessionJSON(s.handleAPIDevicesProviders))
 	mux.HandleFunc("GET /admin/api/pair", s.requireSessionJSON(s.handleAPIPairLookup))
 	mux.HandleFunc("POST /admin/api/pair", s.requireSessionJSON(s.handleAPIPairResolve))
 	mux.HandleFunc("POST /admin/api/password", s.requireSessionJSON(s.handleAPIPassword))
@@ -199,6 +200,10 @@ type apiDeviceRow struct {
 	// (UnixMilli) for a suspended one. The DevicesPage renders a
 	// "suspended" badge and flips the action button to Resume when != 0.
 	DisabledAt int64 `json:"disabled_at"`
+	// AllowClaude / AllowCodex is the per-device provider allowlist the
+	// DevicesPage renders as toggles.
+	AllowClaude bool `json:"allow_claude"`
+	AllowCodex  bool `json:"allow_codex"`
 	// CurrentLease names the account this device is currently leasing,
 	// joined with the account name so the admin DevicesPage can render
 	// "currently using X (12 min left)" without a second query. Nil when
@@ -247,9 +252,11 @@ func (s *Server) handleAPIDevicesList(w http.ResponseWriter, r *http.Request) {
 			Model:      d.Model,
 			AppVersion: d.AppVersion,
 			ClientType: d.ClientType,
-			CreatedAt:  d.CreatedAt,
-			LastSeenAt: d.LastSeenAt,
-			DisabledAt: d.DisabledAt,
+			CreatedAt:   d.CreatedAt,
+			LastSeenAt:  d.LastSeenAt,
+			DisabledAt:  d.DisabledAt,
+			AllowClaude: d.AllowClaude,
+			AllowCodex:  d.AllowCodex,
 		}
 		if l, ok := leaseByDevice[d.ID]; ok {
 			row.CurrentLease = &apiDeviceLease{
@@ -341,6 +348,42 @@ func (s *Server) handleAPIDevicesResume(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type apiDeviceProvidersReq struct {
+	ID          string `json:"id"`
+	AllowClaude bool   `json:"allow_claude"`
+	AllowCodex  bool   `json:"allow_codex"`
+}
+
+// handleAPIDevicesProviders updates a device's provider allowlist (the choice
+// made at approval). It then releases the device's live leases so the new
+// allowlist takes effect on the device's next reconcile: a revoked provider's
+// held lease is dropped (and can't be re-acquired — the vault gates both Pick
+// and AcquireLease), and still-allowed providers are simply re-picked.
+func (s *Server) handleAPIDevicesProviders(w http.ResponseWriter, r *http.Request) {
+	var req apiDeviceProvidersReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode body: %w", err))
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("id required"))
+		return
+	}
+	if err := s.st.SetDeviceProviders(r.Context(), req.ID, req.AllowClaude, req.AllowCodex); err != nil {
+		if notFoundIs(err) {
+			writeError(w, http.StatusNotFound, errors.New("device not found"))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if _, err := s.st.ReleaseDeviceLeases(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type apiRenameReq struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -410,6 +453,11 @@ func (s *Server) handleAPIPairLookup(w http.ResponseWriter, r *http.Request) {
 type apiPairResolveReq struct {
 	Code   string `json:"code"`
 	Action string `json:"action"` // "approve" | "deny"
+	// Provider allowlist chosen by the admin at approval. Pointers so an
+	// omitted field falls back to the default (claude on, codex off) rather
+	// than a zero-value false.
+	AllowClaude *bool `json:"allow_claude"`
+	AllowCodex  *bool `json:"allow_codex"`
 }
 
 type apiPairResolveResp struct {
@@ -437,7 +485,9 @@ func (s *Server) handleAPIPairResolve(w http.ResponseWriter, r *http.Request) {
 	case "approve":
 		token := vaultauth.NewToken()
 		deviceID := vaultauth.NewID()
-		if err := s.st.ApprovePairing(r.Context(), code, deviceID, token); err != nil {
+		allowClaude := req.AllowClaude == nil || *req.AllowClaude // default on
+		allowCodex := req.AllowCodex != nil && *req.AllowCodex     // default off
+		if err := s.st.ApprovePairing(r.Context(), code, deviceID, token, allowClaude, allowCodex); err != nil {
 			if notFoundIs(err) {
 				writeError(w, http.StatusNotFound, errors.New("code expired or already used"))
 				return

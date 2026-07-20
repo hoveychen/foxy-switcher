@@ -137,6 +137,12 @@ func (m *RemoteManager) Reconcile(ctx context.Context) error {
 	}
 	lease, err := m.ensureLease(ctx, selected.ID)
 	if err != nil {
+		// The vault refuses a lease when this device's provider allowlist
+		// no longer grants Codex (e.g. the admin revoked it mid-session).
+		// Treat it the same as an empty pool: drop the injected creds.
+		if errors.Is(err, selector.ErrNoAvailable) {
+			return m.restoreLocked(ctx)
+		}
 		return err
 	}
 	current, existed, err := m.storage.Load()

@@ -69,6 +69,20 @@ func (s *InProc) PickForDevice(ctx context.Context, now time.Time, deviceID stri
 }
 
 func (s *InProc) PickProviderForDevice(ctx context.Context, now time.Time, deviceID, provider string) (*Account, error) {
+	// Per-device provider allowlist: a paired device may only lease the
+	// providers the admin granted it (at approval or in the devices page).
+	// deviceID == "" is combined/local mode, which has no pairing and is not
+	// gated. A disallowed provider looks like an empty pool to the caller —
+	// its provider manager then restores the local creds and injects nothing.
+	if deviceID != "" {
+		allowed, err := s.st.DeviceAllowsProvider(ctx, deviceID, provider)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, selector.ErrNoAvailable
+		}
+	}
 	return selector.PickProviderWithFilter(ctx, s.st, provider, now, deviceID, func(a Account) bool {
 		if deviceID == "" {
 			return s.st.IsAccountLeased(a.ID)
@@ -90,6 +104,26 @@ func (s *InProc) UpdateProviderCredential(ctx context.Context, accountID int64, 
 }
 
 func (s *InProc) AcquireLease(ctx context.Context, accountID int64, deviceID string, ttl time.Duration) (Lease, error) {
+	// Enforce the per-device provider allowlist here too, not just in
+	// PickProviderForDevice: the agent's sticky-selection path re-acquires a
+	// lease on its current account without re-picking, so a device whose
+	// provider was revoked could otherwise keep re-leasing it. deviceID == ""
+	// (combined/local) and unpaired ids are un-gated (DeviceAllowsProvider
+	// returns true on a missing row). ErrNoAvailable is the signal the agent's
+	// provider manager treats as "restore local creds, inject nothing".
+	if deviceID != "" {
+		acc, err := s.st.Get(ctx, accountID)
+		if err != nil {
+			return Lease{}, err
+		}
+		allowed, err := s.st.DeviceAllowsProvider(ctx, deviceID, acc.Provider)
+		if err != nil {
+			return Lease{}, err
+		}
+		if !allowed {
+			return Lease{}, selector.ErrNoAvailable
+		}
+	}
 	id := vaultauth.NewID()
 	got, err := s.st.AcquireLease(ctx, id, accountID, deviceID, ttl)
 	if err != nil {

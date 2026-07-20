@@ -15,6 +15,10 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resolved, setResolved] = useState<ResolveResult | null>(null);
+  // Provider allowlist for this device, chosen at approval. Default matches
+  // the backend: Claude on, Codex off.
+  const [allowClaude, setAllowClaude] = useState(true);
+  const [allowCodex, setAllowCodex] = useState(false);
 
   // Auto-lookup if URL came in with ?code=…; user can also type one.
   useEffect(() => {
@@ -57,7 +61,13 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const r = await adminApi.resolvePair(lookup.code, action);
+      const r = await adminApi.resolvePair(
+        lookup.code,
+        action,
+        action === "approve"
+          ? { allow_claude: allowClaude, allow_codex: allowCodex }
+          : undefined,
+      );
       setResolved(r.result);
     } catch (err) {
       if (err instanceof AdminApiError && err.status === 401) {
@@ -157,13 +167,34 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
             <p className="admin-page__subtitle">
               {t("admin.pair.confirm_warning")}
             </p>
+            <fieldset className="admin-providers">
+              <legend>{t("admin.pair.providers_label")}</legend>
+              <label className="admin-checkbox">
+                <input
+                  type="checkbox"
+                  checked={allowClaude}
+                  onChange={(e) => setAllowClaude(e.target.checked)}
+                  disabled={busy}
+                />
+                {t("admin.pair.provider_claude")}
+              </label>
+              <label className="admin-checkbox">
+                <input
+                  type="checkbox"
+                  checked={allowCodex}
+                  onChange={(e) => setAllowCodex(e.target.checked)}
+                  disabled={busy}
+                />
+                {t("admin.pair.provider_codex")}
+              </label>
+            </fieldset>
             {error && <p className="admin-alert admin-alert--error">{error}</p>}
             <div className="admin-actions">
               <button
                 type="button"
                 className="admin-button admin-button--primary"
                 onClick={() => resolve("approve")}
-                disabled={busy}
+                disabled={busy || (!allowClaude && !allowCodex)}
                 aria-busy={busy}
               >
                 {t("admin.pair.approve")}

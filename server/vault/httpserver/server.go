@@ -238,16 +238,18 @@ func (s *Server) handlePairPoll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.st.InsertDevice(r.Context(), store.Device{
-			ID:         deviceID,
-			Name:       p.DeviceName,
-			TokenHash:  vaultauth.HashToken(token),
-			Hostname:   p.Hostname,
-			OS:         p.OS,
-			OSVersion:  p.OSVersion,
-			Arch:       p.Arch,
-			Model:      p.Model,
-			AppVersion: p.AppVersion,
-			ClientType: p.ClientType,
+			ID:          deviceID,
+			Name:        p.DeviceName,
+			TokenHash:   vaultauth.HashToken(token),
+			Hostname:    p.Hostname,
+			OS:          p.OS,
+			OSVersion:   p.OSVersion,
+			Arch:        p.Arch,
+			Model:       p.Model,
+			AppVersion:  p.AppVersion,
+			ClientType:  p.ClientType,
+			AllowClaude: p.AllowClaude,
+			AllowCodex:  p.AllowCodex,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

@@ -25,6 +25,11 @@ export type AdminDevice = {
   // (epoch ms) for a suspended one. When non-zero the device's token is
   // rejected until an admin resumes it (no re-pair needed).
   disabled_at: number;
+  // allow_claude / allow_codex is the per-device provider allowlist: which
+  // credential pools this device may lease/inject. Chosen at approval and
+  // editable here. Devices paired before this feature are claude-only.
+  allow_claude: boolean;
+  allow_codex: boolean;
   // current_lease names the account this device is currently holding,
   // joined with account_name server-side. Absent when the device has no
   // live lease.
@@ -128,10 +133,23 @@ export const adminApi = {
     request<AdminPairLookup>(
       `/admin/api/pair?code=${encodeURIComponent(code)}`,
     ),
-  resolvePair: (code: string, action: "approve" | "deny") =>
+  resolvePair: (
+    code: string,
+    action: "approve" | "deny",
+    providers?: { allow_claude: boolean; allow_codex: boolean },
+  ) =>
     request<{ result: "approved" | "denied" }>("/admin/api/pair", {
       method: "POST",
-      body: JSON.stringify({ code, action }),
+      body: JSON.stringify({ code, action, ...providers }),
+    }),
+  setDeviceProviders: (
+    id: string,
+    allow_claude: boolean,
+    allow_codex: boolean,
+  ) =>
+    request<void>("/admin/api/devices/providers", {
+      method: "POST",
+      body: JSON.stringify({ id, allow_claude, allow_codex }),
     }),
   changePassword: (current: string, next: string, confirm: string) =>
     request<{ ok: true }>("/admin/api/password", {
