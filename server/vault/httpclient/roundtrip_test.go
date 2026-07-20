@@ -46,6 +46,10 @@ func newRoundtripFixture(t *testing.T) *roundtripFixture {
 		ID:        vaultauth.NewID(),
 		Name:      "test-device",
 		TokenHash: vaultauth.HashToken(token),
+		// Roundtrips exercise both the Claude and Codex pick paths, and the
+		// vault now gates leases on the per-device allowlist, so grant both.
+		AllowClaude: true,
+		AllowCodex:  true,
 	}); err != nil {
 		t.Fatalf("InsertDevice: %v", err)
 	}
