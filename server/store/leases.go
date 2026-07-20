@@ -81,6 +81,9 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 			newID, accountID, deviceID, now.UnixMilli()); err != nil {
 			return Lease{}, err
 		}
+		if err := releaseOtherDeviceProviderLeasesTx(ctx, tx, deviceID, accountID, now.UnixMilli()); err != nil {
+			return Lease{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return Lease{}, err
 		}
@@ -104,6 +107,9 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 	// account would show as unattributed forever). Anchored at the lease's
 	// original acquired_at so the full held span becomes attributable.
 	if err := ensureOpenLeaseEventTx(ctx, tx, existingID, accountID, deviceID, existingAcquiredAt); err != nil {
+		return Lease{}, err
+	}
+	if err := releaseOtherDeviceProviderLeasesTx(ctx, tx, deviceID, accountID, now.UnixMilli()); err != nil {
 		return Lease{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -478,6 +484,52 @@ UPDATE lease_events
    SET ended_at = (SELECT leases.expires_at FROM leases WHERE leases.id = lease_events.lease_id)
  WHERE ended_at = 0
    AND lease_id IN (SELECT id FROM leases WHERE expires_at <= ?)`, cutoff)
+	return err
+}
+
+// releaseOtherDeviceProviderLeasesTx enforces the one-live-lease-per-(device,
+// provider) invariant from inside AcquireLease's transaction: it releases every
+// OTHER lease held by deviceID whose account shares keepAccountID's provider,
+// closing each released lease's open attribution segment at `now` first (same
+// contract as ReleaseLease). keepAccountID — the account this AcquireLease call
+// is inserting/renewing — is excluded, so a renew of the held account is never a
+// self-eviction.
+//
+// Why this exists: the coordinator's release-old-after-acquire dedup is
+// per-process (it only tracks its own currentLeaseID). When one host runs two
+// agent processes sharing a pair-assigned device_id, the processes can't see
+// each other's leases, so the same device_id ends up holding two accounts of the
+// same provider at once (observed 2026-07-20: device "loki" held cws_pool_02 and
+// cws_pool_05, both Claude, both actively renewed). Enforcing it in SQL closes
+// that gap regardless of how many processes share the id.
+//
+// Scoped to a single provider on purpose: a device legitimately managing Claude
+// AND Codex simultaneously (PickProviderForDevice) must keep both leases, so
+// acquiring a Claude account must not disturb that device's Codex lease.
+func releaseOtherDeviceProviderLeasesTx(ctx context.Context, tx *sql.Tx, deviceID string, keepAccountID int64, now int64) error {
+	// Close attribution segments before the DELETE, while the rows still exist.
+	if _, err := tx.ExecContext(ctx, `
+UPDATE lease_events SET ended_at = ?
+ WHERE ended_at = 0
+   AND lease_id IN (
+     SELECT l.id FROM leases l
+       JOIN accounts a  ON a.id = l.account_id
+       JOIN accounts ka ON ka.id = ?
+      WHERE l.device_id = ?
+        AND l.account_id <> ?
+        AND a.provider = ka.provider
+   )`, now, keepAccountID, deviceID, keepAccountID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+DELETE FROM leases
+ WHERE device_id = ?
+   AND account_id <> ?
+   AND account_id IN (
+     SELECT a.id FROM accounts a
+       JOIN accounts ka ON ka.id = ?
+      WHERE a.provider = ka.provider
+   )`, deviceID, keepAccountID, keepAccountID)
 	return err
 }
 
