@@ -69,6 +69,20 @@ func (s *InProc) PickForDevice(ctx context.Context, now time.Time, deviceID stri
 }
 
 func (s *InProc) PickProviderForDevice(ctx context.Context, now time.Time, deviceID, provider string) (*Account, error) {
+	// Per-device provider allowlist: a paired device may only lease the
+	// providers the admin granted it (at approval or in the devices page).
+	// deviceID == "" is combined/local mode, which has no pairing and is not
+	// gated. A disallowed provider looks like an empty pool to the caller —
+	// its provider manager then restores the local creds and injects nothing.
+	if deviceID != "" {
+		allowed, err := s.st.DeviceAllowsProvider(ctx, deviceID, provider)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, selector.ErrNoAvailable
+		}
+	}
 	return selector.PickProviderWithFilter(ctx, s.st, provider, now, deviceID, func(a Account) bool {
 		if deviceID == "" {
 			return s.st.IsAccountLeased(a.ID)

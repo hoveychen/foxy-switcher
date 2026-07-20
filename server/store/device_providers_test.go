@@ -46,8 +46,10 @@ func TestDeviceProviderAllowlistRoundTrip(t *testing.T) {
 	assertAllows(t, st, "dev-claude", ProviderClaude, true)
 	assertAllows(t, st, "dev-claude", ProviderCodex, false)
 	assertAllows(t, st, "dev-both", ProviderCodex, true)
-	// Fail closed: unknown device / unknown provider are denied.
-	assertAllows(t, st, "ghost", ProviderCodex, false)
+	// A device id with no row is combined/local mode (generates an id but
+	// never inserts a row) — deliberately un-gated, so it reads as allowed.
+	assertAllows(t, st, "ghost", ProviderCodex, true)
+	// An unknown provider string is denied even for a real device.
 	if ok, err := st.DeviceAllowsProvider(ctx, "dev-both", "gemini"); err != nil || ok {
 		t.Fatalf("unknown provider should be denied: ok=%v err=%v", ok, err)
 	}

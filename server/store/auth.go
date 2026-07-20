@@ -332,9 +332,13 @@ func (s *Store) SetDeviceProviders(ctx context.Context, id string, allowClaude, 
 
 // DeviceAllowsProvider reports whether the given device may use the given
 // provider pool ("claude"/"codex"). Enforced by the vault at lease time so a
-// device never picks up a provider the admin didn't grant it. A device that
-// doesn't exist (or an unknown provider) is denied — fail closed. Devices
+// paired device never picks up a provider the admin didn't grant it. Devices
 // paired before this feature migrate to claude-only.
+//
+// A device id with no row is NOT a paired device — it's combined/local mode,
+// which generates a local device id but never inserts a devices row and is
+// deliberately un-gated (Fork D) — so a missing row returns true (allowed).
+// An unknown provider string is denied.
 func (s *Store) DeviceAllowsProvider(ctx context.Context, deviceID, provider string) (bool, error) {
 	if deviceID == "" {
 		return false, fmt.Errorf("deviceID required")
@@ -352,7 +356,7 @@ func (s *Store) DeviceAllowsProvider(ctx context.Context, deviceID, provider str
 	err := s.db.QueryRowContext(ctx,
 		`SELECT `+col+` FROM devices WHERE id = ?`, deviceID).Scan(&allowed)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return true, nil // not a paired device (combined/local) — un-gated
 	}
 	if err != nil {
 		return false, err
