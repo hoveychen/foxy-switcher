@@ -22,19 +22,15 @@ type LoginState =
   | { phase: "submitting"; state: string; authorizeUrl: string }
   | { phase: "error"; message: string };
 
-// CodexLoginState drives the Codex device-code modal: request a one-time code,
-// show it while polling the vault, then close on completion. Distinct from the
-// Claude paste-code LoginState because the flows share no steps.
+// CodexLoginState drives the Codex OAuth paste-code modal: request an authorize
+// URL, let the user sign in and paste the callback URL back, then close on
+// completion. Mirrors the Claude LoginState — the flows are the same shape, but
+// kept separate because Codex builds a different account and has its own strings.
 type CodexLoginState =
   | { phase: "idle" }
   | { phase: "starting" }
-  | {
-      phase: "pending";
-      session: string;
-      userCode: string;
-      verificationUrl: string;
-      interval: number;
-    }
+  | { phase: "started"; state: string; authorizeUrl: string }
+  | { phase: "submitting"; state: string; authorizeUrl: string }
   | { phase: "error"; message: string };
 
 type Tone = "ok" | "warn" | "danger" | "muted";
@@ -510,6 +506,7 @@ export function AccountsPage({
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>("all");
   const [codexImporting, setCodexImporting] = useState(false);
   const [codexLogin, setCodexLogin] = useState<CodexLoginState>({ phase: "idle" });
+  const [codexPasted, setCodexPasted] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
 
   const setViewModePersisted = useCallback((mode: ViewMode) => {
@@ -524,8 +521,11 @@ export function AccountsPage({
   const submitting = loginState.phase === "submitting";
   const modalOpen =
     loginState.phase === "started" || loginState.phase === "submitting";
-  const codexBusy =
-    codexLogin.phase === "starting" || codexLogin.phase === "pending";
+  const codexSubmitting = codexLogin.phase === "submitting";
+  const codexModalOpen =
+    codexLogin.phase === "starting" ||
+    codexLogin.phase === "started" ||
+    codexLogin.phase === "submitting";
   const activeAccount =
     managedAccountId !== 0
       ? accounts.find((a) => a.id === managedAccountId) ?? null
@@ -575,48 +575,34 @@ export function AccountsPage({
 
   const startCodexLogin = useCallback(async () => {
     if (disableAdminActions) return;
+    setCopied(false);
+    setCodexPasted("");
     setCodexLogin({ phase: "starting" });
     try {
       const r = await apiClient.startCodexLogin();
       setCodexLogin({
-        phase: "pending",
-        session: r.session,
-        userCode: r.user_code,
-        verificationUrl: r.verification_url,
-        interval: r.interval,
+        phase: "started",
+        state: r.state,
+        authorizeUrl: r.authorize_url,
       });
     } catch (e) {
       setCodexLogin({ phase: "error", message: String(e) });
     }
   }, [disableAdminActions]);
 
-  // Poll the vault while a device-code login is pending. Re-setting the same
-  // "pending" object after each pending poll retriggers this effect, which
-  // reschedules the next tick on the interval the server asked for.
-  useEffect(() => {
-    if (codexLogin.phase !== "pending") return;
-    const { session, userCode, verificationUrl, interval } = codexLogin;
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      if (cancelled) return;
-      try {
-        const r = await apiClient.pollCodexLogin(session);
-        if (cancelled) return;
-        if (r.status === "complete") {
-          setCodexLogin({ phase: "idle" });
-          await onRefresh();
-        } else {
-          setCodexLogin({ phase: "pending", session, userCode, verificationUrl, interval });
-        }
-      } catch (e) {
-        if (!cancelled) setCodexLogin({ phase: "error", message: String(e) });
-      }
-    }, Math.max(1, interval) * 1000);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [codexLogin, onRefresh]);
+  const finishCodexLogin = useCallback(async () => {
+    if (codexLogin.phase !== "started") return;
+    const { state, authorizeUrl } = codexLogin;
+    setCodexLogin({ phase: "submitting", state, authorizeUrl });
+    try {
+      await apiClient.finishCodexLogin(state, codexPasted.trim());
+      setCodexPasted("");
+      setCodexLogin({ phase: "idle" });
+      await onRefresh();
+    } catch (e) {
+      setCodexLogin({ phase: "error", message: String(e) });
+    }
+  }, [codexLogin, codexPasted, onRefresh]);
 
   useEffect(() => {
     if (addAccountTick === 0) return;
@@ -700,7 +686,7 @@ export function AccountsPage({
                 <button
                   className="btn btn-secondary"
                   onClick={importCodex}
-                  disabled={modalOpen || codexImporting || codexBusy}
+                  disabled={modalOpen || codexImporting || codexModalOpen}
                 >
                   {codexImporting && <span className="spinner" aria-hidden />}
                   {t("accounts.import_codex")}
@@ -708,20 +694,20 @@ export function AccountsPage({
               )}
               {vaultMode && (
                 // Vault has no local codex CLI to read, so add Codex via the
-                // device-code flow instead of the local-import path.
+                // OAuth authorize + paste flow instead of the local-import path.
                 <button
                   className="btn btn-secondary"
                   onClick={startCodexLogin}
-                  disabled={modalOpen || codexBusy}
+                  disabled={modalOpen || codexModalOpen}
                 >
-                  {codexBusy && <span className="spinner" aria-hidden />}
+                  {codexModalOpen && <span className="spinner" aria-hidden />}
                   {t("accounts.add_codex")}
                 </button>
               )}
               <button
                 className="btn btn-primary"
                 onClick={startLogin}
-                disabled={modalOpen || codexImporting || codexBusy}
+                disabled={modalOpen || codexImporting || codexModalOpen}
               >
                 <Icon d={ICON_PLUS} />
                 {t("accounts.add_claude")}
@@ -1007,18 +993,45 @@ export function AccountsPage({
         )}
 
         <Modal
-          open={codexBusy}
+          open={codexModalOpen}
           title={t("accounts.codex_modal.title")}
           subtitle={t("accounts.codex_modal.subtitle")}
-          onClose={() => setCodexLogin({ phase: "idle" })}
-          onRequestClose={() => setCodexLogin({ phase: "idle" })}
+          onClose={() => {
+            setCodexPasted("");
+            setCodexLogin({ phase: "idle" });
+          }}
+          onRequestClose={() => {
+            if (codexSubmitting) return;
+            setCodexPasted("");
+            setCodexLogin({ phase: "idle" });
+          }}
           footer={
-            <button
-              className="btn btn-secondary"
-              onClick={() => setCodexLogin({ phase: "idle" })}
-            >
-              {t("common.cancel")}
-            </button>
+            <>
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setCodexPasted("");
+                  setCodexLogin({ phase: "idle" });
+                }}
+                disabled={codexSubmitting}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={finishCodexLogin}
+                disabled={!codexPasted.trim() || codexSubmitting}
+              >
+                {codexSubmitting ? (
+                  <>
+                    <span className="spinner" aria-hidden />
+                    {t("accounts.modal.submitting")}
+                  </>
+                ) : (
+                  t("accounts.modal.sign_in")
+                )}
+              </button>
+            </>
           }
         >
           {codexLogin.phase === "starting" && (
@@ -1027,7 +1040,8 @@ export function AccountsPage({
               {t("accounts.codex_modal.starting")}
             </div>
           )}
-          {codexLogin.phase === "pending" && (
+          {(codexLogin.phase === "started" ||
+            codexLogin.phase === "submitting") && (
             <>
               <div className="sheet-step">
                 <span className="sheet-step-num">1</span>
@@ -1038,12 +1052,13 @@ export function AccountsPage({
                       className="mono"
                       readOnly
                       aria-label={t("accounts.codex_modal.url_aria")}
-                      value={codexLogin.verificationUrl}
+                      value={codexLogin.authorizeUrl}
                       onFocus={(e) => e.currentTarget.select()}
                     />
                     <button
                       className="btn btn-secondary"
-                      onClick={() => copyAuthorizeUrl(codexLogin.verificationUrl)}
+                      onClick={() => copyAuthorizeUrl(codexLogin.authorizeUrl)}
+                      disabled={codexSubmitting}
                     >
                       {copied ? (
                         <>
@@ -1065,13 +1080,17 @@ export function AccountsPage({
                 <div className="sheet-step-body">
                   {t("accounts.codex_modal.step2")}
                   <div className="sheet-field">
-                    <code className="codex-user-code">{codexLogin.userCode}</code>
+                    <input
+                      className="mono"
+                      placeholder={t("accounts.codex_modal.code_placeholder")}
+                      aria-label={t("accounts.codex_modal.code_aria")}
+                      value={codexPasted}
+                      onChange={(e) => setCodexPasted(e.target.value)}
+                      disabled={codexSubmitting}
+                      autoFocus
+                    />
                   </div>
                 </div>
-              </div>
-              <div className="sheet-step sheet-step-muted">
-                <span className="spinner" aria-hidden />
-                {t("accounts.codex_modal.waiting")}
               </div>
             </>
           )}
