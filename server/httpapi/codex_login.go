@@ -1,10 +1,7 @@
 package httpapi
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -14,31 +11,27 @@ import (
 	openai "github.com/hoveychen/foxy-switcher/server/openai"
 )
 
-// codexLoginTTL bounds how long a device-code login session stays pollable.
-// codex-rs gives the user 15 minutes to enter the one-time code, so we expire
-// the server-side session on the same schedule.
+// codexLoginTTL bounds how long an in-flight OAuth login stays completable.
+// The authorize page + browser round-trip usually finishes in a minute; 15
+// gives generous headroom without letting abandoned sessions accumulate.
 const codexLoginTTL = 15 * time.Minute
 
-// codexLoginStore keeps in-flight device-code logins keyed by an opaque session
-// id handed to the client. It mirrors authz.PKCEStore's role for the Claude
-// paste-code flow: the secret (here the device_auth_id + user_code) never leaves
-// the server; the client only holds the session handle and polls with it. The
-// zero value is ready to use.
+// codexLoginStore is an in-memory state→verifier index for in-flight Codex
+// OAuth logins, mirroring authz.PKCEStore's role for the Claude paste-code
+// flow: the PKCE verifier never leaves the server; the client only holds the
+// opaque state and pastes the callback URL back with it. The zero value is
+// ready to use.
 type codexLoginStore struct {
 	mu      sync.Mutex
 	entries map[string]codexLoginEntry
 }
 
 type codexLoginEntry struct {
-	auth    *openai.DeviceAuth
-	expires time.Time
+	verifier string
+	expires  time.Time
 }
 
-func (c *codexLoginStore) start(da *openai.DeviceAuth, now time.Time) (string, error) {
-	sid, err := randomSessionID()
-	if err != nil {
-		return "", err
-	}
+func (c *codexLoginStore) start(state, verifier string, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
@@ -49,97 +42,86 @@ func (c *codexLoginStore) start(da *openai.DeviceAuth, now time.Time) (string, e
 			delete(c.entries, k)
 		}
 	}
-	c.entries[sid] = codexLoginEntry{auth: da, expires: now.Add(codexLoginTTL)}
-	return sid, nil
+	c.entries[state] = codexLoginEntry{verifier: verifier, expires: now.Add(codexLoginTTL)}
 }
 
-func (c *codexLoginStore) get(sid string, now time.Time) (*openai.DeviceAuth, bool) {
+// consume looks up and removes the verifier for state. The second return is
+// false when state is unknown or expired.
+func (c *codexLoginStore) consume(state string, now time.Time) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entries[sid]
+	e, ok := c.entries[state]
 	if !ok {
-		return nil, false
+		return "", false
 	}
+	delete(c.entries, state)
 	if now.After(e.expires) {
-		delete(c.entries, sid)
-		return nil, false
+		return "", false
 	}
-	return e.auth, true
+	return e.verifier, true
 }
 
-func (c *codexLoginStore) remove(sid string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.entries, sid)
-}
-
-func randomSessionID() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-// handleCodexLoginStart begins a Codex device-code login. Unlike
-// handleImportCodex (which reads the local `codex login` auth.json and is
-// therefore rejected in vault mode), this flow needs no local Codex CLI, so it
-// works in both combined and vault deployments.
-func (s *Server) handleCodexLoginStart(w http.ResponseWriter, r *http.Request) {
-	da, err := openai.StartDeviceLogin(r.Context())
-	if err != nil {
-		if errors.Is(err, openai.ErrDeviceCodeUnsupported) {
-			http.Error(w, err.Error(), http.StatusNotImplemented)
-			return
-		}
-		http.Error(w, "start Codex login: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	sid, err := s.codexLogins.start(da, time.Now())
+// handleCodexLoginStart begins a Codex OAuth login. It generates a PKCE pair +
+// state, stashes the verifier server-side keyed by state, and returns the
+// authorize URL for the user to open. Unlike handleImportCodex (which reads the
+// local `codex login` auth.json and is therefore rejected in vault mode) this
+// flow needs no local Codex CLI, so it works in both combined and vault
+// deployments — and unlike the old device-code flow it does not depend on the
+// ChatGPT workspace's device-code toggle.
+func (s *Server) handleCodexLoginStart(w http.ResponseWriter, _ *http.Request) {
+	verifier, challenge, err := openai.NewPKCEPair()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	state, err := openai.NewState()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.codexLogins.start(state, verifier, time.Now())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session":          sid,
-		"user_code":        da.UserCode,
-		"verification_url": da.VerificationURL,
-		"interval":         da.Interval,
+		"authorize_url": openai.AuthorizeURL(challenge, state),
+		"state":         state,
 	})
 }
 
-type codexPollReq struct {
-	Session string `json:"session"`
+type codexCallbackReq struct {
+	State  string `json:"state"`  // the state returned from /codex-login
+	Pasted string `json:"pasted"` // the callback URL copied from the browser address bar
 }
 
-// handleCodexLoginPoll performs one poll of the device token endpoint. It
-// returns {"status":"pending"} until the user approves the code, then exchanges
-// the code, stores the account, and returns {"status":"complete", account}.
-// The client is expected to poll on the interval returned by start.
-func (s *Server) handleCodexLoginPoll(w http.ResponseWriter, r *http.Request) {
-	var req codexPollReq
+// handleCodexLoginCallback finishes a Codex OAuth login: consume the verifier
+// for the state, parse the pasted callback URL for the authorization code,
+// verify the state round-trips, exchange the code for tokens, then store and
+// activate the account. It mirrors handleLoginCallback (the Claude flow).
+func (s *Server) handleCodexLoginCallback(w http.ResponseWriter, r *http.Request) {
+	var req codexCallbackReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	da, ok := s.codexLogins.get(req.Session, time.Now())
+	verifier, ok := s.codexLogins.consume(req.State, time.Now())
 	if !ok {
 		http.Error(w, "unknown or expired Codex login session", http.StatusBadRequest)
 		return
 	}
-	a, err := openai.PollDeviceLogin(r.Context(), da)
+	code, pastedState, err := openai.ParsePastedCode(req.Pasted)
 	if err != nil {
-		if errors.Is(err, openai.ErrAuthorizationPending) {
-			writeJSON(w, http.StatusOK, map[string]any{"status": "pending"})
-			return
-		}
-		// A hard failure (timeout, exchange error) burns the session — the
-		// device_auth_id is single-use, so the client must start over.
-		s.codexLogins.remove(req.Session)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// OpenAI echoes state back in the redirect; when present it must match the
+	// one we issued. A bare code paste (no state) is still accepted.
+	if pastedState != "" && pastedState != req.State {
+		http.Error(w, "state mismatch — paste corresponds to a different login attempt", http.StatusBadRequest)
+		return
+	}
+	a, err := openai.CompleteLogin(r.Context(), verifier, code)
+	if err != nil {
 		http.Error(w, "complete Codex login: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	s.codexLogins.remove(req.Session)
 	if err := s.Store.Upsert(r.Context(), a); err != nil {
 		http.Error(w, "save Codex account: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -152,5 +134,5 @@ func (s *Server) handleCodexLoginPoll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "complete", "account": toView(*a)})
+	writeJSON(w, http.StatusOK, map[string]any{"account": toView(*a)})
 }

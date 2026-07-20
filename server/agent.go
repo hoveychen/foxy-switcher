@@ -226,7 +226,7 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		"POST /api/accounts/callback",
 		"POST /api/accounts/import-codex",
 		"POST /api/accounts/codex-login",
-		"POST /api/accounts/codex-login/poll",
+		"POST /api/accounts/codex-login/callback",
 		"DELETE /api/accounts/{id}",
 		"POST /api/accounts/{id}/pause",
 		"POST /api/accounts/{id}/resume",
