@@ -166,3 +166,44 @@ func TestListActiveLeases(t *testing.T) {
 		t.Fatalf("after expire: %+v", leases)
 	}
 }
+
+// TestListAccountsWithLeasesPopulatesProviderAndCredential guards the
+// GET /api/accounts display path. The join query built on
+// qualifiedAccountColumns must select the same columns as selectColumns —
+// crucially `provider` and `credential_json`. Omitting `provider` makes every
+// account come back with Provider=="" to the web UI, which silently breaks the
+// Claude/Codex filter (nothing matches) and makes Codex accounts render with
+// Claude usage labels. This account is stored as Codex, so the round-trip must
+// preserve that.
+func TestListAccountsWithLeasesPopulatesProviderAndCredential(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	codex := &Account{
+		Provider:       ProviderCodex,
+		Name:           "Harry C",
+		Email:          "harry@example.com",
+		AccessToken:    "at",
+		RefreshToken:   "rt",
+		ExpiresAt:      1,
+		CredentialJSON: `{"tokens":{"access_token":"x"}}`,
+	}
+	if err := st.Upsert(ctx, codex); err != nil {
+		t.Fatalf("upsert codex: %v", err)
+	}
+
+	rows, err := st.ListAccountsWithLeases(ctx)
+	if err != nil {
+		t.Fatalf("ListAccountsWithLeases: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	got := rows[0].Account
+	if got.Provider != ProviderCodex {
+		t.Fatalf("Provider = %q, want %q — the join query must select the provider column", got.Provider, ProviderCodex)
+	}
+	if got.CredentialJSON == "" {
+		t.Fatalf("CredentialJSON empty — the join query must select the credential_json column")
+	}
+}

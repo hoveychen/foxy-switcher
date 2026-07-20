@@ -301,7 +301,7 @@ func (s *Store) ListAccountsWithLeases(ctx context.Context) ([]AccountWithLease,
 		var deviceID, deviceName sql.NullString
 		var acquiredAt, expiresAt sql.NullInt64
 		if err := rows.Scan(
-			&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.ExpiresAt,
+			&a.ID, &a.Provider, &a.Name, &a.AccessToken, &a.RefreshToken, &a.ExpiresAt,
 			&a.Scopes, &a.SubscriptionType,
 			&a.OrganizationUUID, &a.Status, &a.LastUsedAt,
 			&a.CreatedAt, &a.UpdatedAt,
@@ -311,7 +311,7 @@ func (s *Store) ListAccountsWithLeases(ctx context.Context) ([]AccountWithLease,
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
-			&a.AccountUUID, &a.RateLimitTier, &a.PinnedDeviceID,
+			&a.AccountUUID, &a.RateLimitTier, &a.CredentialJSON, &a.PinnedDeviceID,
 			&deviceID, &acquiredAt, &expiresAt, &deviceName,
 		); err != nil {
 			return nil, err
@@ -402,7 +402,7 @@ func (s *Store) ListActiveLeasesWithAccounts(ctx context.Context) ([]LeaseWithAc
 // Kept in lockstep with selectColumns; if you add a column to one,
 // add it to the other.
 const qualifiedAccountColumns = `
-accounts.id, accounts.name, accounts.access_token, accounts.refresh_token, accounts.expires_at, accounts.scopes,
+accounts.id, accounts.provider, accounts.name, accounts.access_token, accounts.refresh_token, accounts.expires_at, accounts.scopes,
 accounts.subscription_type, accounts.organization_uuid, accounts.status,
 accounts.last_used_at, accounts.created_at, accounts.updated_at,
 accounts.email, accounts.full_name, accounts.organization_name, accounts.plan,
@@ -411,7 +411,7 @@ accounts.seven_day_util, accounts.seven_day_resets_at,
 accounts.seven_day_sonnet_util, accounts.seven_day_sonnet_resets_at,
 accounts.usage_fetched_at,
 accounts.five_hour_threshold, accounts.seven_day_threshold, accounts.seven_day_sonnet_threshold,
-accounts.account_uuid, accounts.rate_limit_tier, accounts.pinned_device_id`
+accounts.account_uuid, accounts.rate_limit_tier, accounts.credential_json, accounts.pinned_device_id`
 
 // IsAccountLeased reports whether accountID has a live lease. Used by
 // refresh.Scheduler.IsAccountInUse and by selector.Pick to skip in-use
