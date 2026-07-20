@@ -77,7 +77,7 @@ type Server struct {
 	VaultURL     string
 	Codex        *openai.Manager
 	CodexStorage openai.CredentialStorage
-	// codexLogins tracks in-flight Codex device-code logins (see codex_login.go).
+	// codexLogins tracks in-flight Codex OAuth logins (see codex_login.go).
 	// Zero value is ready; the map is created lazily on first use.
 	codexLogins codexLoginStore
 }
@@ -95,7 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/callback", s.handleLoginCallback)
 	mux.HandleFunc("POST /api/accounts/import-codex", s.handleImportCodex)
 	mux.HandleFunc("POST /api/accounts/codex-login", s.handleCodexLoginStart)
-	mux.HandleFunc("POST /api/accounts/codex-login/poll", s.handleCodexLoginPoll)
+	mux.HandleFunc("POST /api/accounts/codex-login/callback", s.handleCodexLoginCallback)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /api/accounts/{id}/resume", s.handleResume)

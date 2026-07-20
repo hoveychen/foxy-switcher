@@ -920,29 +920,6 @@ input {
   margin: 4px 0 12px;
 }
 
-/* The Codex device one-time code is the thing the user must read and type,
-   so render it large and spaced rather than as an inline <code> chip. */
-.codex-user-code {
-  display: inline-block;
-  background: var(--bg-pill);
-  padding: 8px 14px;
-  border-radius: var(--radius-button);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  color: var(--text-primary);
-  user-select: all;
-}
-
-.sheet-step-muted {
-  color: var(--text-secondary);
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
 .sheet-field input {
   flex: 1;
   height: 28px;

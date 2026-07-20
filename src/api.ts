@@ -666,22 +666,21 @@ export const apiClient = {
       method: "POST",
     }),
 
-  // Codex device-code login: start returns a one-time code to show the user
-  // plus an opaque session to poll with. Unlike importCodex it needs no local
-  // Codex CLI, so it works in the vault web UI.
+  // Codex OAuth login (authorize + paste): start returns the authorize URL the
+  // user opens plus the state we round-trip. Mirrors startLogin/finishLogin for
+  // Claude. Unlike importCodex it needs no local Codex CLI, so it works in the
+  // vault web UI; unlike the old device-code flow it doesn't depend on the
+  // workspace's device-code toggle.
   startCodexLogin: () =>
-    api<{
-      session: string;
-      user_code: string;
-      verification_url: string;
-      interval: number;
-    }>("/api/accounts/codex-login", { method: "POST" }),
+    api<{ authorize_url: string; state: string }>("/api/accounts/codex-login", {
+      method: "POST",
+    }),
 
-  pollCodexLogin: (session: string) =>
-    api<{ status: "pending" | "complete"; account?: Account }>(
-      "/api/accounts/codex-login/poll",
-      { method: "POST", json: { session } },
-    ),
+  finishCodexLogin: (state: string, pasted: string) =>
+    api<{ account: Account }>("/api/accounts/codex-login/callback", {
+      method: "POST",
+      json: { state, pasted },
+    }),
 
   refreshAccount: (id: number) =>
     api<{ account: Account }>(`/api/accounts/${id}/refresh`, { method: "POST" }),
