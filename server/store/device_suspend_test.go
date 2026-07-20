@@ -76,16 +76,20 @@ func TestReleaseDeviceLeases(t *testing.T) {
 	st := openTempStore(t)
 	ctx := context.Background()
 
-	mkAcc := func(name string) *Account {
-		a := &Account{Name: name, AccessToken: "at-" + name, RefreshToken: "rt-" + name}
+	mkAcc := func(name, provider string) *Account {
+		a := &Account{Provider: provider, Name: name, AccessToken: "at-" + name, RefreshToken: "rt-" + name}
 		if err := st.Upsert(ctx, a); err != nil {
 			t.Fatalf("upsert %s: %v", name, err)
 		}
 		return a
 	}
-	alpha := mkAcc("alpha")
-	bravo := mkAcc("bravo")
-	charlie := mkAcc("charlie")
+	// alpha + bravo are held by dev-1 across DIFFERENT providers so the
+	// one-lease-per-(device,provider) guard in AcquireLease leaves both live —
+	// this test's point is that ReleaseDeviceLeases frees ALL of a device's
+	// leases at once, which needs the device to legitimately hold more than one.
+	alpha := mkAcc("alpha", ProviderClaude)
+	bravo := mkAcc("bravo", ProviderCodex)
+	charlie := mkAcc("charlie", ProviderClaude)
 
 	if _, err := st.AcquireLease(ctx, "lease-a", alpha.ID, "dev-1", time.Minute); err != nil {
 		t.Fatalf("acquire a: %v", err)
