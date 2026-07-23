@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Account, UsageWindow, apiClient } from "../api";
-import { accountIsCooling, accountResetAt } from "../api";
+import { accountIsCooling, accountResetAt, scopedIsThrottled } from "../api";
 import { Icon } from "../components/Icon";
 import { Topbar } from "../components/Topbar";
 import { FoxAvatar } from "../components/FoxAvatar";
@@ -357,7 +357,7 @@ function AccountCard({
         />
         {a.provider !== "codex" && (
           <UsageMiniBar
-            label={scopedUsageLabel(a.seven_day_scoped_label)}
+            label={scopedUsageLabel(a.seven_day_scoped_label, scopedIsThrottled(a))}
             win={a.seven_day_sonnet}
           />
         )}

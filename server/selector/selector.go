@@ -1,8 +1,16 @@
 // Package selector picks which account in the pool credinject should inject
 // next. The strategy is intentionally simple — skip any account that's
-// paused, has an expired token, or has reached one of its per-window
-// utilization thresholds, then prefer the candidate with the most weekly
-// runway (lowest 7-day utilization), breaking ties least-recently-used.
+// paused, has an expired token, or has reached a HARD per-window threshold
+// (5h / 7d, which cap the whole account), then prefer the candidate with the
+// most weekly runway (lowest 7-day utilization), breaking ties
+// least-recently-used.
+//
+// The per-model weekly-scoped window (seven_day_sonnet slot — Fable/…) is a
+// SOFT cap: reaching it does not make the account unavailable (only that one
+// scoped model is throttled; every other model still works), so a
+// scoped-exceeded account is kept as a low-priority fallback rather than
+// excluded. Pick orders scoped-OK accounts ahead of scoped-exceeded ones and
+// only falls back to a degraded account when no scoped-OK one is eligible.
 // Swap in a smarter scorer (rate-limit-tier weighting, fancier per-window
 // scoring) by replacing Pick.
 package selector
@@ -18,9 +26,10 @@ import (
 )
 
 // ErrNoAvailable is returned when every account is paused, has an expired
-// token, or has reached its utilization threshold on at least one window.
-// The credinject Coordinator treats this as the trigger to restore the
-// user's native credentials.
+// token, or has reached a HARD utilization threshold (5h / 7d). A
+// scoped-model (Fable) cap alone does NOT trigger this — such accounts stay
+// in the pool as degraded fallbacks. The credinject Coordinator treats this
+// as the trigger to restore the user's native credentials.
 var ErrNoAvailable = errors.New("no available account")
 
 // Pick returns the best candidate account at time `now`. It does NOT mutate
@@ -85,6 +94,13 @@ func PickProviderWithFilter(ctx context.Context, st *store.Store, provider strin
 		if pi, pj := pinnedForMe(candidates[i]), pinnedForMe(candidates[j]); pi != pj {
 			return pi
 		}
+		// Scoped-OK accounts outrank scoped-exceeded (degraded) ones: a
+		// degraded account still serves non-scoped models but is only a
+		// fallback, so it sorts after every scoped-OK candidate regardless of
+		// runway. Runway/LRU only break ties WITHIN a tier.
+		if di, dj := scopedThreshold(candidates[i]), scopedThreshold(candidates[j]); di != dj {
+			return !di // non-degraded (di == false) ranks first
+		}
 		if candidates[i].SevenDayUtil != candidates[j].SevenDayUtil {
 			return candidates[i].SevenDayUtil < candidates[j].SevenDayUtil
 		}
@@ -107,28 +123,40 @@ func IsEligible(a store.Account, now time.Time) bool {
 	if a.TokenExpired(now) {
 		return false
 	}
-	if exceedsThreshold(a) {
+	// Only HARD windows (5h / 7d) disqualify an account — they cap the whole
+	// account, so hitting them means a 429 for any model. A scoped-model
+	// (Fable) cap is soft: the account stays eligible and Pick merely
+	// deprioritises it (see scopedThreshold + the tier sort).
+	if hardThreshold(a) {
 		return false
 	}
 	return true
 }
 
-// exceedsThreshold reports whether any usage window has reached its
-// per-account threshold. Windows with empty resets_at have not been measured
-// yet (cold start, or the API didn't return that window) and are skipped so
-// the selector doesn't lock everyone out before the first usage poll lands.
-func exceedsThreshold(a store.Account) bool {
+// hardThreshold reports whether a HARD usage window (5h or 7d) has reached its
+// per-account threshold. These caps apply account-wide — Anthropic 429s the
+// account for every model once they're hit — so a hard-exceeded account is
+// genuinely unavailable and IsEligible drops it. Windows with empty resets_at
+// have not been measured yet (cold start, or the API didn't return that
+// window) and are skipped so the selector doesn't lock everyone out before the
+// first usage poll lands.
+func hardThreshold(a store.Account) bool {
 	if a.FiveHourResetsAt != "" && a.FiveHourUtil >= a.FiveHourThreshold {
 		return true
 	}
 	if a.SevenDayResetsAt != "" && a.SevenDayUtil >= a.SevenDayThreshold {
 		return true
 	}
-	// seven_day_sonnet_* is a legacy name for the per-model weekly-scoped window
-	// (Fable/…); this gate throttles on it just like the other windows. See
-	// store.Account.SevenDaySonnetUtil.
-	if a.SevenDaySonnetResetsAt != "" && a.SevenDaySonnetUtil >= a.SevenDaySonnetThreshold {
-		return true
-	}
 	return false
+}
+
+// scopedThreshold reports whether the per-model weekly-scoped window
+// (seven_day_sonnet slot — Fable/…; see store.Account.SevenDaySonnetUtil) has
+// reached its threshold. This is a SOFT cap: only that one scoped model is
+// throttled, so the account remains usable for every other model. It does NOT
+// make the account ineligible — Pick uses it purely to rank scoped-exceeded
+// accounts below scoped-OK ones. Unmeasured windows (empty resets_at) count as
+// not-exceeded.
+func scopedThreshold(a store.Account) bool {
+	return a.SevenDaySonnetResetsAt != "" && a.SevenDaySonnetUtil >= a.SevenDaySonnetThreshold
 }

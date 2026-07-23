@@ -614,9 +614,13 @@ func applyUsage(ctx context.Context, st *store.Store, id int64, u *anthropic.Usa
 }
 
 // earliestThrottledReset returns the soonest resets_at (as unix millis) among
-// the windows where this account's utilization has reached the matching
-// threshold. The bool is false when no window is currently throttling — the
-// caller treats that as "this account isn't cooling".
+// the HARD windows (5h / 7d) where this account's utilization has reached the
+// matching threshold. The bool is false when no hard window is currently
+// throttling — the caller treats that as "this account isn't cooling". The
+// per-model weekly-scoped window (Fable/…) is excluded on purpose: a scoped
+// cap only throttles that one model, the account stays usable (degraded), so
+// it must not inflate the dashboard's CoolingCount / NextResetAt. Mirrors
+// selector.hardThreshold.
 //
 // resets_at strings that fail to parse or are empty are skipped: the API is
 // authoritative on RFC3339 formatting, but we'd rather omit a problematic
@@ -628,7 +632,6 @@ func earliestThrottledReset(a store.Account, now time.Time) (int64, bool) {
 	}{
 		{a.FiveHourUtil, a.FiveHourThreshold, a.FiveHourResetsAt},
 		{a.SevenDayUtil, a.SevenDayThreshold, a.SevenDayResetsAt},
-		{a.SevenDaySonnetUtil, a.SevenDaySonnetThreshold, a.SevenDaySonnetResetsAt},
 	}
 	var best int64
 	found := false
@@ -1071,8 +1074,9 @@ type DashboardKPIs struct {
 	// in-flight lease, not just the longest-held one. Empty list when
 	// no agent currently holds any account.
 	InUse []InUseEntry `json:"in_use"`
-	// CoolingCount is how many active accounts are currently throttled by
-	// the per-window utilization threshold (selector.exceedsThreshold).
+	// CoolingCount is how many active accounts are currently throttled by a
+	// HARD per-window threshold (selector.hardThreshold — 5h/7d). A scoped
+	// (Fable) cap alone does not count; those accounts stay usable (degraded).
 	CoolingCount int `json:"cooling_count"`
 	// NextResetAt is the soonest reset across the windows that are currently
 	// throttling an active account, in unix millis. 0 means no account is

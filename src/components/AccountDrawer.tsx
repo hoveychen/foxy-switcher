@@ -6,7 +6,7 @@ import type {
   ThresholdInput,
   UsageWindow,
 } from "../api";
-import { accountIsCooling, accountResetAt, apiClient } from "../api";
+import { accountIsCooling, accountResetAt, scopedIsThrottled, apiClient } from "../api";
 import { Drawer } from "./Drawer";
 import { FoxAvatar } from "./FoxAvatar";
 import { t, tf, scopedUsageLabel } from "../i18n";
@@ -482,7 +482,7 @@ export function AccountDrawer({
           />
           {account.provider !== "codex" && (
             <UsageBar
-              label={scopedUsageLabel(account.seven_day_scoped_label)}
+              label={scopedUsageLabel(account.seven_day_scoped_label, scopedIsThrottled(account))}
               win={account.seven_day_sonnet}
               nowMs={nowMs}
               threshold={account.seven_day_sonnet_threshold}

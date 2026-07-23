@@ -390,6 +390,7 @@
   "drawer.usage.7d_opus": "7d Opus",
   "drawer.usage.7d_sonnet": "7d Sonnet",
   "drawer.usage.7d_scoped": "7d {model}",
+  "drawer.usage.capped": "capped",
   "drawer.usage.no_data": "No data yet",
   "drawer.usage.threshold_aria": "{label} skip threshold",
   "drawer.usage.threshold_title": "Skip ≥ {pct}%",
