@@ -86,7 +86,11 @@ type Account struct {
 	FiveHour         *UsageWindow `json:"five_hour,omitempty"`
 	SevenDay         *UsageWindow `json:"seven_day,omitempty"`
 	SevenDaySonnet   *UsageWindow `json:"seven_day_sonnet,omitempty"`
-	UsageFetchedAt   int64        `json:"usage_fetched_at"`
+	// SevenDayScopedLabel is the model display name for the seven_day_sonnet
+	// slot, which now carries the per-model weekly-scoped window (e.g. "Fable").
+	// Empty for legacy data; use ScopedModelLabel() to render.
+	SevenDayScopedLabel string `json:"seven_day_scoped_label,omitempty"`
+	UsageFetchedAt      int64  `json:"usage_fetched_at"`
 	// Per-account utilization thresholds (0–100). 100 disables the
 	// corresponding window — the selector won't skip the account on it.
 	FiveHourThreshold       float64 `json:"five_hour_threshold"`
@@ -98,6 +102,16 @@ type Account struct {
 	// can see "held by Device X" instead of clicking 'u' on a foreign-leased
 	// account and hitting a 409 from the leases_account_id_uniq index.
 	Lease *AccountLease `json:"lease,omitempty"`
+}
+
+// ScopedModelLabel is the display name of the per-model weekly-scoped usage
+// window (the seven_day_sonnet slot), e.g. "Fable". Defaults to "Sonnet" for
+// legacy data that predates the label so existing rows keep their wording.
+func (a Account) ScopedModelLabel() string {
+	if a.SevenDayScopedLabel != "" {
+		return a.SevenDayScopedLabel
+	}
+	return "Sonnet"
 }
 
 // AccountLease is the per-account lease metadata. Mine is server-computed

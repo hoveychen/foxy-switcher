@@ -214,6 +214,74 @@ func TestFetchUsage_AllWindows(t *testing.T) {
 	if u.SevenDaySonnet == nil || u.SevenDaySonnet.Utilization != 33.3 {
 		t.Errorf("seven_day_sonnet = %+v", u.SevenDaySonnet)
 	}
+	// Legacy top-level seven_day_sonnet (no limits[]) is labelled "Sonnet".
+	if u.ScopedLabel != "Sonnet" {
+		t.Errorf("ScopedLabel = %q, want %q", u.ScopedLabel, "Sonnet")
+	}
+}
+
+// TestFetchUsage_ScopedFromLimits covers the current Anthropic shape: the
+// model-scoped weekly cap lives in a limits[] entry with kind "weekly_scoped"
+// (e.g. Fable), and takes precedence over any legacy top-level
+// seven_day_sonnet. percent is 0–100 and carried through unchanged.
+func TestFetchUsage_ScopedFromLimits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+		  "five_hour":        {"utilization": 12.5, "resets_at": "2026-04-30T05:00:00Z"},
+		  "seven_day":        {"utilization": 78.0, "resets_at": "2026-05-07T00:00:00Z"},
+		  "seven_day_sonnet": {"utilization": 1.0,  "resets_at": "2026-05-07T00:00:00Z"},
+		  "limits": [
+		    {"kind": "weekly", "percent": 78.0, "resets_at": "2026-05-07T00:00:00Z"},
+		    {"kind": "weekly_scoped", "percent": 42.0, "resets_at": "2026-05-07T12:00:00Z",
+		     "scope": {"model": {"display_name": "Fable"}}}
+		  ]
+		}`))
+	}))
+	defer srv.Close()
+	old := BaseURL
+	BaseURL = srv.URL
+	defer func() { BaseURL = old }()
+
+	u, err := FetchUsage(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("FetchUsage: %v", err)
+	}
+	if u.SevenDaySonnet == nil || u.SevenDaySonnet.Utilization != 42.0 {
+		t.Errorf("scoped window = %+v, want util 42.0 from limits[]", u.SevenDaySonnet)
+	}
+	if u.SevenDaySonnet.ResetsAt != "2026-05-07T12:00:00Z" {
+		t.Errorf("scoped resets_at = %q", u.SevenDaySonnet.ResetsAt)
+	}
+	if u.ScopedLabel != "Fable" {
+		t.Errorf("ScopedLabel = %q, want %q", u.ScopedLabel, "Fable")
+	}
+}
+
+// TestFetchUsage_NoScopedWindow: no limits[] weekly_scoped and no legacy
+// seven_day_sonnet → scoped window nil, label empty.
+func TestFetchUsage_NoScopedWindow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "five_hour": {"utilization": 5.0, "resets_at": "x"},
+		  "limits": [{"kind": "weekly", "percent": 5.0, "resets_at": "x"}]
+		}`))
+	}))
+	defer srv.Close()
+	old := BaseURL
+	BaseURL = srv.URL
+	defer func() { BaseURL = old }()
+
+	u, err := FetchUsage(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("FetchUsage: %v", err)
+	}
+	if u.SevenDaySonnet != nil {
+		t.Errorf("scoped window should be nil, got %+v", u.SevenDaySonnet)
+	}
+	if u.ScopedLabel != "" {
+		t.Errorf("ScopedLabel = %q, want empty", u.ScopedLabel)
+	}
 }
 
 // TestFetchUsage_RateLimitWithRetryAfter guards the 429 contract: the caller

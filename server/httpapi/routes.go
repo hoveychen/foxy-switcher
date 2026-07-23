@@ -153,6 +153,26 @@ type usageWindowView struct {
 	ResetsAt    string  `json:"resets_at"`   // RFC3339; "" when API didn't return this window
 }
 
+// usageLimitView mirrors one entry of Anthropic's usage-API limits[] array,
+// reconstructed from foxy's stored scoped window so external consumers (see
+// accountView.Limits) can parse it the same way they parse the live API. Only
+// the fields those consumers read are populated. `percent` is 0–100, matching
+// foxy's stored utilization unit (no /100).
+type usageLimitView struct {
+	Kind     string           `json:"kind"`
+	Percent  float64          `json:"percent"`
+	ResetsAt string           `json:"resets_at"`
+	Scope    *usageLimitScope `json:"scope,omitempty"`
+}
+
+type usageLimitScope struct {
+	Model usageLimitModel `json:"model"`
+}
+
+type usageLimitModel struct {
+	DisplayName string `json:"display_name"`
+}
+
 // accountLeaseView is the per-account lease metadata surfaced on
 // /api/accounts so multi-device deployments can render "in use by
 // Device X" badges in one round-trip. Nil when no live lease exists.
@@ -206,6 +226,16 @@ type accountView struct {
 	FiveHour       *usageWindowView `json:"five_hour,omitempty"`
 	SevenDay       *usageWindowView `json:"seven_day,omitempty"`
 	SevenDaySonnet *usageWindowView `json:"seven_day_sonnet,omitempty"`
+	// SevenDayScopedLabel is the model display name for the seven_day_sonnet
+	// slot, which now carries the per-model weekly-scoped window (e.g. "Fable").
+	// The frontend uses it to label the bar dynamically. Empty for legacy data.
+	SevenDayScopedLabel string `json:"seven_day_scoped_label,omitempty"`
+	// Limits mirrors Anthropic's usage-API limits[] array for the scoped
+	// window, reconstructed from stored data. Present so external consumers that
+	// read foxy's /accounts (e.g. claude-fleet's foxy path, which parses
+	// limits[] weekly_scoped) can pick up the scoped model without a direct
+	// Anthropic call. Omitted when there's no scoped window / label.
+	Limits         []usageLimitView `json:"limits,omitempty"`
 	UsageFetchedAt int64            `json:"usage_fetched_at"`
 	// Per-account utilization thresholds (0–100). Schema default is 95;
 	// 100 means "do not skip on this window".
@@ -276,6 +306,18 @@ func toView(a store.Account) accountView {
 	}
 	if a.SevenDaySonnetResetsAt != "" {
 		view.SevenDaySonnet = &usageWindowView{Utilization: a.SevenDaySonnetUtil, ResetsAt: a.SevenDaySonnetResetsAt}
+		view.SevenDayScopedLabel = a.SevenDayScopedLabel
+		// Re-serve the scoped window as a limits[] weekly_scoped entry so
+		// external consumers (claude-fleet's foxy path) can parse it. Requires a
+		// model label; legacy rows without one only surface the bar locally.
+		if a.SevenDayScopedLabel != "" {
+			view.Limits = []usageLimitView{{
+				Kind:     "weekly_scoped",
+				Percent:  a.SevenDaySonnetUtil,
+				ResetsAt: a.SevenDaySonnetResetsAt,
+				Scope:    &usageLimitScope{Model: usageLimitModel{DisplayName: a.SevenDayScopedLabel}},
+			}}
+		}
 	}
 	return view
 }
@@ -561,7 +603,7 @@ func applyUsage(ctx context.Context, st *store.Store, id int64, u *anthropic.Usa
 	if u.SevenDaySonnet != nil {
 		ssU, ssR = u.SevenDaySonnet.Utilization, u.SevenDaySonnet.ResetsAt
 	}
-	return st.SetUsage(ctx, id, fhU, fhR, sdU, sdR, ssU, ssR)
+	return st.SetUsage(ctx, id, fhU, fhR, sdU, sdR, ssU, ssR, u.ScopedLabel)
 }
 
 // earliestThrottledReset returns the soonest resets_at (as unix millis) among
@@ -718,7 +760,7 @@ func applyCodexUsage(ctx context.Context, st *store.Store, id int64, u *openai.U
 		secondaryUtil = u.Secondary.UsedPercent
 		secondaryReset = u.Secondary.ResetAt.Format(time.RFC3339)
 	}
-	return st.SetUsage(ctx, id, primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "")
+	return st.SetUsage(ctx, id, primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "", "")
 }
 
 // handleSelect promotes one account to the front of the LRU queue so the

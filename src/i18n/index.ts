@@ -78,3 +78,12 @@ export function tf(key: string, vars: Record<string, string | number>): string {
     vars[k] !== undefined ? String(vars[k]) : `{${k}}`,
   );
 }
+
+// scopedUsageLabel renders the label for the per-model weekly-scoped usage bar
+// (the seven_day_sonnet slot). Anthropic moved model-scoped weekly caps into
+// limits[] and the scoped model can be Fable (not always Sonnet), so we label
+// the bar with the actual model name when the backend reports one, falling back
+// to the legacy "7d Sonnet" string for older data with no label.
+export function scopedUsageLabel(model?: string): string {
+  return model ? tf("drawer.usage.7d_scoped", { model }) : t("drawer.usage.7d_sonnet");
+}

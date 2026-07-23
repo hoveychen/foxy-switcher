@@ -148,7 +148,9 @@ func (p *dashboardPage) renderHero() string {
 
 	bar5h := p.renderUsageRow("5h    ", a.FiveHour)
 	bar7d := p.renderUsageRow("7d    ", a.SevenDay)
-	bar7s := p.renderUsageRow("7d-S  ", a.SevenDaySonnet)
+	// Compact per-model scoped row; label with the model's initial (e.g.
+	// "7d-F" for Fable, "7d-S" for Sonnet) to stay within the fixed width.
+	bar7s := p.renderUsageRow(fmt.Sprintf("%-6s", "7d-"+string([]rune(a.ScopedModelLabel())[0])), a.SevenDaySonnet)
 
 	body := strings.Join([]string{
 		strings.Join(meta, "  "),

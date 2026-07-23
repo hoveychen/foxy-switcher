@@ -77,7 +77,13 @@ type Account struct {
 	SevenDayResetsAt       string
 	SevenDaySonnetUtil     float64
 	SevenDaySonnetResetsAt string
-	UsageFetchedAt         int64 // unix millis; 0 = never
+	// SevenDayScopedLabel is the model display name for the seven_day_sonnet
+	// slot, which now holds the per-model weekly-scoped window parsed from the
+	// usage API's limits[] (e.g. "Fable"). Empty when no scoped window / legacy
+	// data. Lets the UI label the bar dynamically instead of hardcoding
+	// "Sonnet". See anthropic.Usage.ScopedLabel.
+	SevenDayScopedLabel string
+	UsageFetchedAt      int64 // unix millis; 0 = never
 
 	// Per-account utilization thresholds (0–100). The selector skips an
 	// account when any window's util has reached the matching threshold.
@@ -132,6 +138,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
   seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
   seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
+  seven_day_scoped_label     TEXT    NOT NULL DEFAULT '',
   usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
   five_hour_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
@@ -209,6 +216,9 @@ var columnMigrations = []string{
 	`ALTER TABLE accounts ADD COLUMN seven_day_resets_at TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_sonnet_util REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_sonnet_resets_at TEXT NOT NULL DEFAULT ''`,
+	// Model display name for the seven_day_sonnet slot's now per-model scoped
+	// window (e.g. "Fable"); see Account.SevenDayScopedLabel.
+	`ALTER TABLE accounts ADD COLUMN seven_day_scoped_label TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN usage_fetched_at INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN five_hour_threshold REAL NOT NULL DEFAULT 95`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_threshold REAL NOT NULL DEFAULT 95`,
@@ -345,6 +355,7 @@ CREATE TABLE accounts_new (
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
   seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
   seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
+  seven_day_scoped_label     TEXT    NOT NULL DEFAULT '',
   usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
   five_hour_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
@@ -362,6 +373,7 @@ INSERT INTO accounts_new SELECT
   five_hour_util, five_hour_resets_at,
   seven_day_util, seven_day_resets_at,
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
+  seven_day_scoped_label,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
   account_uuid, rate_limit_tier, credential_json, pinned_device_id FROM accounts;
@@ -420,6 +432,7 @@ CREATE TABLE accounts_new (
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
   seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
   seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
+  seven_day_scoped_label     TEXT    NOT NULL DEFAULT '',
   usage_fetched_at           INTEGER NOT NULL DEFAULT 0,
   five_hour_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
@@ -437,6 +450,7 @@ INSERT INTO accounts_new SELECT
   five_hour_util, five_hour_resets_at,
   seven_day_util, seven_day_resets_at,
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
+  seven_day_scoped_label,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
   account_uuid, rate_limit_tier, credential_json, pinned_device_id FROM accounts;
@@ -726,12 +740,14 @@ func (s *Store) SetUsage(ctx context.Context, id int64,
 	fiveHourUtil float64, fiveHourResetsAt string,
 	sevenDayUtil float64, sevenDayResetsAt string,
 	sevenDaySonnetUtil float64, sevenDaySonnetResetsAt string,
+	sevenDayScopedLabel string,
 ) error {
 	const q = `
 UPDATE accounts
    SET five_hour_util = ?, five_hour_resets_at = ?,
        seven_day_util = ?, seven_day_resets_at = ?,
        seven_day_sonnet_util = ?, seven_day_sonnet_resets_at = ?,
+       seven_day_scoped_label = ?,
        usage_fetched_at = ?, updated_at = ?
  WHERE id = ?`
 	now := time.Now().UnixMilli()
@@ -739,6 +755,7 @@ UPDATE accounts
 		fiveHourUtil, fiveHourResetsAt,
 		sevenDayUtil, sevenDayResetsAt,
 		sevenDaySonnetUtil, sevenDaySonnetResetsAt,
+		sevenDayScopedLabel,
 		now, now, id)
 	return err
 }
@@ -906,6 +923,7 @@ email, full_name, organization_name, plan,
 five_hour_util, five_hour_resets_at,
 seven_day_util, seven_day_resets_at,
 seven_day_sonnet_util, seven_day_sonnet_resets_at,
+seven_day_scoped_label,
 usage_fetched_at,
 five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
 account_uuid, rate_limit_tier, credential_json, pinned_device_id`
@@ -962,6 +980,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.FiveHourUtil, &a.FiveHourResetsAt,
 			&a.SevenDayUtil, &a.SevenDayResetsAt,
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
+			&a.SevenDayScopedLabel,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
 			&a.AccountUUID, &a.RateLimitTier, &a.CredentialJSON, &a.PinnedDeviceID,

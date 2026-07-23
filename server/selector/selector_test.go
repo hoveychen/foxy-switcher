@@ -42,7 +42,7 @@ func TestPickSkipsAccountAtThreshold(t *testing.T) {
 	if err := st.SetUsage(ctx, a.ID,
 		96.0, "2026-04-30T05:00:00Z",
 		10.0, "2026-05-07T00:00:00Z",
-		10.0, "2026-05-07T00:00:00Z",
+		10.0, "2026-05-07T00:00:00Z", "",
 	); err != nil {
 		t.Fatalf("set usage a: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestPickAllOverThresholdReturnsErrNoAvailable(t *testing.T) {
 	}
 	if err := st.SetUsage(ctx, a.ID,
 		99.0, "2026-04-30T05:00:00Z",
-		0, "", 0, "",
+		0, "", 0, "", "",
 	); err != nil {
 		t.Fatalf("set usage: %v", err)
 	}
@@ -213,10 +213,10 @@ func TestPickPrefersLowestSevenDayOverLRU(t *testing.T) {
 
 	// Both eligible (well under the default 7-day threshold); only the 7-day
 	// utilization differs. resets_at must be non-empty so the value counts.
-	if err := st.SetUsage(ctx, stale.ID, 0, "", 50.0, "2026-05-07T00:00:00Z", 0, ""); err != nil {
+	if err := st.SetUsage(ctx, stale.ID, 0, "", 50.0, "2026-05-07T00:00:00Z", 0, "", ""); err != nil {
 		t.Fatalf("set usage stale: %v", err)
 	}
-	if err := st.SetUsage(ctx, fresh.ID, 0, "", 10.0, "2026-05-07T00:00:00Z", 0, ""); err != nil {
+	if err := st.SetUsage(ctx, fresh.ID, 0, "", 10.0, "2026-05-07T00:00:00Z", 0, "", ""); err != nil {
 		t.Fatalf("set usage fresh: %v", err)
 	}
 

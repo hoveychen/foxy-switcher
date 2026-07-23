@@ -174,6 +174,11 @@ export interface Account {
   five_hour?: UsageWindow;
   seven_day?: UsageWindow;
   seven_day_sonnet?: UsageWindow;
+  // Model display name for the seven_day_sonnet slot, which now carries the
+  // per-model weekly-scoped window (e.g. "Fable") parsed from the usage API's
+  // limits[]. Empty/absent for legacy data; use scopedUsageLabel() to render
+  // the bar label so it falls back to "7d Sonnet".
+  seven_day_scoped_label?: string;
   usage_fetched_at: number;
   // Per-window utilization thresholds (0–100). Schema default 95; 100 = no skip.
   five_hour_threshold: number;

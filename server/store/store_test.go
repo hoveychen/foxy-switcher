@@ -144,6 +144,42 @@ func TestPairingMetaPropagates(t *testing.T) {
 	}
 }
 
+// TestSetUsageScopedLabelRoundTrip guards the seven_day_scoped_label column
+// end-to-end: SetUsage writes it and List reads it back. Catches column-list
+// drift between the UPDATE, the SELECT column list, and scanAccounts — the same
+// failure mode TestDeviceMetaRoundTrip guards for devices.
+func TestSetUsageScopedLabelRoundTrip(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	a := &Account{Name: "fable-user", Email: "f@example.com", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := st.SetUsage(ctx, a.ID,
+		12.5, "2026-05-01T00:00:00Z",
+		78.0, "2026-05-07T00:00:00Z",
+		42.0, "2026-05-07T12:00:00Z",
+		"Fable",
+	); err != nil {
+		t.Fatalf("SetUsage: %v", err)
+	}
+	list, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(list))
+	}
+	got := list[0]
+	if got.SevenDaySonnetUtil != 42.0 || got.SevenDaySonnetResetsAt != "2026-05-07T12:00:00Z" {
+		t.Errorf("scoped window = %v @ %q, want 42.0 @ 2026-05-07T12:00:00Z", got.SevenDaySonnetUtil, got.SevenDaySonnetResetsAt)
+	}
+	if got.SevenDayScopedLabel != "Fable" {
+		t.Errorf("SevenDayScopedLabel = %q, want %q", got.SevenDayScopedLabel, "Fable")
+	}
+}
+
 func TestUpsertDistinctEmailsCoexist(t *testing.T) {
 	st := openTempStore(t)
 	ctx := context.Background()

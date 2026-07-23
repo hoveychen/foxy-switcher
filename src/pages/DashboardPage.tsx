@@ -12,7 +12,7 @@ import {
   type UsageWindow,
 } from "../api";
 import type { Route } from "../components/Sidebar";
-import { t, tf } from "../i18n";
+import { t, tf, scopedUsageLabel } from "../i18n";
 
 type Tone = "ok" | "warn" | "danger" | "muted";
 type Policy = "lru" | "lowest" | "rr";
@@ -434,7 +434,7 @@ function HeroCard({
           <HeroUsageBar label={t("drawer.usage.5h")} win={account.five_hour} nowMs={nowMs} />
           <HeroUsageBar label={t("drawer.usage.7d_opus")} win={account.seven_day} nowMs={nowMs} />
           <HeroUsageBar
-            label={t("drawer.usage.7d_sonnet")}
+            label={scopedUsageLabel(account.seven_day_scoped_label)}
             win={account.seven_day_sonnet}
             nowMs={nowMs}
           />

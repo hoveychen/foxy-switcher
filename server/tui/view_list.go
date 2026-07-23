@@ -341,7 +341,7 @@ func (m *model) renderInlineDetail(a Account, innerW int) string {
 	sb.WriteString(renderUsageWindow(a.SevenDay))
 	sb.WriteString("\n")
 	sb.WriteString(indent)
-	sb.WriteString("7d Sonnet ")
+	sb.WriteString(fmt.Sprintf("%-10s", "7d "+a.ScopedModelLabel()))
 	sb.WriteString(renderUsageWindow(a.SevenDaySonnet))
 	sb.WriteString("\n")
 	sb.WriteString(indent)
@@ -383,7 +383,7 @@ func (m *model) renderDetailBody(innerW int) string {
 	usageBody := strings.Join([]string{
 		"5h        " + renderUsageWindow(a.FiveHour),
 		"7d Opus   " + renderUsageWindow(a.SevenDay),
-		"7d Sonnet " + renderUsageWindow(a.SevenDaySonnet),
+		fmt.Sprintf("%-10s", "7d "+a.ScopedModelLabel()) + renderUsageWindow(a.SevenDaySonnet),
 	}, "\n")
 	usageW := innerW
 	if usageW > 44 {
