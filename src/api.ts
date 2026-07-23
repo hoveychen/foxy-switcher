@@ -250,14 +250,17 @@ export interface ThresholdInput {
   seven_day_sonnet: number;
 }
 
-// accountIsCooling mirrors selector.exceedsThreshold in the Go daemon: true
-// when any per-window utilization has reached the matching threshold. Use it
-// everywhere the UI needs to flag accounts the selector would skip.
+// accountIsCooling mirrors selector.hardThreshold in the Go daemon: true when a
+// HARD window (5h / 7d) has reached its threshold — i.e. the whole account is
+// throttled and the selector would skip it. The per-model weekly-scoped window
+// (seven_day_sonnet slot — Fable/…) is deliberately excluded: reaching it only
+// caps that one model, the account stays selectable (as a degraded fallback),
+// so it must NOT flag the account as cooling. Use scopedIsThrottled for the
+// per-model bar indicator instead.
 export function accountIsCooling(a: Account): boolean {
   const w = [
     [a.five_hour, a.five_hour_threshold] as const,
     [a.seven_day, a.seven_day_threshold] as const,
-    [a.seven_day_sonnet, a.seven_day_sonnet_threshold] as const,
   ];
   for (const [u, t] of w) {
     if (u && u.utilization >= t) return true;
@@ -265,10 +268,23 @@ export function accountIsCooling(a: Account): boolean {
   return false;
 }
 
+// scopedIsThrottled mirrors selector.scopedThreshold: the per-model
+// weekly-scoped window (Fable/…) has hit its cap. This does NOT make the
+// account unavailable — it only marks that one model as capped, so the UI
+// shows a "degraded / model capped" badge on the scoped bar rather than
+// flagging the whole account as cooling.
+export function scopedIsThrottled(a: Account): boolean {
+  return (
+    !!a.seven_day_sonnet &&
+    a.seven_day_sonnet.utilization >= a.seven_day_sonnet_threshold
+  );
+}
+
 // accountResetAt returns the soonest future reset (unix ms) across the
-// account's throttled windows, or 0 when no window is throttled / no
-// throttled window has a future parseable resets_at. Pair with
-// accountIsCooling to render "cooling — resets in N min".
+// account's HARD throttled windows (5h / 7d), or 0 when none is throttled / has
+// a future parseable resets_at. The scoped window is excluded for the same
+// reason as accountIsCooling. Pair with accountIsCooling to render
+// "cooling — resets in N min".
 export function accountResetAt(a: Account, now: Date = new Date()): number {
   const candidates: UsageWindow[] = [];
   if (a.five_hour && a.five_hour.utilization >= a.five_hour_threshold) {
@@ -276,12 +292,6 @@ export function accountResetAt(a: Account, now: Date = new Date()): number {
   }
   if (a.seven_day && a.seven_day.utilization >= a.seven_day_threshold) {
     candidates.push(a.seven_day);
-  }
-  if (
-    a.seven_day_sonnet &&
-    a.seven_day_sonnet.utilization >= a.seven_day_sonnet_threshold
-  ) {
-    candidates.push(a.seven_day_sonnet);
   }
   let best = 0;
   for (const c of candidates) {

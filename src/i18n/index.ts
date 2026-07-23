@@ -84,6 +84,12 @@ export function tf(key: string, vars: Record<string, string | number>): string {
 // limits[] and the scoped model can be Fable (not always Sonnet), so we label
 // the bar with the actual model name when the backend reports one, falling back
 // to the legacy "7d Sonnet" string for older data with no label.
-export function scopedUsageLabel(model?: string): string {
-  return model ? tf("drawer.usage.7d_scoped", { model }) : t("drawer.usage.7d_sonnet");
+export function scopedUsageLabel(model?: string, capped = false): string {
+  const base = model
+    ? tf("drawer.usage.7d_scoped", { model })
+    : t("drawer.usage.7d_sonnet");
+  // When the scoped model is capped, mark the bar "· capped" so it reads as a
+  // soft, model-only limit (the account is still usable, just degraded) rather
+  // than the account being down. See api.scopedIsThrottled / selector.scopedThreshold.
+  return capped ? `${base} · ${t("drawer.usage.capped")}` : base;
 }
