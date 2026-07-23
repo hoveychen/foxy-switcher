@@ -159,8 +159,11 @@ func (c *Client) AcquireLease(ctx context.Context, accountID int64, deviceID str
 	return lease, nil
 }
 
-func (c *Client) RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (vault.Lease, error) {
-	body := map[string]any{"ttl_ms": ttl.Milliseconds()}
+func (c *Client) RenewLease(ctx context.Context, leaseID string, ttl, idleFor time.Duration) (vault.Lease, error) {
+	if idleFor < 0 {
+		idleFor = 0
+	}
+	body := map[string]any{"ttl_ms": ttl.Milliseconds(), "idle_ms": idleFor.Milliseconds()}
 	var lease vault.Lease
 	resp, err := c.do(ctx, http.MethodPost, "/agent/v1/leases/"+url.PathEscape(leaseID)+"/renew", body)
 	if err != nil {

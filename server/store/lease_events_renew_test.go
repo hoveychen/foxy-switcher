@@ -92,7 +92,7 @@ func TestRenew_RenewLeaseBackfillsMissingSegment(t *testing.T) {
 	acquired := time.Now().Add(-2 * time.Hour).UnixMilli()
 	grandfatheredLease(t, st, "lease-1", a.ID, "dev-1", acquired)
 
-	if _, err := st.RenewLease(ctx, "lease-1", time.Minute); err != nil {
+	if _, err := st.RenewLease(ctx, "lease-1", time.Minute, 0); err != nil {
 		t.Fatalf("renew: %v", err)
 	}
 

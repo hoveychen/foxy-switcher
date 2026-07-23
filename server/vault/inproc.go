@@ -83,12 +83,40 @@ func (s *InProc) PickProviderForDevice(ctx context.Context, now time.Time, devic
 			return nil, selector.ErrNoAvailable
 		}
 	}
-	return selector.PickProviderWithFilter(ctx, s.st, provider, now, deviceID, func(a Account) bool {
+	acc, err := selector.PickProviderWithFilter(ctx, s.st, provider, now, deviceID, func(a Account) bool {
 		if deviceID == "" {
 			return s.st.IsAccountLeased(a.ID)
 		}
 		return s.st.IsAccountLeasedByOther(a.ID, deviceID)
 	})
+	if err == nil || !errors.Is(err, selector.ErrNoAvailable) {
+		return acc, err
+	}
+	// Pool exhausted — every eligible account is leased. This is the ONLY
+	// trigger for idle-reclaim: run a second pass whose filter treats a foreign
+	// lease as a disqualifier only while its holder is still active (reported
+	// activity within DefaultIdleReclaimThreshold). An account held solely by an
+	// idle device therefore becomes pickable, and the selector still ranks by
+	// eligibility so a hard-capped account is never handed out. Combined/local
+	// mode (deviceID == "") never reclaims — there are no competing devices.
+	if deviceID == "" {
+		return acc, err
+	}
+	thresholdMs := DefaultIdleReclaimThreshold.Milliseconds()
+	acc, err2 := selector.PickProviderWithFilter(ctx, s.st, provider, now, deviceID, func(a Account) bool {
+		return s.st.IsAccountLeasedByOtherActive(a.ID, deviceID, thresholdMs)
+	})
+	if err2 != nil {
+		// Still nothing reclaimable — surface the original ErrNoAvailable so the
+		// caller's no-available handling (hold keychain, retry next tick) runs.
+		return nil, err
+	}
+	// Free the idle foreign lease on the chosen account (no-op when the account
+	// was simply unleased) so the caller's AcquireLease can take it over.
+	if _, rerr := s.st.ReclaimIdleForeignLease(ctx, acc.ID, deviceID, thresholdMs); rerr != nil {
+		return nil, rerr
+	}
+	return acc, nil
 }
 
 func (s *InProc) MarkUsed(ctx context.Context, accountID int64) error {
@@ -132,8 +160,8 @@ func (s *InProc) AcquireLease(ctx context.Context, accountID int64, deviceID str
 	return Lease{ID: got.ID, AccountID: got.AccountID, ExpiresAt: got.ExpiresAt}, nil
 }
 
-func (s *InProc) RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (Lease, error) {
-	got, err := s.st.RenewLease(ctx, leaseID, ttl)
+func (s *InProc) RenewLease(ctx context.Context, leaseID string, ttl, idleFor time.Duration) (Lease, error) {
+	got, err := s.st.RenewLease(ctx, leaseID, ttl, idleFor)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return Lease{}, ErrLeaseNotFound

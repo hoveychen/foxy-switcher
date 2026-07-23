@@ -296,6 +296,11 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 		} else {
 			cc.SetClaudeConfigPath(p)
 		}
+		if p, err := credinject.DefaultClaudeProjectsDir(); err != nil {
+			logger.Printf("warning: resolve claude projects dir: %v (idle-reclaim disabled)", err)
+		} else {
+			cc.SetActivityDir(p)
+		}
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
 				logger.Printf("warning: restore native credentials: %v", err)

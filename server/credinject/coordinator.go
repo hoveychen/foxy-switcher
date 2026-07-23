@@ -43,6 +43,12 @@ const (
 	StartupGracePeriod = 90 * time.Second
 )
 
+// errIdleParked is refreshLease's benign "I'm idle and hold no slot, so I did
+// nothing" result. reconcile treats it like any other non-nil error (bail this
+// tick without writing the keychain), but it carries no failure — it's the
+// steady state of an idle, parked agent waiting for the user to return.
+var errIdleParked = errors.New("credinject: idle, lease parked")
+
 // Coordinator owns the credinjection state machine. One instance per daemon.
 //
 // Lifecycle:
@@ -85,6 +91,20 @@ type Coordinator struct {
 	// leaseTTL is the lifetime requested on AcquireLease/RenewLease. The
 	// reconcile loop renews on every tick.
 	leaseTTL time.Duration
+
+	// activityDir is ~/.claude/projects — the tree Claude Code writes session
+	// transcripts into. idleFor() derives last-real-activity from the newest
+	// transcript mtime there. Empty disables the probe (idleFor reports active),
+	// which turns idle-reclaim off for this agent. Set via SetActivityDir.
+	activityDir string
+	// idleThreshold is how long without local activity before this agent stops
+	// competing for a slot: at/above it, refreshLease won't acquire a new lease
+	// (only renew a held one) and, once reclaimed, stays parked. Kept equal to
+	// the vault's reclaim threshold so both sides agree on "idle".
+	idleThreshold time.Duration
+	// activityProbe, when non-nil, replaces the filesystem probe — a test seam
+	// so unit tests can drive idleFor deterministically without touching disk.
+	activityProbe func() time.Duration
 
 	mu               sync.Mutex
 	currentAccountID int64
@@ -194,8 +214,24 @@ func New(svc vault.Service, backend Backend, dataDir string, logger *log.Logger,
 		trigger:             make(chan struct{}, 1),
 		deviceID:            deviceID,
 		leaseTTL:            DefaultLeaseTTL,
+		idleThreshold:       vault.DefaultIdleReclaimThreshold,
 		restoreOnQuit:       true,
 	}
+}
+
+// SetActivityDir wires ~/.claude/projects so idleFor() can measure last-real-
+// activity from Claude Code's session transcripts, enabling idle-lease-reclaim.
+// main.go / agent.go pass DefaultClaudeProjectsDir(); leaving it unset (the
+// default, and what tests do) disables the probe — idleFor then always reports
+// active, so this agent never marks its lease reclaimable. Safe on a nil
+// receiver.
+func (c *Coordinator) SetActivityDir(dir string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.activityDir = dir
 }
 
 // newDeviceID returns a random opaque identifier.
@@ -464,6 +500,25 @@ func (c *Coordinator) chooseManual(ctx context.Context, currentID int64) (*vault
 }
 
 func (c *Coordinator) reconcile(ctx context.Context) {
+	// Measure local Claude Code activity once per tick. idleFor feeds two
+	// decisions: the "am I active?" gate below, and the value reported on
+	// RenewLease so the vault knows whether a held lease is idle-reclaimable.
+	idleFor := c.idleFor()
+	active := idleFor < c.idleThreshold
+
+	// Idle-and-not-holding: there's nothing to renew and we won't acquire a
+	// slot we're not using, so skip the pick entirely. This also keeps an idle
+	// agent from tripping the vault's under-pressure reclaim on a Pick it would
+	// never act on. When real activity resumes, a later tick falls through and
+	// acquires. (An idle agent that still HOLDS a lease proceeds — it must keep
+	// renewing so the vault sees fresh idleFor, per the zero-churn design.)
+	c.mu.Lock()
+	haveLease := c.currentLeaseID != ""
+	c.mu.Unlock()
+	if !active && !haveLease {
+		return
+	}
+
 	a, err := c.choose(ctx)
 	if err != nil {
 		if errors.Is(err, selector.ErrNoAvailable) {
@@ -489,8 +544,9 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 	// If the vault rejects the lease (another device is already injecting
 	// this account), bail out without writing the keychain. The next
 	// reconcile will pick a different account because vault.Pick excludes
-	// foreign-leased accounts.
-	if err := c.refreshLease(ctx, a.ID); err != nil {
+	// foreign-leased accounts. An idle-parked result (errIdleParked) is also a
+	// benign bail — we hold no slot and won't grab one until active again.
+	if err := c.refreshLease(ctx, a.ID, idleFor); err != nil {
 		return
 	}
 
@@ -599,21 +655,51 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 // this account. The reconcile loop bails on that — injecting in parallel
 // with another agent races the one-time-use refresh_token and is exactly
 // what the lease was added to prevent.
-func (c *Coordinator) refreshLease(ctx context.Context, accountID int64) error {
+func (c *Coordinator) refreshLease(ctx context.Context, accountID int64, idleFor time.Duration) error {
 	c.mu.Lock()
 	prevAccountID := c.currentAccountID
 	leaseID := c.currentLeaseID
 	c.mu.Unlock()
 
+	active := idleFor < c.idleThreshold
+
 	if leaseID != "" && prevAccountID == accountID {
-		if _, err := c.svc.RenewLease(ctx, leaseID, c.leaseTTL); err == nil {
+		// Renew the held lease, reporting idleFor so the vault can tell a
+		// live-but-idle lease apart from one in active use. Success is the
+		// common steady-state path — including for an idle holder, which keeps
+		// its slot (zero churn) until the vault actually reclaims it.
+		if _, err := c.svc.RenewLease(ctx, leaseID, c.leaseTTL, idleFor); err == nil {
 			return nil
 		}
-		// Lease vanished server-side; re-acquire below.
+		// Renew failed: the lease expired (vault GC / restart) or the vault
+		// reclaimed it under pool pressure because we've been idle.
+		if !active {
+			// Idle → park: drop the local lease and DON'T re-grab an account
+			// we're not using. When activity resumes, a later tick re-acquires.
+			c.mu.Lock()
+			c.currentLeaseID = ""
+			c.mu.Unlock()
+			return errIdleParked
+		}
+		// Active → fall through and re-acquire our slot below.
+	} else if !active {
+		// We hold no lease for this account (fresh start, or a prior reclaim
+		// cleared it) and we're idle — don't acquire a slot we won't use.
+		return errIdleParked
 	}
 
 	lease, err := c.svc.AcquireLease(ctx, accountID, c.deviceID, c.leaseTTL)
 	if err != nil {
+		if errors.Is(err, vault.ErrLeaseLocked) {
+			// The account is now held by another device — we lost it (reclaimed
+			// while briefly idle, or a plain acquire race). Drop stickiness so
+			// the next reconcile re-picks a free account via PickForDevice
+			// instead of looping on this now-foreign account.
+			c.mu.Lock()
+			c.currentLeaseID = ""
+			c.currentAccountID = 0
+			c.mu.Unlock()
+		}
 		c.logger.Printf("[credinject] acquire lease for account %d: %v", accountID, err)
 		return err
 	}

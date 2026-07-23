@@ -82,7 +82,16 @@ CREATE TABLE IF NOT EXISTS leases (
   account_id    INTEGER NOT NULL,
   device_id     TEXT    NOT NULL,
   acquired_at   INTEGER NOT NULL,
-  expires_at    INTEGER NOT NULL
+  expires_at    INTEGER NOT NULL,
+  -- last_active_at is the wall-clock (ms) of the holding agent's last REAL
+  -- local Claude Code activity, as reported on each RenewLease (now - idleFor).
+  -- Distinct from expires_at (which the 5s renew keeps fresh regardless of use):
+  -- a lease can be live yet idle. Idle-beyond-threshold leases become
+  -- reclaimable so an active device that finds the pool exhausted can preempt
+  -- one. Defaults to 0 (legacy rows / treated as "very old" → reclaimable);
+  -- AcquireLease stamps it to acquire-time since a fresh acquire is by
+  -- definition active.
+  last_active_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS leases_account_id_uniq ON leases (account_id);
 CREATE INDEX IF NOT EXISTS leases_device_id ON leases (device_id);
@@ -131,6 +140,11 @@ var authColumnMigrations = []string{
 	`ALTER TABLE devices ADD COLUMN allow_codex INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE pairings ADD COLUMN allow_claude INTEGER NOT NULL DEFAULT 1`,
 	`ALTER TABLE pairings ADD COLUMN allow_codex INTEGER NOT NULL DEFAULT 0`,
+	// Idle-reclaim bookkeeping: the holding agent reports its last real Claude
+	// Code activity on each renew. Legacy rows migrate to 0 ("very old"); since
+	// leases expire within a TTL (~60s) any pre-migration row is gone almost
+	// immediately, so no backfill from acquired_at is needed.
+	`ALTER TABLE leases ADD COLUMN last_active_at INTEGER NOT NULL DEFAULT 0`,
 }
 
 const passwordHashKey = "auth.password_hash"
