@@ -167,12 +167,21 @@ type UsageWindow struct {
 }
 
 // Usage is the parsed response of /api/oauth/usage. Any window can be nil if
-// the endpoint omits it (Sonnet-only accounts may not have seven_day_sonnet,
-// for example).
+// the endpoint omits it.
+//
+// SevenDaySonnet is the per-model weekly-scoped window. Anthropic used to
+// surface it as the top-level `seven_day_sonnet` object, but now returns that
+// null and expresses the model-scoped weekly cap through a `limits[]` entry
+// with `kind == "weekly_scoped"` — whose scoped model can be Fable (not always
+// Sonnet). We keep the field name for continuity but treat it as a generic
+// scoped window; ScopedLabel carries the model's display name (e.g. "Fable")
+// so the UI can label the bar dynamically instead of hardcoding "Sonnet".
+// Empty when no scoped window is present.
 type Usage struct {
 	FiveHour       *UsageWindow
 	SevenDay       *UsageWindow
 	SevenDaySonnet *UsageWindow
+	ScopedLabel    string
 }
 
 // DerivePlan computes the human-readable plan label from the canonical
@@ -262,11 +271,60 @@ func FetchUsage(ctx context.Context, accessToken string) (*Usage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Usage{
-		FiveHour:       parseWindow(body["five_hour"]),
-		SevenDay:       parseWindow(body["seven_day"]),
-		SevenDaySonnet: parseWindow(body["seven_day_sonnet"]),
-	}, nil
+	u := &Usage{
+		FiveHour: parseWindow(body["five_hour"]),
+		SevenDay: parseWindow(body["seven_day"]),
+	}
+	// Prefer the per-model weekly-scoped window from limits[] (where Anthropic
+	// now expresses model-scoped weekly caps, e.g. Fable). Fall back to the
+	// legacy top-level `seven_day_sonnet` object for older responses that still
+	// populate it (labelled "Sonnet").
+	if w, label := parseScopedLimit(body["limits"]); w != nil {
+		u.SevenDaySonnet = w
+		u.ScopedLabel = label
+	} else if w := parseWindow(body["seven_day_sonnet"]); w != nil {
+		u.SevenDaySonnet = w
+		u.ScopedLabel = "Sonnet"
+	}
+	return u, nil
+}
+
+// parseScopedLimit extracts the per-model weekly-scoped window from the usage
+// API's `limits[]` array — the first entry with `kind == "weekly_scoped"`. Each
+// such entry carries the capped model under `scope.model.display_name` (e.g.
+// "Fable") and an integer `percent` (0–100, the same unit as UsageWindow —
+// NOT divided by 100). Returns (nil, "") when no scoped entry is present or it
+// lacks a model name / percent. Structure verified in claude-fleet against the
+// live usage API; not re-verified against the API here.
+func parseScopedLimit(v any) (*UsageWindow, string) {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, ""
+	}
+	for _, item := range arr {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if asString(m["kind"]) != "weekly_scoped" {
+			continue
+		}
+		percent, hasPercent := m["percent"].(float64)
+		if !hasPercent {
+			continue
+		}
+		scope, _ := m["scope"].(map[string]any)
+		model, _ := scope["model"].(map[string]any)
+		label := asString(model["display_name"])
+		if label == "" {
+			continue
+		}
+		return &UsageWindow{
+			Utilization: percent,
+			ResetsAt:    asString(m["resets_at"]),
+		}, label
+	}
+	return nil, ""
 }
 
 func parseWindow(v any) *UsageWindow {
