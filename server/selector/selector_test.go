@@ -154,6 +154,118 @@ func TestPickAllOverThresholdReturnsErrNoAvailable(t *testing.T) {
 	}
 }
 
+// TestPickScopedExceededStaysUsable is the core regression for the
+// scoped-model (Fable) soft-degrade: an account whose only maxed window is the
+// weekly-scoped one (seven_day_sonnet slot) must remain selectable — the
+// account's 5h / 7d headroom means Opus etc. still work, only the scoped model
+// is capped. The old behaviour hard-excluded it, so a pool where every account
+// had Fable maxed wrongly returned ErrNoAvailable and dropped to native creds.
+func TestPickScopedExceededStaysUsable(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	a := &store.Account{Name: "fable-maxed", Email: "fm@x", AccessToken: "at", RefreshToken: "rt", ExpiresAt: time.Now().Add(2 * time.Hour).UnixMilli()}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// 5h + 7d have plenty of headroom; only the scoped (Fable) window is maxed.
+	if err := st.SetUsage(ctx, a.ID,
+		10, "2026-04-30T05:00:00Z",
+		20, "2026-05-07T00:00:00Z",
+		99, "2026-05-07T00:00:00Z", "Fable",
+	); err != nil {
+		t.Fatalf("set usage: %v", err)
+	}
+	if err := st.SetThresholds(ctx, a.ID, 95, 95, 95); err != nil {
+		t.Fatalf("set thresholds: %v", err)
+	}
+
+	got, err := Pick(ctx, st, time.Now())
+	if err != nil {
+		t.Fatalf("scoped-exceeded account must stay usable (5h/7d have headroom), got %v", err)
+	}
+	if got.ID != a.ID {
+		t.Fatalf("expected account %d, got %d", a.ID, got.ID)
+	}
+}
+
+// TestPickAllScopedExceededStillPicks: when EVERY account has the scoped window
+// maxed (but 5h/7d fine), the pool is not exhausted — Pick still returns a
+// degraded account (lowest 7d runway within the degraded tier), never
+// ErrNoAvailable.
+func TestPickAllScopedExceededStillPicks(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	lowRunway := &store.Account{Name: "low7d", Email: "l@x", AccessToken: "at1", RefreshToken: "rt", ExpiresAt: now.Add(2 * time.Hour).UnixMilli()}
+	highRunway := &store.Account{Name: "high7d", Email: "h@x", AccessToken: "at2", RefreshToken: "rt", ExpiresAt: now.Add(2 * time.Hour).UnixMilli()}
+	if err := st.Upsert(ctx, lowRunway); err != nil {
+		t.Fatalf("upsert low: %v", err)
+	}
+	if err := st.Upsert(ctx, highRunway); err != nil {
+		t.Fatalf("upsert high: %v", err)
+	}
+	// Both scoped-maxed; lowRunway has the better (lower) 7d utilization.
+	if err := st.SetUsage(ctx, lowRunway.ID, 0, "", 5, "2026-05-07T00:00:00Z", 99, "2026-05-07T00:00:00Z", "Fable"); err != nil {
+		t.Fatalf("set usage low: %v", err)
+	}
+	if err := st.SetUsage(ctx, highRunway.ID, 0, "", 50, "2026-05-07T00:00:00Z", 99, "2026-05-07T00:00:00Z", "Fable"); err != nil {
+		t.Fatalf("set usage high: %v", err)
+	}
+	for _, id := range []int64{lowRunway.ID, highRunway.ID} {
+		if err := st.SetThresholds(ctx, id, 95, 95, 95); err != nil {
+			t.Fatalf("set thresholds: %v", err)
+		}
+	}
+
+	got, err := Pick(ctx, st, now)
+	if err != nil {
+		t.Fatalf("all-scoped-exceeded pool must still pick a degraded account, got %v", err)
+	}
+	if got.ID != lowRunway.ID {
+		t.Fatalf("expected lowest-7d degraded account %d, got %d", lowRunway.ID, got.ID)
+	}
+}
+
+// TestPickPrefersScopedOkOverDegraded pins the tier ordering: a scoped-OK
+// account is chosen over a scoped-exceeded (degraded) one even when the
+// degraded account has more 7d runway. Runway only breaks ties WITHIN a tier.
+func TestPickPrefersScopedOkOverDegraded(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	degradedBetterRunway := &store.Account{Name: "degraded", Email: "d@x", AccessToken: "at1", RefreshToken: "rt", ExpiresAt: now.Add(2 * time.Hour).UnixMilli()}
+	okWorseRunway := &store.Account{Name: "ok", Email: "o@x", AccessToken: "at2", RefreshToken: "rt", ExpiresAt: now.Add(2 * time.Hour).UnixMilli()}
+	if err := st.Upsert(ctx, degradedBetterRunway); err != nil {
+		t.Fatalf("upsert degraded: %v", err)
+	}
+	if err := st.Upsert(ctx, okWorseRunway); err != nil {
+		t.Fatalf("upsert ok: %v", err)
+	}
+	// degraded: great 7d runway but Fable maxed. ok: worse 7d runway, Fable fine.
+	if err := st.SetUsage(ctx, degradedBetterRunway.ID, 0, "", 5, "2026-05-07T00:00:00Z", 99, "2026-05-07T00:00:00Z", "Fable"); err != nil {
+		t.Fatalf("set usage degraded: %v", err)
+	}
+	if err := st.SetUsage(ctx, okWorseRunway.ID, 0, "", 50, "2026-05-07T00:00:00Z", 10, "2026-05-07T00:00:00Z", "Fable"); err != nil {
+		t.Fatalf("set usage ok: %v", err)
+	}
+	for _, id := range []int64{degradedBetterRunway.ID, okWorseRunway.ID} {
+		if err := st.SetThresholds(ctx, id, 95, 95, 95); err != nil {
+			t.Fatalf("set thresholds: %v", err)
+		}
+	}
+
+	got, err := Pick(ctx, st, now)
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if got.ID != okWorseRunway.ID {
+		t.Fatalf("expected scoped-OK account %d (high tier) over degraded %d despite worse runway, got %d", okWorseRunway.ID, degradedBetterRunway.ID, got.ID)
+	}
+}
+
 func TestPickProviderKeepsClaudeAndCodexPoolsIsolated(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
