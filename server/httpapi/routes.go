@@ -223,8 +223,11 @@ type accountView struct {
 	OrganizationName string `json:"organization_name"`
 	Plan             string `json:"plan"`
 	// Usage snapshot, refreshed by the usage scheduler.
-	FiveHour       *usageWindowView `json:"five_hour,omitempty"`
-	SevenDay       *usageWindowView `json:"seven_day,omitempty"`
+	FiveHour *usageWindowView `json:"five_hour,omitempty"`
+	SevenDay *usageWindowView `json:"seven_day,omitempty"`
+	// SevenDaySonnet is a legacy name (JSON key kept for frontend/TUI wire
+	// compat): it carries the per-model weekly-scoped window (Fable/…), labelled
+	// by SevenDayScopedLabel. See store.Account.SevenDaySonnetUtil.
 	SevenDaySonnet *usageWindowView `json:"seven_day_sonnet,omitempty"`
 	// SevenDayScopedLabel is the model display name for the seven_day_sonnet
 	// slot, which now carries the per-model weekly-scoped window (e.g. "Fable").
@@ -239,8 +242,10 @@ type accountView struct {
 	UsageFetchedAt int64            `json:"usage_fetched_at"`
 	// Per-account utilization thresholds (0–100). Schema default is 95;
 	// 100 means "do not skip on this window".
-	FiveHourThreshold       float64 `json:"five_hour_threshold"`
-	SevenDayThreshold       float64 `json:"seven_day_threshold"`
+	FiveHourThreshold float64 `json:"five_hour_threshold"`
+	SevenDayThreshold float64 `json:"seven_day_threshold"`
+	// Threshold for the weekly-scoped window (Fable/…), NOT Sonnet — legacy
+	// name/key. See store.Account.SevenDaySonnetUtil.
 	SevenDaySonnetThreshold float64 `json:"seven_day_sonnet_threshold"`
 	// Lease is the per-account current-holder metadata for multi-device
 	// deployments: device that holds the live lease, its display name,
@@ -254,13 +259,15 @@ type accountView struct {
 
 // deviceShareView is one device's attributed contribution to an account's
 // usage, in utilization points (0–100, same unit as the bars) for the current
-// 5h / 7d / 7d-sonnet window. The frontend turns these into a share % by
+// 5h / 7d / weekly-scoped window. The frontend turns these into a share % by
 // dividing each device's points by the per-window total.
 type deviceShareView struct {
-	DeviceID       string  `json:"device_id"`   // "" for the unattributed bucket
-	DeviceName     string  `json:"device_name"` // "" for the unattributed bucket
-	FiveHour       float64 `json:"five_hour"`
-	SevenDay       float64 `json:"seven_day"`
+	DeviceID   string  `json:"device_id"`   // "" for the unattributed bucket
+	DeviceName string  `json:"device_name"` // "" for the unattributed bucket
+	FiveHour   float64 `json:"five_hour"`
+	SevenDay   float64 `json:"seven_day"`
+	// Legacy name/key: points for the per-model weekly-scoped window (Fable/…),
+	// not Sonnet. See store.Account.SevenDaySonnetUtil.
 	SevenDaySonnet float64 `json:"seven_day_sonnet"`
 	// LastUsedAt: approximate last time this device actually drove usage (unix
 	// millis); 0/omitted when never observed. Real-consumption grounded, unlike

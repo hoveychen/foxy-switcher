@@ -124,6 +124,9 @@ func exceedsThreshold(a store.Account) bool {
 	if a.SevenDayResetsAt != "" && a.SevenDayUtil >= a.SevenDayThreshold {
 		return true
 	}
+	// seven_day_sonnet_* is a legacy name for the per-model weekly-scoped window
+	// (Fable/…); this gate throttles on it just like the other windows. See
+	// store.Account.SevenDaySonnetUtil.
 	if a.SevenDaySonnetResetsAt != "" && a.SevenDaySonnetUtil >= a.SevenDaySonnetThreshold {
 		return true
 	}

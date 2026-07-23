@@ -85,7 +85,10 @@ type Account struct {
 	Plan             string       `json:"plan"`
 	FiveHour         *UsageWindow `json:"five_hour,omitempty"`
 	SevenDay         *UsageWindow `json:"seven_day,omitempty"`
-	SevenDaySonnet   *UsageWindow `json:"seven_day_sonnet,omitempty"`
+	// SevenDaySonnet is a legacy name (JSON key kept for wire compat): it carries
+	// the per-model weekly-scoped window (Fable/…). Render its label with
+	// ScopedModelLabel(). See server/store Account.SevenDaySonnetUtil.
+	SevenDaySonnet *UsageWindow `json:"seven_day_sonnet,omitempty"`
 	// SevenDayScopedLabel is the model display name for the seven_day_sonnet
 	// slot, which now carries the per-model weekly-scoped window (e.g. "Fable").
 	// Empty for legacy data; use ScopedModelLabel() to render.

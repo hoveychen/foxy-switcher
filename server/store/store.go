@@ -71,10 +71,18 @@ type Account struct {
 	// Usage fields refreshed periodically from /api/oauth/usage.
 	// Utilization is 0–100 (percent). ResetsAt is RFC3339; empty when the
 	// API didn't return that window.
-	FiveHourUtil           float64
-	FiveHourResetsAt       string
-	SevenDayUtil           float64
-	SevenDayResetsAt       string
+	FiveHourUtil     float64
+	FiveHourResetsAt string
+	SevenDayUtil     float64
+	SevenDayResetsAt string
+	// LEGACY NAME — READ THIS BEFORE USING SevenDaySonnet*:
+	// The `sonnet` name is kept only to avoid a wire/DB/settings-key migration.
+	// This slot no longer means "Sonnet": it holds the per-model *weekly-scoped*
+	// usage window, whose model is whatever Anthropic scopes the weekly cap to
+	// (currently Fable, historically Sonnet). The model's display name lives in
+	// SevenDayScopedLabel. Source of truth for the semantics: anthropic.Usage
+	// (SevenDaySonnet + ScopedLabel) and anthropic.parseScopedLimit. Don't add
+	// Sonnet-specific logic here — treat it as a generic scoped window.
 	SevenDaySonnetUtil     float64
 	SevenDaySonnetResetsAt string
 	// SevenDayScopedLabel is the model display name for the seven_day_sonnet
@@ -89,8 +97,10 @@ type Account struct {
 	// account when any window's util has reached the matching threshold.
 	// Default 95 leaves a small buffer below the upstream 429 line; raise
 	// to 100 to opt out of pre-emptive skipping for that window.
-	FiveHourThreshold       float64
-	SevenDayThreshold       float64
+	FiveHourThreshold float64
+	SevenDayThreshold float64
+	// Threshold for the weekly-scoped window above (Fable/…), NOT Sonnet —
+	// see the SevenDaySonnetUtil legacy-name note.
 	SevenDaySonnetThreshold float64
 }
 
@@ -136,6 +146,10 @@ CREATE TABLE IF NOT EXISTS accounts (
   five_hour_resets_at        TEXT    NOT NULL DEFAULT '',
   seven_day_util             REAL    NOT NULL DEFAULT 0,
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
+  -- The seven_day_sonnet_* columns are a LEGACY NAME: they store the per-model
+  -- weekly-scoped window (Fable/…), not a Sonnet-specific one. The scoped
+  -- model's display name is in seven_day_scoped_label. Name kept to avoid a
+  -- column-rename migration; see Account.SevenDaySonnetUtil.
   seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
   seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
   seven_day_scoped_label     TEXT    NOT NULL DEFAULT '',
@@ -190,6 +204,8 @@ CREATE TABLE IF NOT EXISTS usage_history (
   ts                    INTEGER NOT NULL,
   five_hour_util        REAL NOT NULL DEFAULT 0,
   seven_day_util        REAL NOT NULL DEFAULT 0,
+  -- Legacy name: samples of the weekly-scoped window (Fable/…), not Sonnet.
+  -- Feeds per-device attribution. See Account.SevenDaySonnetUtil.
   seven_day_sonnet_util REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS usage_history_ts ON usage_history (ts DESC);
@@ -733,9 +749,12 @@ SELECT account_id, ts, five_hour_util, seven_day_util, seven_day_sonnet_util
 	return out, rows.Err()
 }
 
-// SetUsage replaces the usage snapshot for one account. Pointer fields may be
-// nil, in which case the corresponding columns are zeroed (the API didn't
-// return that window this poll).
+// SetUsage replaces the usage snapshot for one account. Zero util + empty
+// resets_at means "the API didn't return that window this poll".
+//
+// The sevenDaySonnet* args are a legacy name: they carry the per-model
+// weekly-scoped window (Fable/…), and sevenDayScopedLabel is that model's
+// display name. See Account.SevenDaySonnetUtil.
 func (s *Store) SetUsage(ctx context.Context, id int64,
 	fiveHourUtil float64, fiveHourResetsAt string,
 	sevenDayUtil float64, sevenDayResetsAt string,
@@ -1067,8 +1086,12 @@ type Settings struct {
 	// (and, even earlier, `cooldown_threshold_percent`). GetSettings lifts
 	// either legacy single value into all three windows so old persisted
 	// blobs survive the split into per-window defaults.
-	DefaultFiveHourThreshold       float64 `json:"default_five_hour"`
-	DefaultSevenDayThreshold       float64 `json:"default_seven_day"`
+	DefaultFiveHourThreshold float64 `json:"default_five_hour"`
+	DefaultSevenDayThreshold float64 `json:"default_seven_day"`
+	// Pool-wide default threshold for the weekly-scoped window (Fable/…), NOT
+	// Sonnet. The `sonnet` name (field + json key) is legacy, kept to avoid a
+	// persisted-settings-key migration; the window it gates is the generic
+	// per-model scoped one. See Account.SevenDaySonnetUtil.
 	DefaultSevenDaySonnetThreshold float64 `json:"default_seven_day_sonnet"`
 	// RestoreNativeOnQuit gates the credinject Restore call at shutdown. Off
 	// is "leave whatever was last injected in place" — useful for users who

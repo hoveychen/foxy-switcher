@@ -14,10 +14,12 @@ import (
 // consumption that happened before the first observed snapshot (e.g. right
 // after a daemon restart) can't be attributed and is silently absent.
 type DeviceShare struct {
-	DeviceID       string
-	DeviceName     string
-	FiveHour       float64
-	SevenDay       float64
+	DeviceID   string
+	DeviceName string
+	FiveHour   float64
+	SevenDay   float64
+	// SevenDaySonnet is a legacy name: attribution points for the per-model
+	// weekly-scoped window (Fable/…), not Sonnet. See store.Account.SevenDaySonnetUtil.
 	SevenDaySonnet float64
 	// LastUsedAt is the approximate last moment this device actually drove
 	// usage on the account: the end of the most recent interval (across any

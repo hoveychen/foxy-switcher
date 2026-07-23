@@ -173,6 +173,10 @@ export interface Account {
   plan: string;
   five_hour?: UsageWindow;
   seven_day?: UsageWindow;
+  // LEGACY NAME: `seven_day_sonnet` (field + wire key) no longer means Sonnet.
+  // It carries the per-model weekly-scoped window (Fable/…); the model's name is
+  // in seven_day_scoped_label. Kept to avoid a wire-contract migration — always
+  // render its label via scopedUsageLabel(), never hardcode "Sonnet".
   seven_day_sonnet?: UsageWindow;
   // Model display name for the seven_day_sonnet slot, which now carries the
   // per-model weekly-scoped window (e.g. "Fable") parsed from the usage API's
@@ -183,6 +187,8 @@ export interface Account {
   // Per-window utilization thresholds (0–100). Schema default 95; 100 = no skip.
   five_hour_threshold: number;
   seven_day_threshold: number;
+  // Threshold for the weekly-scoped window (Fable/…), NOT Sonnet — legacy
+  // name/key. See the seven_day_sonnet note above.
   seven_day_sonnet_threshold: number;
   // Per-account lease info populated by the vault when a remote agent is
   // currently using this account. Nil when no live lease exists.
@@ -215,6 +221,8 @@ export interface DeviceShare {
   device_name: string;
   five_hour: number;
   seven_day: number;
+  // Legacy name/key: points for the weekly-scoped window (Fable/…), not Sonnet.
+  // See the Account.seven_day_sonnet note.
   seven_day_sonnet: number;
   // Approximate last time this device actually drove usage (unix millis).
   // Grounded in real utilization deltas, not the lease's acquired_at, so a
@@ -237,6 +245,8 @@ export interface AccountAttribution {
 export interface ThresholdInput {
   five_hour: number;
   seven_day: number;
+  // Legacy name/key: threshold for the weekly-scoped window (Fable/…), not
+  // Sonnet. See the Account.seven_day_sonnet note.
   seven_day_sonnet: number;
 }
 
@@ -379,6 +389,8 @@ export interface Settings {
   // The "apply to all accounts" action writes these across existing rows.
   default_five_hour: number;
   default_seven_day: number;
+  // Legacy name/key: pool-wide default threshold for the weekly-scoped window
+  // (Fable/…), not Sonnet. See the Account.seven_day_sonnet note.
   default_seven_day_sonnet: number;
   restore_native_on_quit: boolean;
 }
@@ -437,6 +449,8 @@ export interface DashboardTrendBucket {
   ts: number;
   five_hour: number;
   seven_day: number;
+  // Legacy name/key: peak util for the weekly-scoped window (Fable/…), not
+  // Sonnet. See the Account.seven_day_sonnet note. (Not currently plotted.)
   seven_day_sonnet: number;
   // Weighted pool aggregates per bucket. used and capacity are in
   // Pro-equivalents (see planWeight); percent is used/capacity*100 with 0
