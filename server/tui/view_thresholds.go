@@ -30,7 +30,7 @@ func (m *model) viewThresholds() string {
 
 	a := m.accountByID(m.thresholdAccountID)
 
-	labels := [3]string{"5h", "7d", "7d (Sonnet)"}
+	labels := [3]string{"5h", "7d", "7d (" + a.ScopedModelLabel() + ")"}
 	var body strings.Builder
 	for i, label := range labels {
 		row := fmt.Sprintf("  %-12s", label)
