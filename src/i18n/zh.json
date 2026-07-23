@@ -337,7 +337,7 @@
   "settings.threshold_default.sub": "新账号每个时间窗口的占用率默认阈值。",
   "settings.threshold_default.five_hour": "默认阈值 · 5 小时",
   "settings.threshold_default.seven_day": "默认阈值 · 7 天",
-  "settings.threshold_default.seven_day_sonnet": "默认阈值 · 7 天 Sonnet",
+  "settings.threshold_default.seven_day_sonnet": "默认阈值 · 7 天限定模型",
   "settings.threshold_default.apply.label": "应用到所有账号",
   "settings.threshold_default.apply.sub": "用上面三个默认值覆盖所有已有账号的阈值（含手动调过的）。",
   "settings.threshold_default.apply.button": "应用到所有账号",
