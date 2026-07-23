@@ -413,6 +413,11 @@ func (s *Server) handleAcquireLease(w http.ResponseWriter, r *http.Request) {
 
 type renewLeaseReq struct {
 	TTLMillis int64 `json:"ttl_ms"`
+	// IdleMillis is how long the agent has gone without real local Claude Code
+	// activity (0 == active). Older agents omit it → 0 → treated as active, so
+	// their leases never become reclaimable — a safe, backward-compatible
+	// default (the feature only ever frees leases it's sure are idle).
+	IdleMillis int64 `json:"idle_ms"`
 }
 
 func (s *Server) handleRenewLease(w http.ResponseWriter, r *http.Request) {
@@ -430,7 +435,9 @@ func (s *Server) handleRenewLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("ttl_ms required"))
 		return
 	}
-	lease, err := s.svc.RenewLease(r.Context(), leaseID, time.Duration(req.TTLMillis)*time.Millisecond)
+	lease, err := s.svc.RenewLease(r.Context(), leaseID,
+		time.Duration(req.TTLMillis)*time.Millisecond,
+		time.Duration(req.IdleMillis)*time.Millisecond)
 	if err != nil {
 		if errors.Is(err, vault.ErrLeaseNotFound) {
 			writeError(w, http.StatusNotFound, err)

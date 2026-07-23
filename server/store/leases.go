@@ -22,6 +22,9 @@ type Lease struct {
 	DeviceID   string
 	AcquiredAt int64
 	ExpiresAt  int64
+	// LastActiveAt is the ms wall-clock of the holder's last real Claude Code
+	// activity (now - idleFor, reported on renew). Drives idle-reclaim.
+	LastActiveAt int64
 }
 
 // AcquireLease records (or replaces) the lease for accountID. Semantics:
@@ -69,10 +72,12 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// Free — insert the lease and open its attribution segment.
+		// last_active_at = now: a fresh acquire is by definition active, so the
+		// account can't be immediately reclaimed from the new holder.
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO leases (id, account_id, device_id, acquired_at, expires_at)
-			 VALUES (?, ?, ?, ?, ?)`,
-			newID, accountID, deviceID, now.UnixMilli(), expiresAt); err != nil {
+			`INSERT INTO leases (id, account_id, device_id, acquired_at, expires_at, last_active_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			newID, accountID, deviceID, now.UnixMilli(), expiresAt, now.UnixMilli()); err != nil {
 			return Lease{}, err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -88,17 +93,19 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 			return Lease{}, err
 		}
 		return Lease{ID: newID, AccountID: accountID, DeviceID: deviceID,
-			AcquiredAt: now.UnixMilli(), ExpiresAt: expiresAt}, nil
+			AcquiredAt: now.UnixMilli(), ExpiresAt: expiresAt, LastActiveAt: now.UnixMilli()}, nil
 	case err != nil:
 		return Lease{}, err
 	}
 	if existingDeviceID != deviceID {
 		return Lease{}, ErrLeaseLocked
 	}
-	// Same device — renew in place.
+	// Same device — renew in place. Re-stamp last_active_at: a device that
+	// re-acquires (rather than renews) its own account is going through the
+	// active-selection path, so treat it as freshly active.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE leases SET expires_at = ? WHERE id = ?`,
-		expiresAt, existingID); err != nil {
+		`UPDATE leases SET expires_at = ?, last_active_at = ? WHERE id = ?`,
+		expiresAt, now.UnixMilli(), existingID); err != nil {
 		return Lease{}, err
 	}
 	// Backfill an attribution segment for a lease that has none — e.g. one
@@ -116,21 +123,31 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 		return Lease{}, err
 	}
 	return Lease{ID: existingID, AccountID: accountID, DeviceID: deviceID,
-		AcquiredAt: now.UnixMilli(), ExpiresAt: expiresAt}, nil
+		AcquiredAt: now.UnixMilli(), ExpiresAt: expiresAt, LastActiveAt: now.UnixMilli()}, nil
 }
 
 // RenewLease bumps a known lease's TTL. Returns ErrNotFound when the
 // lease has expired or been released — caller is expected to re-acquire.
-func (s *Store) RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (Lease, error) {
+//
+// idleFor is how long the holding agent has gone without real local Claude
+// Code activity (0 == active right now). It's recorded as
+// last_active_at = now - idleFor so the vault can tell a live-but-idle lease
+// apart from a live-and-in-use one for idle-reclaim. A negative idleFor
+// (clock skew) is clamped to 0.
+func (s *Store) RenewLease(ctx context.Context, leaseID string, ttl, idleFor time.Duration) (Lease, error) {
 	if leaseID == "" || ttl <= 0 {
 		return Lease{}, fmt.Errorf("RenewLease: id and ttl required")
 	}
+	if idleFor < 0 {
+		idleFor = 0
+	}
 	now := time.Now()
 	expiresAt := now.Add(ttl).UnixMilli()
+	lastActiveAt := now.Add(-idleFor).UnixMilli()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE leases SET expires_at = ?
+		`UPDATE leases SET expires_at = ?, last_active_at = ?
 		   WHERE id = ? AND expires_at > ?`,
-		expiresAt, leaseID, now.UnixMilli())
+		expiresAt, lastActiveAt, leaseID, now.UnixMilli())
 	if err != nil {
 		return Lease{}, err
 	}
@@ -140,9 +157,9 @@ func (s *Store) RenewLease(ctx context.Context, leaseID string, ttl time.Duratio
 	}
 	var l Lease
 	err = s.db.QueryRowContext(ctx,
-		`SELECT id, account_id, device_id, acquired_at, expires_at
+		`SELECT id, account_id, device_id, acquired_at, expires_at, last_active_at
 		   FROM leases WHERE id = ?`, leaseID).
-		Scan(&l.ID, &l.AccountID, &l.DeviceID, &l.AcquiredAt, &l.ExpiresAt)
+		Scan(&l.ID, &l.AccountID, &l.DeviceID, &l.AcquiredAt, &l.ExpiresAt, &l.LastActiveAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Lease{}, ErrNotFound
 	}
@@ -450,6 +467,77 @@ func (s *Store) IsAccountLeasedByOther(accountID int64, deviceID string) bool {
 		return false
 	}
 	return n == 1
+}
+
+// IsAccountLeasedByOtherActive reports whether accountID has a live lease held
+// by a device OTHER than deviceID that is NOT idle-reclaimable — i.e. the
+// holder reported real activity within the last idleThresholdMs. Used as the
+// second-pass Pick filter for idle-reclaim: an account whose only foreign lease
+// is idle-beyond-threshold returns false here (not excluded), so the selector
+// may hand it to an active, pool-starved device. A missing threshold
+// (idleThresholdMs <= 0) collapses to IsAccountLeasedByOther (never reclaim).
+func (s *Store) IsAccountLeasedByOtherActive(accountID int64, deviceID string, idleThresholdMs int64) bool {
+	now := time.Now().UnixMilli()
+	if idleThresholdMs <= 0 {
+		return s.IsAccountLeasedByOther(accountID, deviceID)
+	}
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT 1 FROM leases
+		   WHERE account_id = ? AND device_id != ? AND expires_at > ?
+		     AND last_active_at > ?
+		   LIMIT 1`,
+		accountID, deviceID, now, now-idleThresholdMs).Scan(&n); err != nil {
+		return false
+	}
+	return n == 1
+}
+
+// ReclaimIdleForeignLease releases (deletes + closes the attribution segment of)
+// a live lease on accountID held by a device OTHER than deviceID whose holder
+// has been idle for at least idleThresholdMs, freeing the account so the caller
+// can AcquireLease it. Returns true when a lease was reclaimed, false when there
+// was nothing eligible to reclaim (no foreign lease, or it's still active).
+// Idempotent and race-tolerant: if the row vanishes between select and delete,
+// it simply reports false. The caller's subsequent AcquireLease is the
+// authoritative take-over — a lost race there surfaces as ErrLeaseLocked.
+func (s *Store) ReclaimIdleForeignLease(ctx context.Context, accountID int64, deviceID string, idleThresholdMs int64) (bool, error) {
+	if idleThresholdMs <= 0 {
+		return false, nil
+	}
+	now := time.Now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var leaseID string
+	err = tx.QueryRowContext(ctx,
+		`SELECT id FROM leases
+		   WHERE account_id = ? AND device_id != ? AND expires_at > ?
+		     AND last_active_at <= ?
+		   LIMIT 1`,
+		accountID, deviceID, now, now-idleThresholdMs).Scan(&leaseID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// Close the attribution segment at now (mirrors ReleaseLease) so per-device
+	// usage replay stops counting the reclaimed hold, then drop the row.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE lease_events SET ended_at = ? WHERE lease_id = ? AND ended_at = 0`,
+		now, leaseID); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM leases WHERE id = ?`, leaseID); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // SweepLeases deletes expired rows so the leases_account_id_uniq index

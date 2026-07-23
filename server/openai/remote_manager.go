@@ -176,7 +176,12 @@ func (m *RemoteManager) Reconcile(ctx context.Context) error {
 
 func (m *RemoteManager) ensureLease(ctx context.Context, accountID int64) (vault.Lease, error) {
 	if m.currentLeaseID != "" && m.currentAccountID == accountID {
-		lease, err := m.svc.RenewLease(ctx, m.currentLeaseID, remoteLeaseTTL)
+		// idleFor 0: the Codex remote manager has no local-activity probe, so it
+		// always reports "active". Its leases therefore never become
+		// idle-reclaimable — idle-reclaim is scoped to the Claude Code agent,
+		// whose activity signal (~/.claude/projects session files) is
+		// Claude-specific. Reporting 0 preserves Codex's pre-feature behaviour.
+		lease, err := m.svc.RenewLease(ctx, m.currentLeaseID, remoteLeaseTTL, 0)
 		if err == nil {
 			return lease, nil
 		}

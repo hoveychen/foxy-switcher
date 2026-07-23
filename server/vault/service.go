@@ -46,6 +46,17 @@ type Lease struct {
 	ExpiresAt int64 // unix millis
 }
 
+// DefaultIdleReclaimThreshold is how long a lease's holder must have gone
+// without real local Claude Code activity before the lease becomes reclaimable
+// — i.e. an active, pool-starved device may preempt it. Chosen comfortably
+// above normal "reading the output / thinking" pauses so a brief idle never
+// costs a user their slot (reclaim also only fires under genuine pool
+// exhaustion), yet short enough to free machines left running unused. Both the
+// vault (reclaim decision) and the agent (its "am I active enough to acquire?"
+// gate) key off this single value so the two sides never disagree about which
+// leases are idle.
+const DefaultIdleReclaimThreshold = 10 * time.Minute
+
 // Service is what credinject.Coordinator depends on. It's intentionally
 // small: only the operations the coordinator's choose / reconcile / reverse-
 // sync paths perform. Future steps will widen this surface as more agent-
@@ -110,8 +121,14 @@ type Service interface {
 
 	// RenewLease bumps the TTL on an existing lease. Returns ErrLeaseNotFound
 	// when the lease has already expired or been released — caller should
-	// re-AcquireLease in that case.
-	RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (Lease, error)
+	// re-AcquireLease in that case. Note: ErrLeaseNotFound now also covers
+	// "the vault reclaimed this idle lease under pool pressure", so an idle
+	// agent must NOT blindly re-acquire on it (see credinject.refreshLease).
+	//
+	// idleFor is how long the caller has gone without real local Claude Code
+	// activity (0 == active). The vault records it so a live-but-idle lease can
+	// be told apart from one in active use and reclaimed under pressure.
+	RenewLease(ctx context.Context, leaseID string, ttl, idleFor time.Duration) (Lease, error)
 
 	// ReleaseLease removes the lease early. Idempotent.
 	ReleaseLease(ctx context.Context, leaseID string) error

@@ -88,6 +88,11 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		} else {
 			cc.SetClaudeConfigPath(p)
 		}
+		if p, err := credinject.DefaultClaudeProjectsDir(); err != nil {
+			logger.Printf("warning: resolve claude projects dir: %v (idle-reclaim disabled)", err)
+		} else {
+			cc.SetActivityDir(p)
+		}
 		// Read auto-switch from the agent-local store rather than the
 		// remote vault. The desktop's settings page writes the toggle to
 		// agent-activity.db via /api/auto-switch (see registerLocalPrefRoutes

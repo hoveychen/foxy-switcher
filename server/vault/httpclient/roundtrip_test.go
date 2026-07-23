@@ -212,7 +212,7 @@ func TestRoundtrip_LeaseLifecycle(t *testing.T) {
 		t.Fatal("server-side LeaseStore did not record the lease")
 	}
 
-	renewed, err := f.client.RenewLease(context.Background(), lease.ID, time.Minute)
+	renewed, err := f.client.RenewLease(context.Background(), lease.ID, time.Minute, 0)
 	if err != nil {
 		t.Fatalf("RenewLease: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestRoundtrip_LeaseLifecycle(t *testing.T) {
 
 func TestRoundtrip_RenewMissingLeaseIsNotFound(t *testing.T) {
 	f := newRoundtripFixture(t)
-	_, err := f.client.RenewLease(context.Background(), "no-such-lease", time.Minute)
+	_, err := f.client.RenewLease(context.Background(), "no-such-lease", time.Minute, 0)
 	if err == nil {
 		t.Fatal("RenewLease: want error, got nil")
 	}
