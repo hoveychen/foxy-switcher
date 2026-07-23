@@ -416,7 +416,7 @@ func (p *settingsPage) view() string {
 		behaviorRows = append(behaviorRows,
 			p.renderRow(rowDefaultFiveHour, "Default 5h threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultFiveHourThreshold)),
 			p.renderRow(rowDefaultSevenDay, "Default 7d threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultSevenDayThreshold)),
-			p.renderRow(rowDefaultSevenDaySonnet, "Default 7d Sonnet threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultSevenDaySonnetThreshold)),
+			p.renderRow(rowDefaultSevenDaySonnet, "Default 7d scoped-model threshold", fmt.Sprintf("%.0f%%", p.settings.DefaultSevenDaySonnetThreshold)),
 		)
 	}
 	behaviorRows = append(behaviorRows, p.renderRow(rowRestoreNative, "Restore native on quit", boolValue(p.settings.RestoreNativeOnQuit)))

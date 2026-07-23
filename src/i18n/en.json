@@ -337,7 +337,7 @@
   "settings.threshold_default.sub": "Pool default for new accounts' per-window utilization threshold.",
   "settings.threshold_default.five_hour": "Default threshold · 5h",
   "settings.threshold_default.seven_day": "Default threshold · 7d",
-  "settings.threshold_default.seven_day_sonnet": "Default threshold · 7d Sonnet",
+  "settings.threshold_default.seven_day_sonnet": "Default threshold · 7d scoped model",
   "settings.threshold_default.apply.label": "Apply to all accounts",
   "settings.threshold_default.apply.sub": "Overwrite every existing account's thresholds with the three defaults above (including manually-tuned ones).",
   "settings.threshold_default.apply.button": "Apply to all accounts",
