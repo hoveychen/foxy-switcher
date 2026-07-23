@@ -60,7 +60,7 @@ func TestSelect_RejectsThrottled(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 	resets := time.Now().Add(time.Hour).Format(time.RFC3339)
-	if err := st.SetUsage(ctx, a.ID, 95, resets, 0, "", 0, ""); err != nil {
+	if err := st.SetUsage(ctx, a.ID, 95, resets, 0, "", 0, "", ""); err != nil {
 		t.Fatalf("setusage: %v", err)
 	}
 	srv := New(st, nil, nil, "")

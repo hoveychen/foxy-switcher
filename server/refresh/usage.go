@@ -297,7 +297,7 @@ func (p *UsagePoller) pollCodex(ctx context.Context, a store.Account) bool {
 		secondaryReset = u.Secondary.ResetAt.Format(time.RFC3339)
 	}
 	if err := p.st.SetUsage(ctx, a.ID,
-		primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, ""); err != nil {
+		primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "", ""); err != nil {
 		p.logger.Printf("[usage] Codex account %d store: %v", a.ID, err)
 		return false
 	}
@@ -333,7 +333,7 @@ func writeUsage(ctx context.Context, st *store.Store, id int64, u *anthropic.Usa
 	if u.SevenDaySonnet != nil {
 		ssR = u.SevenDaySonnet.ResetsAt
 	}
-	return st.SetUsage(ctx, id, fhU, fhR, sdU, sdR, ssU, ssR)
+	return st.SetUsage(ctx, id, fhU, fhR, sdU, sdR, ssU, ssR, u.ScopedLabel)
 }
 
 func flattenUsage(u *anthropic.Usage) (fhU, sdU, ssU float64) {
