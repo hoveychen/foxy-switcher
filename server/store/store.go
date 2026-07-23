@@ -404,7 +404,7 @@ COMMIT;
 // migrateDropCooldownColumns drops the legacy `cooldown_until` and `last_429_at`
 // columns. They backed a manual / planned-429-driven cooldown feature that was
 // removed in favour of the per-window utilization thresholds (see
-// selector.exceedsThreshold) and the existing pause/resume controls.
+// selector.hardThreshold / scopedThreshold) and the existing pause/resume controls.
 //
 // SQLite < 3.35 doesn't support DROP COLUMN, so we go through the same
 // table-rebuild dance as migrateLegacyOrgUnique. Idempotent: returns
