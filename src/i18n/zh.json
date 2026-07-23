@@ -389,6 +389,7 @@
   "drawer.usage.5h": "5h",
   "drawer.usage.7d_opus": "7d Opus",
   "drawer.usage.7d_sonnet": "7d Sonnet",
+  "drawer.usage.7d_scoped": "7d {model}",
   "drawer.usage.no_data": "暂无数据",
   "drawer.usage.threshold_aria": "{label} 跳过阈值",
   "drawer.usage.threshold_title": "≥ {pct}% 时跳过",

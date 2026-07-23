@@ -9,7 +9,7 @@ import type {
 import { accountIsCooling, accountResetAt, apiClient } from "../api";
 import { Drawer } from "./Drawer";
 import { FoxAvatar } from "./FoxAvatar";
-import { t, tf } from "../i18n";
+import { t, tf, scopedUsageLabel } from "../i18n";
 
 // Stable per-device segment colours for the attribution bars. Index-assigned
 // (backend already sorts devices by total contribution), wrapping if a pool
@@ -198,7 +198,7 @@ function UsageBar({
 // cooldown). Fetched on open; silently hidden if the endpoint is unavailable
 // (e.g. an agent-mode proxy that doesn't forward it) so it never breaks the
 // drawer.
-function AttributionSection({ accountId }: { accountId: number }) {
+function AttributionSection({ accountId, scopedLabel }: { accountId: number; scopedLabel?: string }) {
   const [attr, setAttr] = useState<AccountAttribution | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -224,7 +224,7 @@ function AttributionSection({ accountId }: { accountId: number }) {
   const windows: { key: keyof Omit<DeviceShare, "device_id" | "device_name" | "last_used_at">; label: string }[] = [
     { key: "five_hour", label: t("drawer.usage.5h") },
     { key: "seven_day", label: t("drawer.usage.7d_opus") },
-    { key: "seven_day_sonnet", label: t("drawer.usage.7d_sonnet") },
+    { key: "seven_day_sonnet", label: scopedUsageLabel(scopedLabel) },
   ];
 
   const rows = attr.devices.map((d, i) => ({
@@ -482,7 +482,7 @@ export function AccountDrawer({
           />
           {account.provider !== "codex" && (
             <UsageBar
-              label={t("drawer.usage.7d_sonnet")}
+              label={scopedUsageLabel(account.seven_day_scoped_label)}
               win={account.seven_day_sonnet}
               nowMs={nowMs}
               threshold={account.seven_day_sonnet_threshold}
@@ -493,7 +493,9 @@ export function AccountDrawer({
         </div>
       </div>
 
-      {account.provider !== "codex" && <AttributionSection accountId={account.id} />}
+      {account.provider !== "codex" && (
+        <AttributionSection accountId={account.id} scopedLabel={account.seven_day_scoped_label} />
+      )}
 
       <div className="drawer-section">
         <h3 className="drawer-section-title">{t("drawer.section.details")}</h3>

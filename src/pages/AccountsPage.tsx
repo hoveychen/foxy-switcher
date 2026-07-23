@@ -14,7 +14,7 @@ import {
   ICON_GRID,
   ICON_LIST,
 } from "../components/icons";
-import { t, tf } from "../i18n";
+import { t, tf, scopedUsageLabel } from "../i18n";
 
 type LoginState =
   | { phase: "idle" }
@@ -357,7 +357,7 @@ function AccountCard({
         />
         {a.provider !== "codex" && (
           <UsageMiniBar
-            label={t("drawer.usage.7d_sonnet")}
+            label={scopedUsageLabel(a.seven_day_scoped_label)}
             win={a.seven_day_sonnet}
           />
         )}
