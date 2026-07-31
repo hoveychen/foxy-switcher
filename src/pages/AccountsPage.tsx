@@ -6,6 +6,7 @@ import { Icon } from "../components/Icon";
 import { Topbar } from "../components/Topbar";
 import { FoxAvatar } from "../components/FoxAvatar";
 import { Modal } from "../components/Modal";
+import { OpenRouterModal } from "../components/OpenRouterModal";
 import {
   ICON_PLUS,
   ICON_COPY,
@@ -36,7 +37,7 @@ type CodexLoginState =
 type Tone = "ok" | "warn" | "danger" | "muted";
 
 type StatusFilter = "all" | "active" | "paused" | "cooling";
-type ProviderFilter = "all" | "claude" | "codex";
+type ProviderFilter = "all" | "claude" | "codex" | "openrouter";
 
 type ViewMode = "grid" | "list";
 
@@ -62,6 +63,7 @@ const PROVIDER_FILTERS: Array<{ key: ProviderFilter; labelKey: string }> = [
   { key: "all", labelKey: "accounts.providers.all" },
   { key: "claude", labelKey: "accounts.providers.claude" },
   { key: "codex", labelKey: "accounts.providers.codex" },
+  { key: "openrouter", labelKey: "accounts.providers.openrouter" },
 ];
 
 function fmtRemaining(ms: number): string {
@@ -243,6 +245,7 @@ function AccountCard({
   onReauth,
   onDelete,
   onTogglePause,
+  onEditOpenRouter,
   busy,
   disableAdminActions,
 }: {
@@ -257,6 +260,7 @@ function AccountCard({
   onReauth: () => void;
   onDelete: () => void;
   onTogglePause: () => void;
+  onEditOpenRouter: () => void;
   busy: boolean;
   disableAdminActions: boolean;
 }) {
@@ -347,19 +351,38 @@ function AccountCard({
         </div>
       </div>
       <div className="account-card-usage">
-        <UsageMiniBar
-          label={t(a.provider === "codex" ? "accounts.usage.primary" : "drawer.usage.5h")}
-          win={a.five_hour}
-        />
-        <UsageMiniBar
-          label={t(a.provider === "codex" ? "accounts.usage.secondary" : "drawer.usage.7d_opus")}
-          win={a.seven_day}
-        />
-        {a.provider !== "codex" && (
-          <UsageMiniBar
-            label={scopedUsageLabel(a.seven_day_scoped_label, scopedIsThrottled(a))}
-            win={a.seven_day_sonnet}
-          />
+        {a.provider === "openrouter" ? (
+          // OpenRouter is pay-as-you-go: there are no subscription usage
+          // windows to render. Show the policy that actually governs it — how
+          // many models devices may pick and the per-key spend cap.
+          <div className="usage-row usage-row-compact">
+            <span className="usage-label">{t("accounts.openrouter.policy")}</span>
+            <span className="usage-empty">
+              {tf("accounts.openrouter.policy_value", {
+                models: a.openrouter?.allowed_models.length ?? 0,
+                limit: a.openrouter?.limit_usd
+                  ? `$${a.openrouter.limit_usd}`
+                  : t("accounts.openrouter.no_limit"),
+              })}
+            </span>
+          </div>
+        ) : (
+          <>
+            <UsageMiniBar
+              label={t(a.provider === "codex" ? "accounts.usage.primary" : "drawer.usage.5h")}
+              win={a.five_hour}
+            />
+            <UsageMiniBar
+              label={t(a.provider === "codex" ? "accounts.usage.secondary" : "drawer.usage.7d_opus")}
+              win={a.seven_day}
+            />
+            {a.provider !== "codex" && (
+              <UsageMiniBar
+                label={scopedUsageLabel(a.seven_day_scoped_label, scopedIsThrottled(a))}
+                win={a.seven_day_sonnet}
+              />
+            )}
+          </>
         )}
       </div>
       <KebabMenu
@@ -377,19 +400,33 @@ function AccountCard({
                 },
               ]
             : []),
-          {
-            label: fLease
-              ? t("accounts.kebab.leased_by_other")
-              : isInUse
-                ? t("accounts.kebab.in_use")
-                : t("accounts.kebab.use_now"),
-            onClick: onUseNow,
-            disabled: isInUse || !isSelectable(a),
-          },
+          // OpenRouter is configured, not selected: it holds no lease and
+          // every authorised device uses it at once, so "use now" and
+          // "refresh" are meaningless. Editing its policy is the real action.
+          ...(a.provider === "openrouter"
+            ? disableAdminActions
+              ? []
+              : [
+                  {
+                    label: t("accounts.kebab.edit_openrouter"),
+                    onClick: onEditOpenRouter,
+                  },
+                ]
+            : [
+                {
+                  label: fLease
+                    ? t("accounts.kebab.leased_by_other")
+                    : isInUse
+                      ? t("accounts.kebab.in_use")
+                      : t("accounts.kebab.use_now"),
+                  onClick: onUseNow,
+                  disabled: isInUse || !isSelectable(a),
+                },
+              ]),
           // Refresh is hidden in agent mode (cloud vault owns token
           // rotation). Disabled when another device holds the lease so
           // we don't 401 their live CC session.
-          ...(disableAdminActions
+          ...(disableAdminActions || a.provider === "openrouter"
             ? []
             : [
                 {
@@ -507,6 +544,9 @@ export function AccountsPage({
   const [codexImporting, setCodexImporting] = useState(false);
   const [codexLogin, setCodexLogin] = useState<CodexLoginState>({ phase: "idle" });
   const [codexPasted, setCodexPasted] = useState("");
+  // null + closed = no modal; null + open = "add"; an account = "edit".
+  const [openRouterEditing, setOpenRouterEditing] = useState<Account | null>(null);
+  const [openRouterAdding, setOpenRouterAdding] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
 
   const setViewModePersisted = useCallback((mode: ViewMode) => {
@@ -705,6 +745,16 @@ export function AccountsPage({
                 </button>
               )}
               <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setOpenRouterEditing(null);
+                  setOpenRouterAdding(true);
+                }}
+                disabled={modalOpen || codexImporting || codexModalOpen}
+              >
+                {t("accounts.add_openrouter")}
+              </button>
+              <button
                 className="btn btn-primary"
                 onClick={startLogin}
                 disabled={modalOpen || codexImporting || codexModalOpen}
@@ -871,6 +921,7 @@ export function AccountsPage({
                   onReauth={a.provider === "codex" ? importCodex : startLogin}
                   onDelete={() => onDelete(a.id)}
                   onTogglePause={() => onTogglePause(a)}
+                  onEditOpenRouter={() => setOpenRouterEditing(a)}
                   busy={busyAccountId === a.id}
                   disableAdminActions={disableAdminActions}
                 />
@@ -878,6 +929,16 @@ export function AccountsPage({
             </div>
           )}
         </div>
+
+        <OpenRouterModal
+          open={openRouterAdding || openRouterEditing !== null}
+          account={openRouterEditing}
+          onClose={() => {
+            setOpenRouterAdding(false);
+            setOpenRouterEditing(null);
+          }}
+          onSaved={onRefresh}
+        />
 
         <Modal
           open={modalOpen}

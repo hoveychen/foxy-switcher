@@ -3,7 +3,6 @@
   "nav.accounts": "Accounts",
   "nav.activity": "Activity",
   "nav.settings": "Settings",
-
   "sidebar.health.ok": "Daemon healthy",
   "sidebar.health.down": "Daemon unreachable",
   "sidebar.collapse": "Collapse sidebar",
@@ -12,12 +11,10 @@
   "sidebar.health.label.ok": "Daemon",
   "sidebar.health.label.down": "Offline",
   "sidebar.admin.section": "Admin",
-
   "page.dashboard.title": "Dashboard",
   "page.accounts.title": "Accounts",
   "page.activity.title": "Activity",
   "page.settings.title": "Settings",
-
   "banner.disconnect.title": "Daemon unreachable.",
   "banner.disconnect.attached": "An external daemon owns this session — restart it where you launched it (TUI / go run).",
   "banner.disconnect.owned": "The Go sidecar isn't responding. Restarting respawns it cleanly.",
@@ -25,23 +22,19 @@
   "banner.disconnect.restart": "Restart daemon",
   "banner.disconnect.restarting": "Restarting…",
   "banner.dismiss": "Dismiss",
-
   "update.title": "A new version of Foxy Switcher is available.",
   "update.available": "You're on v{current} — v{latest} is ready to install.",
   "update.update_now": "Update now",
   "update.later": "Later",
-
   "common.cancel": "Cancel",
   "common.loading": "Loading…",
   "common.no_events_match": "No events match this filter.",
-
   "topbar.manual.title": "Auto Switch is off",
   "topbar.manual.label": "Manual",
   "topbar.auto.aria": "Auto Switch",
   "topbar.auto.title.on": "Auto Switch: On",
   "topbar.auto.title.off": "Auto Switch: Off",
   "topbar.auto.label": "Auto",
-
   "dashboard.title": "Overview",
   "dashboard.status.managing": "Managing {name}",
   "dashboard.status.idle": "Idle",
@@ -121,7 +114,6 @@
   "dashboard.compact.cooling_no_reset": "cooling",
   "dashboard.compact.refresh_due": "refresh due",
   "dashboard.fmt.expired": "expired",
-
   "accounts.title": "Accounts",
   "accounts.status.managing": "Managing {name}",
   "accounts.status.idle": "Idle",
@@ -204,7 +196,6 @@
   "accounts.view.list": "List",
   "accounts.view.grid.title": "Card grid — bigger, room for all three usage bars",
   "accounts.view.list.title": "Compact list — denser, one row per account",
-
   "activity.title": "Activity",
   "activity.filters.aria": "Event filter",
   "activity.filters.all": "All",
@@ -227,7 +218,6 @@
   "activity.relative.m": "{n}m ago",
   "activity.relative.h": "{n}h ago",
   "activity.relative.d": "{n}d ago",
-
   "settings.title": "Settings",
   "settings.themes.system.label": "System",
   "settings.themes.system.sub": "Follow OS appearance",
@@ -366,7 +356,6 @@
   "settings.footnote": "Changes save the moment you flip a control.",
   "settings.stepper.decrease": "Decrease",
   "settings.stepper.increase": "Increase",
-
   "drawer.identity.in_use": "In use",
   "drawer.identity.leased_by": "In use by {device} · {remaining} left",
   "drawer.actions.leased_by_other": "Held by another device",
@@ -414,15 +403,12 @@
   "drawer.status.active": "active",
   "drawer.status.leased_by_other": "in use by {device} · {remaining} left",
   "drawer.fmt.expired": "expired",
-
   "modal.close": "Close",
   "drawer.close": "Close detail",
-
   "onboarding.title": "Welcome to Foxy Switcher",
   "onboarding.subtitle": "A 45-second tour of how Foxy keeps your Claude accounts rotating.",
   "onboarding.skip": "Skip intro",
   "onboarding.done": "Got it",
-
   "onboarding.choose.title": "Where should your accounts live?",
   "onboarding.choose.body": "Foxy stores your Claude tokens in a vault. The vault can run on this device, or on a server you own that other devices share.",
   "onboarding.choose.local.title": "Local vault",
@@ -439,7 +425,6 @@
   "onboarding.cloud.pair.code_label": "Enter this code",
   "onboarding.cloud.pair.failure": "Couldn't reach the vault. Check the URL and try again.",
   "onboarding.cloud.pair.cancel": "Cancel",
-
   "app.delete_account.prompt": "Delete this account from the pool?",
   "app.delete_account.title": "Confirm delete",
   "app.foreign_lease.delete.title": "Account is in use",
@@ -447,7 +432,6 @@
   "app.foreign_lease.pause.title": "Account is in use",
   "app.foreign_lease.pause.prompt": "{device} is currently using this account. Pausing will evict their lease and break their CC session. Continue?",
   "app.error.restart_failed": "Restart failed: {error}",
-
   "admin.brand": "Foxy Vault",
   "admin.common.loading": "Loading…",
   "admin.nav.aria": "Vault admin",
@@ -457,11 +441,9 @@
   "admin.nav.login": "Sign in",
   "admin.nav.setup": "Setup",
   "admin.nav.logout": "Sign out",
-
   "admin.boot.error.title": "Couldn't reach the vault",
   "admin.boot.error.body": "The admin API didn't respond. Check that the vault is running and reachable.",
   "admin.boot.retry": "Retry",
-
   "admin.login.title": "Sign in",
   "admin.login.subtitle": "Enter your vault admin password to continue.",
   "admin.login.subtitle.with_next": "Sign in to continue to the page you requested.",
@@ -470,7 +452,6 @@
   "admin.login.signing_in": "Signing in…",
   "admin.login.error.wrong": "That password didn't match.",
   "admin.login.error.generic": "Couldn't sign you in. Please try again.",
-
   "admin.setup.title": "Set vault password",
   "admin.setup.subtitle": "This is a fresh vault. Pick the admin password used to approve agent pairings and manage devices.",
   "admin.setup.password": "Password",
@@ -480,7 +461,6 @@
   "admin.setup.error.mismatch": "Passwords must match and be non-empty.",
   "admin.setup.error.already": "A password is already set for this vault. Sign in instead.",
   "admin.setup.error.generic": "Couldn't save the password. Please try again.",
-
   "admin.devices.title": "Paired devices",
   "admin.devices.subtitle": "Each device that's paired with this vault gets a credential token. Revoke removes it immediately.",
   "admin.devices.empty": "No paired devices yet.",
@@ -519,7 +499,6 @@
   "admin.devices.error.rename": "Couldn't rename that device.",
   "admin.devices.pair_hint_prefix": "To add a new device, run the agent's pair command and visit ",
   "admin.devices.pair_hint_suffix": ".",
-
   "admin.pair.title": "Pair device",
   "admin.pair.subtitle": "Enter the user code your agent printed.",
   "admin.pair.code": "User code",
@@ -541,7 +520,6 @@
   "admin.pair.error.not_found": "Code expired or unknown.",
   "admin.pair.error.expired": "This code has already been answered or expired.",
   "admin.pair.error.generic": "Couldn't reach the vault. Please try again.",
-
   "admin.password.title": "Change password",
   "admin.password.subtitle": "Updates the admin password used to sign in to this vault.",
   "admin.password.current": "Current password",
@@ -552,5 +530,39 @@
   "admin.password.success": "Password updated.",
   "admin.password.error.mismatch": "New passwords must match and be non-empty.",
   "admin.password.error.wrong": "Current password is wrong.",
-  "admin.password.error.generic": "Couldn't update the password. Please try again."
+  "admin.password.error.generic": "Couldn't update the password. Please try again.",
+  "accounts.add_openrouter": "Add OpenRouter",
+  "accounts.providers.openrouter": "OpenRouter",
+  "accounts.kebab.edit_openrouter": "Edit OpenRouter policy…",
+  "accounts.openrouter.policy": "Policy",
+  "accounts.openrouter.policy_value": "{models} model(s) · {limit} per device key",
+  "accounts.openrouter.no_limit": "no cap",
+  "admin.pair.provider_openrouter": "OpenRouter",
+  "openrouter.title_add": "Add an OpenRouter account",
+  "openrouter.title_edit": "OpenRouter policy",
+  "openrouter.subtitle": "Each authorised device derives its own capped key from this account. The management key never leaves the vault.",
+  "openrouter.field.name": "Name",
+  "openrouter.field.name_placeholder": "Team pool",
+  "openrouter.field.models": "Allowed models",
+  "openrouter.field.models_placeholder": "deepseek/deepseek-v4-flash\nopenai/gpt-oss-120b",
+  "openrouter.field.models_hint": "One OpenRouter model slug per line. This same list is enforced upstream and decides which models appear in each device's model picker.",
+  "openrouter.field.limit": "Spend cap per device key (USD)",
+  "openrouter.field.limit_invalid": "Enter a number of 0 or more.",
+  "openrouter.field.limit_reset": "Cap resets",
+  "openrouter.reset.lifetime": "Never (lifetime cap)",
+  "openrouter.reset.daily": "Daily",
+  "openrouter.reset.weekly": "Weekly",
+  "openrouter.reset.monthly": "Monthly",
+  "openrouter.field.workspace": "Workspace ID (optional)",
+  "openrouter.field.workspace_placeholder": "Leave blank for the default workspace",
+  "openrouter.field.management_key": "Management key",
+  "openrouter.field.management_key_placeholder": "sk-or-v1-…",
+  "openrouter.field.management_key_keep": "Leave blank to keep the stored key",
+  "openrouter.field.management_key_hint": "A provisioning key, not an inference key. It is stored on the vault only and never sent to any device.",
+  "openrouter.revoke_warning": "Saving revokes the {count} key(s) devices already hold — each carries the current policy. Devices re-derive automatically.",
+  "openrouter.check": "Test key",
+  "openrouter.check_hint": "Checks the key is a management key and whether this plan enforces the model allowlist server-side.",
+  "openrouter.create": "Add account",
+  "openrouter.save": "Save policy",
+  "openrouter.cancel": "Cancel"
 }

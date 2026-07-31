@@ -1182,3 +1182,71 @@ input {
   color: var(--text-secondary);
   flex: 0 0 auto;
 }
+
+/* ─── OpenRouter account modal ────────────────────────────
+   Reuses the settings-card / settings-row idiom; these rules only add what
+   that idiom doesn't already cover: a text input style matching .sheet-field
+   input but usable outside a sheet, a two-up row, and hint tones. */
+
+.or-form {
+  margin: 0;
+}
+
+.or-input {
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 10px;
+  background: var(--bg-input);
+  border-radius: var(--radius-button);
+  border: none;
+  box-shadow: inset 0 0 0 0.5px var(--border-subtle);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: box-shadow 0.12s ease;
+}
+
+textarea.or-input {
+  resize: vertical;
+  line-height: 1.5;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.or-input:focus {
+  box-shadow:
+    inset 0 0 0 0.5px var(--border-focus),
+    var(--shadow-focus);
+}
+
+.or-input:disabled {
+  opacity: 0.5;
+}
+
+/* Two fields side by side (spend cap + reset interval), collapsing on narrow
+   windows so neither ever gets squeezed to unusable width. */
+.or-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.or-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.or-hint {
+  display: block;
+  margin-top: 4px;
+  line-height: 1.45;
+}
+
+.or-hint-error { color: var(--danger-text); }
+.or-hint-warn  { color: var(--warn-text); }
+.or-hint-ok    { color: var(--ok); }

@@ -3,7 +3,6 @@
   "nav.accounts": "账号",
   "nav.activity": "活动",
   "nav.settings": "设置",
-
   "sidebar.health.ok": "守护进程正常",
   "sidebar.health.down": "守护进程不可达",
   "sidebar.collapse": "折叠侧边栏",
@@ -12,12 +11,10 @@
   "sidebar.health.label.ok": "守护进程",
   "sidebar.health.label.down": "离线",
   "sidebar.admin.section": "管理",
-
   "page.dashboard.title": "仪表盘",
   "page.accounts.title": "账号",
   "page.activity.title": "活动",
   "page.settings.title": "设置",
-
   "banner.disconnect.title": "守护进程不可达。",
   "banner.disconnect.attached": "本会话由外部守护进程接管 —— 请在启动它的位置重启（TUI / go run）。",
   "banner.disconnect.owned": "Go sidecar 没有响应。重启后会干净地重新拉起。",
@@ -25,23 +22,19 @@
   "banner.disconnect.restart": "重启守护进程",
   "banner.disconnect.restarting": "重启中…",
   "banner.dismiss": "关闭",
-
   "update.title": "Foxy Switcher 有新版本可用。",
   "update.available": "当前 v{current}，最新 v{latest}。",
   "update.update_now": "立即更新",
   "update.later": "稍后",
-
   "common.cancel": "取消",
   "common.loading": "加载中…",
   "common.no_events_match": "没有事件符合此筛选。",
-
   "topbar.manual.title": "自动切换已关闭",
   "topbar.manual.label": "手动",
   "topbar.auto.aria": "自动切换",
   "topbar.auto.title.on": "自动切换：开",
   "topbar.auto.title.off": "自动切换：关",
   "topbar.auto.label": "自动",
-
   "dashboard.title": "总览",
   "dashboard.status.managing": "正在管理 {name}",
   "dashboard.status.idle": "空闲",
@@ -121,7 +114,6 @@
   "dashboard.compact.cooling_no_reset": "冷却中",
   "dashboard.compact.refresh_due": "需要刷新",
   "dashboard.fmt.expired": "已过期",
-
   "accounts.title": "账号",
   "accounts.status.managing": "正在管理 {name}",
   "accounts.status.idle": "空闲",
@@ -204,7 +196,6 @@
   "accounts.view.list": "列表",
   "accounts.view.grid.title": "卡片视图 —— 三条使用率独立显示",
   "accounts.view.list.title": "紧凑列表 —— 一行一个账号，更密",
-
   "activity.title": "活动",
   "activity.filters.aria": "事件筛选",
   "activity.filters.all": "全部",
@@ -227,7 +218,6 @@
   "activity.relative.m": "{n} 分钟前",
   "activity.relative.h": "{n} 小时前",
   "activity.relative.d": "{n} 天前",
-
   "settings.title": "设置",
   "settings.themes.system.label": "跟随系统",
   "settings.themes.system.sub": "跟随操作系统外观",
@@ -366,7 +356,6 @@
   "settings.footnote": "更改在你切换控件的瞬间保存。",
   "settings.stepper.decrease": "减少",
   "settings.stepper.increase": "增加",
-
   "drawer.identity.in_use": "使用中",
   "drawer.identity.leased_by": "被 {device} 占用 · {remaining}",
   "drawer.actions.leased_by_other": "已被其他设备占用",
@@ -414,15 +403,12 @@
   "drawer.status.active": "活跃",
   "drawer.status.leased_by_other": "被 {device} 占用 · {remaining}",
   "drawer.fmt.expired": "已过期",
-
   "modal.close": "关闭",
   "drawer.close": "关闭详情",
-
   "onboarding.title": "欢迎使用 Foxy Switcher",
   "onboarding.subtitle": "45 秒了解 Foxy 如何自动轮换你的 Claude 账号。",
   "onboarding.skip": "跳过介绍",
   "onboarding.done": "知道了",
-
   "onboarding.choose.title": "你的账号要存在哪？",
   "onboarding.choose.body": "Foxy 把 Claude token 存在 vault 里。Vault 可以跑在本机，也可以部署在你的服务器上，多台设备共享同一个池。",
   "onboarding.choose.local.title": "本机 vault",
@@ -439,7 +425,6 @@
   "onboarding.cloud.pair.code_label": "输入此代码",
   "onboarding.cloud.pair.failure": "无法连接 vault，请检查地址后重试。",
   "onboarding.cloud.pair.cancel": "取消",
-
   "app.delete_account.prompt": "从池中删除此账号？",
   "app.delete_account.title": "确认删除",
   "app.foreign_lease.delete.title": "对方正在使用",
@@ -447,7 +432,6 @@
   "app.foreign_lease.pause.title": "对方正在使用",
   "app.foreign_lease.pause.prompt": "{device} 正在使用此账号。暂停会驱逐对方 lease 并打断 CC 会话。继续？",
   "app.error.restart_failed": "重启失败：{error}",
-
   "admin.brand": "Foxy Vault",
   "admin.common.loading": "加载中…",
   "admin.nav.aria": "Vault 管理",
@@ -457,11 +441,9 @@
   "admin.nav.login": "登录",
   "admin.nav.setup": "初始化",
   "admin.nav.logout": "退出登录",
-
   "admin.boot.error.title": "无法连接到 vault",
   "admin.boot.error.body": "管理 API 没响应。请检查 vault 是否在运行且可访问。",
   "admin.boot.retry": "重试",
-
   "admin.login.title": "登录",
   "admin.login.subtitle": "输入 vault 管理密码继续。",
   "admin.login.subtitle.with_next": "登录后回到刚才请求的页面。",
@@ -470,7 +452,6 @@
   "admin.login.signing_in": "登录中…",
   "admin.login.error.wrong": "密码不正确。",
   "admin.login.error.generic": "登录失败，请重试。",
-
   "admin.setup.title": "设置 vault 密码",
   "admin.setup.subtitle": "这是一个全新的 vault。设定一个管理密码，用于审批 agent 配对和管理设备。",
   "admin.setup.password": "密码",
@@ -480,7 +461,6 @@
   "admin.setup.error.mismatch": "两次输入的密码必须一致且不为空。",
   "admin.setup.error.already": "该 vault 已设过密码，请直接登录。",
   "admin.setup.error.generic": "保存密码失败，请重试。",
-
   "admin.devices.title": "已配对设备",
   "admin.devices.subtitle": "每台与 vault 配对的设备会持有一个 token，撤销后立即失效。",
   "admin.devices.empty": "暂无配对设备。",
@@ -519,7 +499,6 @@
   "admin.devices.error.rename": "重命名失败。",
   "admin.devices.pair_hint_prefix": "想新增设备，请运行 agent 的 pair 命令并访问 ",
   "admin.devices.pair_hint_suffix": "。",
-
   "admin.pair.title": "配对设备",
   "admin.pair.subtitle": "输入 agent 显示的 user code。",
   "admin.pair.code": "User code",
@@ -541,7 +520,6 @@
   "admin.pair.error.not_found": "Code 无效或已过期。",
   "admin.pair.error.expired": "该 code 已被处理或已过期。",
   "admin.pair.error.generic": "无法连接 vault，请重试。",
-
   "admin.password.title": "修改密码",
   "admin.password.subtitle": "更新登录该 vault 的管理密码。",
   "admin.password.current": "当前密码",
@@ -552,5 +530,39 @@
   "admin.password.success": "密码已更新。",
   "admin.password.error.mismatch": "新密码必须一致且不为空。",
   "admin.password.error.wrong": "当前密码不正确。",
-  "admin.password.error.generic": "更新失败，请重试。"
+  "admin.password.error.generic": "更新失败，请重试。",
+  "accounts.add_openrouter": "添加 OpenRouter",
+  "accounts.providers.openrouter": "OpenRouter",
+  "accounts.kebab.edit_openrouter": "编辑 OpenRouter 策略…",
+  "accounts.openrouter.policy": "策略",
+  "accounts.openrouter.policy_value": "{models} 个模型 · 每设备密钥 {limit}",
+  "accounts.openrouter.no_limit": "不限额",
+  "admin.pair.provider_openrouter": "OpenRouter",
+  "openrouter.title_add": "添加 OpenRouter 账号",
+  "openrouter.title_edit": "OpenRouter 策略",
+  "openrouter.subtitle": "每台获授权的设备都会从这个账号派生出自己的限额密钥。管理密钥只存在 vault，不会下发。",
+  "openrouter.field.name": "名称",
+  "openrouter.field.name_placeholder": "团队池",
+  "openrouter.field.models": "允许的模型",
+  "openrouter.field.models_placeholder": "deepseek/deepseek-v4-flash\nopenai/gpt-oss-120b",
+  "openrouter.field.models_hint": "每行一个 OpenRouter 模型 slug。这份清单既在服务端强制生效，也决定各设备模型选择器里会出现哪些模型。",
+  "openrouter.field.limit": "每设备密钥额度（美元）",
+  "openrouter.field.limit_invalid": "请填写 0 或更大的数字。",
+  "openrouter.field.limit_reset": "额度重置",
+  "openrouter.reset.lifetime": "不重置（总额度）",
+  "openrouter.reset.daily": "每天",
+  "openrouter.reset.weekly": "每周",
+  "openrouter.reset.monthly": "每月",
+  "openrouter.field.workspace": "Workspace ID（可选）",
+  "openrouter.field.workspace_placeholder": "留空使用默认 workspace",
+  "openrouter.field.management_key": "管理密钥",
+  "openrouter.field.management_key_placeholder": "sk-or-v1-…",
+  "openrouter.field.management_key_keep": "留空则沿用已保存的密钥",
+  "openrouter.field.management_key_hint": "要填 provisioning key，不是推理用的 key。只保存在 vault，绝不下发给任何设备。",
+  "openrouter.revoke_warning": "保存会吊销设备已持有的 {count} 把密钥——它们各自绑定的是当前策略。设备会自动重新派生。",
+  "openrouter.check": "测试密钥",
+  "openrouter.check_hint": "检查这把密钥是否是管理密钥，以及该套餐是否真的在服务端强制模型白名单。",
+  "openrouter.create": "添加账号",
+  "openrouter.save": "保存策略",
+  "openrouter.cancel": "取消"
 }

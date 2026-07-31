@@ -25,11 +25,16 @@ export type AdminDevice = {
   // (epoch ms) for a suspended one. When non-zero the device's token is
   // rejected until an admin resumes it (no re-pair needed).
   disabled_at: number;
-  // allow_claude / allow_codex is the per-device provider allowlist: which
-  // credential pools this device may lease/inject. Chosen at approval and
-  // editable here. Devices paired before this feature are claude-only.
+  // allow_claude / allow_codex / allow_openrouter is the per-device provider
+  // allowlist: which credential pools this device may lease/inject. Chosen at
+  // approval and editable here. Devices paired before this feature are
+  // claude-only.
   allow_claude: boolean;
   allow_codex: boolean;
+  // OpenRouter is not leased — granting it lets the vault mint a derived,
+  // spend-capped API key for this device; withdrawing it revokes that key
+  // upstream immediately.
+  allow_openrouter: boolean;
   // current_lease names the account this device is currently holding,
   // joined with account_name server-side. Absent when the device has no
   // live lease.
@@ -136,7 +141,11 @@ export const adminApi = {
   resolvePair: (
     code: string,
     action: "approve" | "deny",
-    providers?: { allow_claude: boolean; allow_codex: boolean },
+    providers?: {
+      allow_claude: boolean;
+      allow_codex: boolean;
+      allow_openrouter: boolean;
+    },
   ) =>
     request<{ result: "approved" | "denied" }>("/admin/api/pair", {
       method: "POST",
@@ -146,10 +155,11 @@ export const adminApi = {
     id: string,
     allow_claude: boolean,
     allow_codex: boolean,
+    allow_openrouter: boolean,
   ) =>
     request<void>("/admin/api/devices/providers", {
       method: "POST",
-      body: JSON.stringify({ id, allow_claude, allow_codex }),
+      body: JSON.stringify({ id, allow_claude, allow_codex, allow_openrouter }),
     }),
   changePassword: (current: string, next: string, confirm: string) =>
     request<{ ok: true }>("/admin/api/password", {

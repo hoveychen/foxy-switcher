@@ -118,15 +118,26 @@ export function DevicesPage({ onUnauthorized }: Props) {
   }
 
   // Toggle one provider in a device's allowlist. The vault releases the
-  // device's leases so the change takes effect on its next reconcile.
+  // device's leases so the change takes effect on its next reconcile. For
+  // OpenRouter there is no lease — withdrawing the grant revokes the device's
+  // derived API key upstream instead, which takes effect immediately.
   async function setProviders(
     d: AdminDevice,
-    next: { allow_claude: boolean; allow_codex: boolean },
+    next: {
+      allow_claude: boolean;
+      allow_codex: boolean;
+      allow_openrouter: boolean;
+    },
   ) {
     setTogglingId(d.id);
     setError(null);
     try {
-      await adminApi.setDeviceProviders(d.id, next.allow_claude, next.allow_codex);
+      await adminApi.setDeviceProviders(
+        d.id,
+        next.allow_claude,
+        next.allow_codex,
+        next.allow_openrouter,
+      );
       setDevices((cur) =>
         cur
           ? cur.map((x) =>
@@ -270,6 +281,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
                                 void setProviders(d, {
                                   allow_claude: e.target.checked,
                                   allow_codex: d.allow_codex,
+                                  allow_openrouter: d.allow_openrouter,
                                 })
                               }
                             />
@@ -284,10 +296,26 @@ export function DevicesPage({ onUnauthorized }: Props) {
                                 void setProviders(d, {
                                   allow_claude: d.allow_claude,
                                   allow_codex: e.target.checked,
+                                  allow_openrouter: d.allow_openrouter,
                                 })
                               }
                             />
                             {t("admin.pair.provider_codex")}
+                          </label>
+                          <label className="admin-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={d.allow_openrouter}
+                              disabled={isToggling}
+                              onChange={(e) =>
+                                void setProviders(d, {
+                                  allow_claude: d.allow_claude,
+                                  allow_codex: d.allow_codex,
+                                  allow_openrouter: e.target.checked,
+                                })
+                              }
+                            />
+                            {t("admin.pair.provider_openrouter")}
                           </label>
                         </span>
                       </td>

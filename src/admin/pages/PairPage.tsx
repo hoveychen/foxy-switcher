@@ -15,10 +15,12 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resolved, setResolved] = useState<ResolveResult | null>(null);
-  // Provider allowlist for this device, chosen at approval. Default matches
-  // the backend: Claude on, Codex off.
+  // Provider allowlist for this device, chosen at approval. Defaults match the
+  // backend: Claude on, Codex and OpenRouter off — a newly paired device should
+  // never pick up a pool, or have a third-party key minted for it, by default.
   const [allowClaude, setAllowClaude] = useState(true);
   const [allowCodex, setAllowCodex] = useState(false);
+  const [allowOpenRouter, setAllowOpenRouter] = useState(false);
 
   // Auto-lookup if URL came in with ?code=…; user can also type one.
   useEffect(() => {
@@ -65,7 +67,11 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
         lookup.code,
         action,
         action === "approve"
-          ? { allow_claude: allowClaude, allow_codex: allowCodex }
+          ? {
+              allow_claude: allowClaude,
+              allow_codex: allowCodex,
+              allow_openrouter: allowOpenRouter,
+            }
           : undefined,
       );
       setResolved(r.result);
@@ -187,6 +193,15 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
                 />
                 {t("admin.pair.provider_codex")}
               </label>
+              <label className="admin-checkbox">
+                <input
+                  type="checkbox"
+                  checked={allowOpenRouter}
+                  onChange={(e) => setAllowOpenRouter(e.target.checked)}
+                  disabled={busy}
+                />
+                {t("admin.pair.provider_openrouter")}
+              </label>
             </fieldset>
             {error && <p className="admin-alert admin-alert--error">{error}</p>}
             <div className="admin-actions">
@@ -194,7 +209,9 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
                 type="button"
                 className="admin-button admin-button--primary"
                 onClick={() => resolve("approve")}
-                disabled={busy || (!allowClaude && !allowCodex)}
+                disabled={
+                  busy || (!allowClaude && !allowCodex && !allowOpenRouter)
+                }
                 aria-busy={busy}
               >
                 {t("admin.pair.approve")}
