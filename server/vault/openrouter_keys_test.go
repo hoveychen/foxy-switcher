@@ -47,12 +47,18 @@ func (f *fakeUpstream) DeriveDeviceKey(_ context.Context, spec openrouter.Derive
 	}
 	f.nextID++
 	hash := fmt.Sprintf("kh-%d", f.nextID)
-	guard := fmt.Sprintf("gr-%d", f.nextID)
+	// Mirror the real client: a guardrail exists only when models were actually
+	// asked for. A fake that always claims enforcement would hide the difference
+	// between the enforced and default paths.
+	var guard string
+	if len(spec.AllowedModels) > 0 {
+		guard = fmt.Sprintf("gr-%d", f.nextID)
+	}
 	f.live[hash] = guard
 	return openrouter.DerivedKey{
 		Key:               openrouter.Key{Hash: hash, Secret: "sk-or-" + hash},
 		GuardrailID:       guard,
-		GuardrailEnforced: true,
+		GuardrailEnforced: guard != "",
 	}, nil
 }
 
@@ -147,8 +153,12 @@ func TestEnsureDeviceKeyDerivesOnceThenReuses(t *testing.T) {
 	if first.BaseURL != DefaultOpenRouterBaseURL {
 		t.Fatalf("BaseURL = %q, want %q", first.BaseURL, DefaultOpenRouterBaseURL)
 	}
-	if !first.GuardrailEnforced {
-		t.Fatal("GuardrailEnforced should be true when a guardrail was attached")
+	// Enforcement is off in the fixture (the default), so no guardrail is
+	// attached — see TestDerivationCreatesGuardrailWhenEnforcing for the other
+	// side. The grant reports which happened so the UI never implies protection
+	// that isn't there.
+	if first.GuardrailEnforced {
+		t.Fatal("GuardrailEnforced should be false when no guardrail was created")
 	}
 	// The allowlist the device is told about must be exactly the one the
 	// guardrail enforces — that single source is what stops "in the dropdown but
@@ -157,8 +167,8 @@ func TestEnsureDeviceKeyDerivesOnceThenReuses(t *testing.T) {
 		t.Fatalf("AllowedModels = %v", first.AllowedModels)
 	}
 	spec := f.upstream.specs[0]
-	if len(spec.AllowedModels) != 2 || spec.LimitUSD != 25 || spec.LimitReset != "monthly" {
-		t.Fatalf("derive spec = %+v, want the account's allowlist and caps", spec)
+	if spec.LimitUSD != 25 || spec.LimitReset != "monthly" {
+		t.Fatalf("derive spec = %+v, want the account's caps carried onto the key", spec)
 	}
 	if spec.KeyName != "foxy-dev-1" {
 		t.Fatalf("KeyName = %q, want foxy-<device-id> so an operator can identify it upstream", spec.KeyName)
@@ -479,5 +489,56 @@ func TestEnsureDeviceKeySurfacesDerivationFailureWithoutStoringAnything(t *testi
 	}
 	if rows, _ := f.st.ListDeviceOpenRouterKeys(ctx, "dev-1"); len(rows) != 0 {
 		t.Fatalf("a failed derivation stored a mapping row: %+v", rows)
+	}
+}
+
+// By default a device gets a plain derived key and no guardrail. That is the
+// whole point of the default: per-device spend caps, usage tracking and
+// revocation all come from the key itself, so the extra upstream object (and
+// the extra derivation step that can fail) is only worth it when you
+// specifically want server-side model restriction.
+func TestDerivationCreatesNoGuardrailByDefault(t *testing.T) {
+	f := newOpenRouterFixture(t)
+	ctx := context.Background()
+
+	grant, err := f.svc.EnsureDeviceKey(ctx, "dev-1")
+	if err != nil {
+		t.Fatalf("EnsureDeviceKey: %v", err)
+	}
+	spec := f.upstream.specs[0]
+	if len(spec.AllowedModels) != 0 {
+		t.Fatalf("derive spec asked for a guardrail (%v) with enforcement off", spec.AllowedModels)
+	}
+	// The device is still TOLD the model list — it drives the profile files, and
+	// therefore which models appear in Fleet's picker.
+	if len(grant.AllowedModels) != 2 {
+		t.Fatalf("grant.AllowedModels = %v, want the list that drives profile files", grant.AllowedModels)
+	}
+	// The spend cap still rides on the key, so cost is bounded regardless.
+	if spec.LimitUSD != 25 {
+		t.Fatalf("spec.LimitUSD = %v, want the cap on the key itself", spec.LimitUSD)
+	}
+}
+
+// With enforcement on, the same allowlist is additionally pushed upstream.
+func TestDerivationCreatesGuardrailWhenEnforcing(t *testing.T) {
+	f := newOpenRouterFixture(t)
+	ctx := context.Background()
+	if err := f.st.SetOpenRouterConfig(ctx, f.acc.ID, store.OpenRouterAccountConfig{
+		AllowedModels: []string{"deepseek/deepseek-v4-flash", "openai/gpt-oss-120b"},
+		LimitUSD:      25, LimitReset: "monthly", EnforceModels: true,
+	}); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	grant, err := f.svc.EnsureDeviceKey(ctx, "dev-1")
+	if err != nil {
+		t.Fatalf("EnsureDeviceKey: %v", err)
+	}
+	if len(f.upstream.specs[0].AllowedModels) != 2 {
+		t.Fatalf("derive spec = %+v, want the allowlist pushed upstream", f.upstream.specs[0])
+	}
+	if !grant.GuardrailEnforced {
+		t.Fatal("GuardrailEnforced should be true when a guardrail was attached")
 	}
 }

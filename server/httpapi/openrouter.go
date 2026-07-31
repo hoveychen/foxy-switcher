@@ -42,6 +42,11 @@ type openRouterView struct {
 	LimitUSD      float64  `json:"limit_usd,omitempty"`
 	LimitReset    string   `json:"limit_reset,omitempty"`
 	WorkspaceID   string   `json:"workspace_id,omitempty"`
+	// EnforceModels reports whether an upstream guardrail backs the allowlist.
+	// Off by default: a derived key already caps spend, tracks usage and revokes
+	// per device on its own; the guardrail only adds server-side model
+	// restriction.
+	EnforceModels bool `json:"enforce_models"`
 	// HasManagementKey is how the UI shows configured-ness without the secret.
 	HasManagementKey bool `json:"has_management_key"`
 	// DerivedKeyCount is how many devices currently hold a key from this
@@ -73,6 +78,7 @@ func (s *Server) openRouterConfigFor(ctx context.Context, a store.Account) (*ope
 		LimitUSD:         cfg.LimitUSD,
 		LimitReset:       cfg.LimitReset,
 		WorkspaceID:      cfg.WorkspaceID,
+		EnforceModels:    cfg.EnforceModels,
 		HasManagementKey: hasKey,
 		DerivedKeyCount:  len(rows),
 	}, nil
@@ -88,6 +94,7 @@ type openRouterAccountReq struct {
 	LimitReset    string   `json:"limit_reset"`
 	WorkspaceID   string   `json:"workspace_id"`
 	ManagementKey string   `json:"management_key"`
+	EnforceModels bool     `json:"enforce_models"`
 }
 
 var validLimitResets = map[string]bool{
@@ -103,13 +110,14 @@ func (r *openRouterAccountReq) normalise() error {
 	if r.LimitUSD < 0 {
 		return errors.New("limit_usd cannot be negative")
 	}
-	// Verified against the live API: a guardrail carrying limit_usd must also
+	// Verified against the live API: a GUARDRAIL carrying limit_usd must also
 	// carry reset_interval ("Reset interval is required when setting a budget
-	// limit"). OpenRouter has no lifetime budget window, so this policy simply
-	// cannot be expressed. Reject it here rather than letting every device's
-	// derivation fail later with a raw upstream validation error, long after the
-	// save that caused it.
-	if r.LimitUSD > 0 && r.LimitReset == "" {
+	// limit"); there is no lifetime budget window on a guardrail. `/keys` has no
+	// such rule — a `limit` with no `limit_reset` is a valid lifetime cap on the
+	// key — so this only bites when a guardrail is actually going to be created.
+	// Reject it at save time rather than letting every device's derivation fail
+	// later with a raw upstream validation error.
+	if r.EnforceModels && r.LimitUSD > 0 && r.LimitReset == "" {
 		return errors.New("a spend cap needs limit_reset (daily, weekly or monthly) — " +
 			"OpenRouter has no lifetime budget window")
 	}
@@ -122,6 +130,7 @@ func (r openRouterAccountReq) config() store.OpenRouterAccountConfig {
 		LimitUSD:      r.LimitUSD,
 		LimitReset:    r.LimitReset,
 		WorkspaceID:   strings.TrimSpace(r.WorkspaceID),
+		EnforceModels: r.EnforceModels,
 	}
 	cfg.Normalise()
 	return cfg
@@ -266,6 +275,7 @@ func policyChanged(oldCfg, newCfg store.OpenRouterAccountConfig) bool {
 	if oldCfg.LimitUSD != newCfg.LimitUSD ||
 		oldCfg.LimitReset != newCfg.LimitReset ||
 		oldCfg.WorkspaceID != newCfg.WorkspaceID ||
+		oldCfg.EnforceModels != newCfg.EnforceModels ||
 		len(oldCfg.AllowedModels) != len(newCfg.AllowedModels) {
 		return true
 	}

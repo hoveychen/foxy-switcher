@@ -297,16 +297,19 @@ func TestAccountListOmitsOpenRouterBlockForOtherProviders(t *testing.T) {
 	}
 }
 
-// A spend cap with no reset interval is a policy OpenRouter cannot express:
-// /guardrails rejects it outright (verified live). Catching it at save time
-// means the operator learns immediately, instead of every device's derivation
-// failing later with a raw upstream validation error.
-func TestSpendCapWithoutResetIntervalIsRejectedAtSaveTime(t *testing.T) {
+// The reset-interval rule is guardrail-specific, verified live: /guardrails
+// rejects limit_usd without reset_interval, while /keys accepts a `limit` with
+// no `limit_reset` as a lifetime cap. So the same policy is invalid with
+// enforcement on and perfectly fine with it off — and since enforcement is off
+// by default, most accounts never meet the rule at all.
+func TestSpendCapResetRuleAppliesOnlyWhenEnforcingModels(t *testing.T) {
 	srv, _ := newOpenRouterServer(t)
+
+	// Enforcement ON + cap + no reset -> a guardrail we know would 400.
 	w := doJSON(t, srv, http.MethodPost, "/api/accounts/openrouter", map[string]any{
 		"name": "pool", "management_key": "sk-or-mgmt",
 		"allowed_models": []string{"a/b"},
-		"limit_usd":      25, "limit_reset": "",
+		"limit_usd":      25, "limit_reset": "", "enforce_models": true,
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (%s)", w.Code, w.Body.String())
@@ -315,11 +318,49 @@ func TestSpendCapWithoutResetIntervalIsRejectedAtSaveTime(t *testing.T) {
 		t.Fatalf("error should name the field to fix: %s", w.Body.String())
 	}
 
-	// No cap at all is fine without a reset interval.
+	// Same policy with enforcement OFF: no guardrail is created, so a lifetime
+	// cap on the key is legal.
 	if w := doJSON(t, srv, http.MethodPost, "/api/accounts/openrouter", map[string]any{
 		"name": "pool2", "management_key": "sk-or-mgmt",
-		"allowed_models": []string{"a/b"},
+		"allowed_models": []string{"a/b"}, "limit_usd": 25,
 	}); w.Code != http.StatusOK {
-		t.Fatalf("uncapped account rejected: %d %s", w.Code, w.Body.String())
+		t.Fatalf("lifetime cap rejected with enforcement off: %d %s", w.Code, w.Body.String())
+	}
+
+	// Enforcement ON with a reset interval is fine.
+	if w := doJSON(t, srv, http.MethodPost, "/api/accounts/openrouter", map[string]any{
+		"name": "pool3", "management_key": "sk-or-mgmt",
+		"allowed_models": []string{"a/b"},
+		"limit_usd":      25, "limit_reset": "monthly", "enforce_models": true,
+	}); w.Code != http.StatusOK {
+		t.Fatalf("valid enforced policy rejected: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Enforcement defaults off: adding an account without saying anything about it
+// must not start creating guardrails.
+func TestEnforceModelsDefaultsOff(t *testing.T) {
+	srv, _ := newOpenRouterServer(t)
+	got := createAccount(t, srv)
+	if got.OpenRouter.EnforceModels {
+		t.Fatal("enforce_models defaulted on; a plain key already caps spend, tracks usage and revokes per device")
+	}
+}
+
+// Toggling enforcement changes what each device's key is bound by, so it has to
+// invalidate the outstanding keys like any other policy change.
+func TestTogglingEnforcementRevokesOutstandingKeys(t *testing.T) {
+	srv, keys := newOpenRouterServer(t)
+	acc := createAccount(t, srv)
+	w := doJSON(t, srv, http.MethodPost,
+		"/api/accounts/"+strconv.FormatInt(acc.ID, 10)+"/openrouter", map[string]any{
+			"allowed_models": []string{"deepseek/deepseek-v4-flash", "openai/gpt-oss-120b"},
+			"limit_usd":      25, "limit_reset": "monthly", "enforce_models": true,
+		})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if len(keys.revoked) != 1 {
+		t.Fatalf("revoked = %v, want the enforcement change to invalidate keys", keys.revoked)
 	}
 }

@@ -108,10 +108,18 @@ func (k *OpenRouterKeys) EnsureDeviceKey(ctx context.Context, deviceID string) (
 	if err != nil {
 		return OpenRouterGrant{}, fmt.Errorf("account %d: %w", acc.ID, err)
 	}
+	// The model list always drives the device's profile files — that is what makes
+	// a model appear in Fleet's picker. Whether it is ALSO enforced upstream is
+	// the account's choice: passing no models means no guardrail is created and
+	// the key relies on its own spend cap. See OpenRouterAccountConfig.EnforceModels.
+	var enforcedModels []string
+	if cfg.EnforceModels {
+		enforcedModels = cfg.AllowedModels
+	}
 	derived, err := k.newClient(mgmtKey).DeriveDeviceKey(ctx, openrouter.DeriveSpec{
 		KeyName:       openRouterKeyName(deviceID),
 		GuardrailName: openRouterKeyName(deviceID),
-		AllowedModels: cfg.AllowedModels,
+		AllowedModels: enforcedModels,
 		LimitUSD:      cfg.LimitUSD,
 		LimitReset:    cfg.LimitReset,
 		WorkspaceID:   cfg.WorkspaceID,

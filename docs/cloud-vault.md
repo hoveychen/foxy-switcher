@@ -156,10 +156,29 @@ row is deleted only *after* the upstream key is gone. A failed revoke keeps the
 row and surfaces an error — losing the hash would leave a live credential
 nobody can kill.
 
-### Derivation is three calls
+### Derivation is one call, or three
 
-`POST /api/v1/keys` has **no model field**; model restriction lives on a
-separate Guardrail. A constrained device key is therefore:
+The default is **one call**: `POST /api/v1/keys`. A derived key already carries
+everything the per-device model needs —
+
+| Need | Field on the key | Guardrail required? |
+|---|---|---|
+| Per-device spend cap | `limit` + `limit_reset` | no |
+| Per-device usage tracking | `usage`, `usage_daily/weekly/monthly` | no |
+| Per-device revocation | `DELETE /keys/{hash}` | no |
+| **Device can't call a model outside the list** | — | **yes** |
+
+So a guardrail adds exactly one thing, and it isn't the expensive one: the spend
+cap bounds the money either way, so skipping enforcement changes how much work
+the capped dollars buy, not how many dollars are at risk. `enforce_models` is
+therefore **off by default**; turn it on for devices you trust less than the cap
+alone allows for.
+
+The model list is still always sent to the device, enforcement or not — it is
+what drives the profile files, and therefore what appears in Fleet's picker.
+
+When `enforce_models` **is** on, `POST /api/v1/keys` has **no model field**, so
+model restriction needs a separate Guardrail. A constrained device key is then:
 
 1. `POST /api/v1/guardrails` — `{name, allowed_models, limit_usd, reset_interval}`
 2. `POST /api/v1/keys` — `{name: "foxy-<device-id>", limit, expires_at}`

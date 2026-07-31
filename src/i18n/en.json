@@ -565,5 +565,7 @@
   "openrouter.create": "Add account",
   "openrouter.save": "Save policy",
   "openrouter.cancel": "Cancel",
-  "openrouter.field.reset_required": "A spend cap needs a reset interval — OpenRouter has no lifetime budget window."
+  "openrouter.field.reset_required": "A spend cap needs a reset interval — OpenRouter has no lifetime budget window.",
+  "openrouter.field.enforce": "Enforce the model list on OpenRouter",
+  "openrouter.field.enforce_hint": "Off: devices get a plain key — per-device spend cap, usage tracking and revocation all still work, and the model list decides what appears in each device's picker. On: also creates an OpenRouter guardrail so a device cannot call a model outside the list. The spend cap bounds the cost either way."
 }

@@ -40,6 +40,7 @@ export function OpenRouterModal({
   const [limitReset, setLimitReset] = useState("");
   const [workspaceID, setWorkspaceID] = useState("");
   const [managementKey, setManagementKey] = useState("");
+  const [enforceModels, setEnforceModels] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [caps, setCaps] = useState<OpenRouterCapabilities | null>(null);
@@ -56,6 +57,7 @@ export function OpenRouterModal({
     setLimitReset(cfg?.limit_reset ?? "");
     setWorkspaceID(cfg?.workspace_id ?? "");
     setManagementKey("");
+    setEnforceModels(cfg?.enforce_models ?? false);
     setError(null);
     setCaps(null);
   }, [open, account]);
@@ -70,7 +72,9 @@ export function OpenRouterModal({
   // limit_usd must also carry reset_interval. Block the combination here rather
   // than letting the save 400 — the two fields are right next to each other, so
   // the fix is obvious in place.
-  const resetMissing = parsedLimit > 0 && limitReset === "";
+  // Guardrail-only rule: /guardrails rejects limit_usd without reset_interval,
+  // while /keys accepts a lifetime cap. So this only applies when enforcing.
+  const resetMissing = enforceModels && parsedLimit > 0 && limitReset === "";
   const derivedKeys = account?.openrouter?.derived_key_count ?? 0;
 
   const canSubmit =
@@ -89,6 +93,7 @@ export function OpenRouterModal({
         limit_usd: parsedLimit,
         limit_reset: limitReset,
         workspace_id: workspaceID.trim(),
+        enforce_models: enforceModels,
       };
       if (editing && account) {
         await apiClient.updateOpenRouterAccount(account.id, {
@@ -202,7 +207,11 @@ export function OpenRouterModal({
               disabled={busy}
             >
               {LIMIT_RESETS.map((v) => (
-                <option key={v || "lifetime"} value={v} disabled={v === "" && parsedLimit > 0}>
+                <option
+                  key={v || "lifetime"}
+                  value={v}
+                  disabled={v === "" && enforceModels && parsedLimit > 0}
+                >
                   {t(`openrouter.reset.${v || "lifetime"}`)}
                 </option>
               ))}
@@ -222,6 +231,19 @@ export function OpenRouterModal({
             value={workspaceID}
             onChange={(e) => setWorkspaceID(e.target.value)}
             placeholder={t("openrouter.field.workspace_placeholder")}
+            disabled={busy}
+          />
+        </label>
+
+        <label className="settings-row or-form-row">
+          <span className="or-field">
+            <span className="settings-row-label">{t("openrouter.field.enforce")}</span>
+            <span className="text-meta or-hint">{t("openrouter.field.enforce_hint")}</span>
+          </span>
+          <input
+            type="checkbox"
+            checked={enforceModels}
+            onChange={(e) => setEnforceModels(e.target.checked)}
             disabled={busy}
           />
         </label>

@@ -565,5 +565,7 @@
   "openrouter.create": "添加账号",
   "openrouter.save": "保存策略",
   "openrouter.cancel": "取消",
-  "openrouter.field.reset_required": "设了额度上限就必须选重置周期——OpenRouter 没有「不重置」的预算窗口。"
+  "openrouter.field.reset_required": "设了额度上限就必须选重置周期——OpenRouter 没有「不重置」的预算窗口。",
+  "openrouter.field.enforce": "在 OpenRouter 服务端强制模型清单",
+  "openrouter.field.enforce_hint": "关闭：设备只拿一把普通派生 key——按设备的额度上限、用量统计、单独吊销都照常有效，模型清单负责决定各设备选择器里出现什么。开启：额外建一个 guardrail，让设备无法调用清单外的模型。无论开关与否，花掉的钱都由额度上限兜住。"
 }

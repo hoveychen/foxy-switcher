@@ -216,6 +216,10 @@ export interface OpenRouterConfig {
   // "" | "daily" | "weekly" | "monthly"; empty means a lifetime cap.
   limit_reset?: string;
   workspace_id?: string;
+  // Whether an upstream guardrail backs the allowlist. Off by default: a
+  // derived key already caps spend, tracks usage and revokes per device on its
+  // own, so the guardrail's only addition is server-side model restriction.
+  enforce_models: boolean;
   // The management key itself is write-only over the API; this is how the UI
   // shows whether one is configured.
   has_management_key: boolean;
@@ -740,6 +744,7 @@ export const apiClient = {
     limit_reset: string;
     workspace_id?: string;
     management_key: string;
+    enforce_models: boolean;
   }) =>
     api<{ account: Account }>("/api/accounts/openrouter", {
       method: "POST",
@@ -756,6 +761,7 @@ export const apiClient = {
       limit_reset: string;
       workspace_id?: string;
       management_key?: string;
+      enforce_models: boolean;
     },
   ) =>
     api<{ account: Account }>(`/api/accounts/${id}/openrouter`, {

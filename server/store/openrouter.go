@@ -88,6 +88,20 @@ type OpenRouterAccountConfig struct {
 	// WorkspaceID scopes minted keys to an OpenRouter workspace. Empty = the
 	// management key's default workspace.
 	WorkspaceID string `json:"workspace_id,omitempty"`
+	// EnforceModels adds an upstream Guardrail carrying AllowedModels, so the
+	// model restriction is enforced by OpenRouter and not merely by which
+	// profile files the device writes.
+	//
+	// Default OFF, because a guardrail buys exactly one thing and it isn't the
+	// expensive one. A derived key already gives per-device spend caps
+	// (limit / limit_reset), per-device usage tracking (usage_daily / weekly /
+	// monthly) and per-device revocation on its own. What the guardrail adds is
+	// stopping a device from calling a model outside the list — and since the
+	// spend cap bounds the money either way, that only changes how much work the
+	// capped dollars buy, not how many dollars are at risk. Turn it on when
+	// devices are less trusted than the cap alone allows for; it costs an extra
+	// upstream object per device and an extra derivation step that can fail.
+	EnforceModels bool `json:"enforce_models,omitempty"`
 }
 
 // ParseOpenRouterConfig decodes an OpenRouter account's credential_json.
