@@ -215,7 +215,7 @@ func TestDeviceOpenRouterKeyMapping(t *testing.T) {
 	mk := func(dev string, acc int64, hash, secret string) DeviceOpenRouterKey {
 		return DeviceOpenRouterKey{
 			DeviceID: dev, AccountID: acc, KeyHash: hash, KeySecret: secret,
-			GuardrailID: "g-" + hash, CreatedAt: time.Now().UnixMilli(),
+			CreatedAt: time.Now().UnixMilli(),
 		}
 	}
 	for _, k := range []DeviceOpenRouterKey{
@@ -232,7 +232,7 @@ func TestDeviceOpenRouterKeyMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeviceOpenRouterKeyFor: %v", err)
 	}
-	if got.KeyHash != "h1" || got.KeySecret != "sk-or-1" || got.GuardrailID != "g-h1" {
+	if got.KeyHash != "h1" || got.KeySecret != "sk-or-1" {
 		t.Fatalf("key = %+v", got)
 	}
 	if _, err := st.DeviceOpenRouterKeyFor(ctx, "dev-3", accA.ID); !errors.Is(err, ErrNotFound) {

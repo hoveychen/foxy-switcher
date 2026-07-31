@@ -55,7 +55,6 @@ func grant(models ...string) *vault.OpenRouterGrant {
 	return &vault.OpenRouterGrant{
 		AccountID: 1, AccountName: "pool", APIKey: "sk-or-runtime",
 		BaseURL: vault.DefaultOpenRouterBaseURL, AllowedModels: models,
-		GuardrailEnforced: true,
 	}
 }
 

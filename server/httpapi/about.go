@@ -18,20 +18,20 @@ import (
 // configuration required, so the Tauri sidecar and standalone binary both
 // produce identical output.
 type AboutResponse struct {
-	Version       string `json:"version"`         // module version (vX.Y.Z) or "(devel)"
-	Commit        string `json:"commit"`          // VCS revision short SHA, or "" if not built from git
-	CommitDirty   bool   `json:"commit_dirty"`    // true if VCS reported uncommitted changes at build time
-	BuildTime     string `json:"build_time"`      // RFC3339 from VCS metadata; "" when not embedded
-	GoVersion     string `json:"go_version"`      // runtime.Version(), e.g. "go1.23.4"
-	OS            string `json:"os"`              // runtime.GOOS
-	Arch          string `json:"arch"`            // runtime.GOARCH
-	PID           int    `json:"pid"`             // daemon process id
-	Port          int    `json:"port"`            // bound HTTP port (matches /healthz)
-	DataDir       string `json:"data_dir"`        // resolved ~/.foxy-switcher
-	SQLitePath    string `json:"sqlite_path"`     // state.db absolute path
-	SQLiteSizeB   int64  `json:"sqlite_size_b"`   // bytes; -1 if stat failed
-	StartedAtMS   int64  `json:"started_at_ms"`   // unix millis
-	UptimeSeconds int64  `json:"uptime_seconds"`  // now - StartedAt
+	Version       string `json:"version"`        // module version (vX.Y.Z) or "(devel)"
+	Commit        string `json:"commit"`         // VCS revision short SHA, or "" if not built from git
+	CommitDirty   bool   `json:"commit_dirty"`   // true if VCS reported uncommitted changes at build time
+	BuildTime     string `json:"build_time"`     // RFC3339 from VCS metadata; "" when not embedded
+	GoVersion     string `json:"go_version"`     // runtime.Version(), e.g. "go1.23.4"
+	OS            string `json:"os"`             // runtime.GOOS
+	Arch          string `json:"arch"`           // runtime.GOARCH
+	PID           int    `json:"pid"`            // daemon process id
+	Port          int    `json:"port"`           // bound HTTP port (matches /healthz)
+	DataDir       string `json:"data_dir"`       // resolved ~/.foxy-switcher
+	SQLitePath    string `json:"sqlite_path"`    // state.db absolute path
+	SQLiteSizeB   int64  `json:"sqlite_size_b"`  // bytes; -1 if stat failed
+	StartedAtMS   int64  `json:"started_at_ms"`  // unix millis
+	UptimeSeconds int64  `json:"uptime_seconds"` // now - StartedAt
 	// Mode tells the frontend which deployment topology this daemon is
 	// running under: "combined" (vault + agent in process), "vault" (no
 	// credinject, frontend httpapi behind Bearer middleware), or "agent"

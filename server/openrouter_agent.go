@@ -137,12 +137,6 @@ func (w *openRouterWriter) Sync(ctx context.Context) error {
 		// exactly the kind of thing nobody debugs.
 		w.logger.Printf("[openrouter] skipped %s", c)
 	}
-	if !grant.GuardrailEnforced && len(grant.AllowedModels) > 0 {
-		w.logger.Printf("[openrouter] WARNING: account %q has no server-side guardrail — "+
-			"the model allowlist limits only what this device offers, not what the key may call",
-			grant.AccountName)
-	}
-
 	w.mu.Lock()
 	first := !w.applied
 	w.key = grant.APIKey

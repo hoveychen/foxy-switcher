@@ -137,8 +137,8 @@ Claude and Codex are **subscriptions**: one account has one rate-limit window,
 so two devices using it at once eat each other's quota. Hence one lease per
 account, LRU rotation, and a reconcile loop that renews.
 
-OpenRouter is **pay-as-you-go**: spend is capped per key by a guardrail, and
-concurrent use is harmless. Leasing it would buy nothing and cost real
+OpenRouter is **pay-as-you-go**: spend is capped per key, and concurrent use is
+harmless. Leasing it would buy nothing and cost real
 usability — devices fighting over one account, keys churning on every rotation.
 So instead of sharing one credential, **each authorised device gets its own
 derived key**.
@@ -147,82 +147,54 @@ derived key**.
 
 | Where | What | Reaches a device? |
 |---|---|---|
-| `accounts` row (`provider="openrouter"`) | The derivation *template*: `credential_json` holds allowed models, spend cap, workspace. No secret at all. | Yes — `GET /agent/v1/accounts` serialises the row verbatim |
+| `accounts` row (`provider="openrouter"`) | The derivation *template*: `credential_json` holds the model list, spend cap, workspace. No secret at all. | Yes — `GET /agent/v1/accounts` serialises the row verbatim |
 | `openrouter_management_keys` | The key that mints and revokes runtime keys. | **Never.** Its own table precisely so it can't ride along on an account serialisation |
-| `device_openrouter_keys` | `(device_id, account_id)` → the derived key's hash, secret, and guardrail id | Only the row's own device, via `/agent/v1/openrouter/config` |
+| `device_openrouter_keys` | `(device_id, account_id)` → the derived key's hash and secret | Only the row's own device, via `/agent/v1/openrouter/config` |
 
 `key_hash` is OpenRouter's handle and the only way to revoke a key, so a local
 row is deleted only *after* the upstream key is gone. A failed revoke keeps the
 row and surfaces an error — losing the hash would leave a live credential
 nobody can kill.
 
-### Derivation is one call, or three
+### Derivation is one call
 
-The default is **one call**: `POST /api/v1/keys`. A derived key already carries
-everything the per-device model needs —
+`POST /api/v1/keys`, and that's it. A derived key carries everything the
+per-device model needs:
 
-| Need | Field on the key | Guardrail required? |
-|---|---|---|
-| Per-device spend cap | `limit` + `limit_reset` | no |
-| Per-device usage tracking | `usage`, `usage_daily/weekly/monthly` | no |
-| Per-device revocation | `DELETE /keys/{hash}` | no |
-| **Device can't call a model outside the list** | — | **yes** |
+| Need | Field on the key |
+|---|---|
+| Per-device spend cap | `limit` + `limit_reset` (empty reset = lifetime cap) |
+| Per-device usage tracking | `usage`, `usage_daily` / `weekly` / `monthly` |
+| Per-device revocation | `DELETE /keys/{hash}` |
 
-So a guardrail adds exactly one thing, and it isn't the expensive one: the spend
-cap bounds the money either way, so skipping enforcement changes how much work
-the capped dollars buy, not how many dollars are at risk. `enforce_models` is
-therefore **off by default**; turn it on for devices you trust less than the cap
-alone allows for.
+An earlier version also created a Guardrail per device, carrying the model
+allowlist, so OpenRouter itself would reject a model outside the list. That was
+dropped. The spend cap already bounds the money, so enforcement only changed how
+much work the capped dollars bought — while costing an extra upstream object per
+device, an extra derivation step, and an extra failure mode. (That failure mode
+was not hypothetical: the assignment call was the one whose payload shape we got
+wrong.) With one object per device there is no partial state, so derivation needs
+no unwind logic at all.
 
-The model list is still always sent to the device, enforcement or not — it is
-what drives the profile files, and therefore what appears in Fleet's picker.
-
-When `enforce_models` **is** on, `POST /api/v1/keys` has **no model field**, so
-model restriction needs a separate Guardrail. A constrained device key is then:
-
-1. `POST /api/v1/guardrails` — `{name, allowed_models, limit_usd, reset_interval}`
-2. `POST /api/v1/keys` — `{name: "foxy-<device-id>", limit, expires_at}`
-3. `POST /api/v1/guardrails/{id}/assignments/keys` — `{key_hashes: [hash]}`
-
-Every partial failure leaves live upstream state and is unwound: a failed step 2
-deletes the guardrail; a failed step 3 deletes **both**, because at that point a
-live *unconstrained* key exists and shipping it would record a restriction that
-isn't there.
+The model list still reaches the device — it drives the profile files, and
+therefore what appears in Fleet's picker. It is client-side visibility, not
+enforcement.
 
 > **Verified 2026-07-31** against the live API with a real provisioning key:
-> **guardrails are available on a personal account** — `POST /guardrails`
-> returned 201. The design's one open prerequisite is settled.
->
-> Three details only the live run revealed, each of which was wrong in the first
-> implementation (see `openrouter/live_contract_test.go`):
->
-> - Assignment takes `{"key_hashes":[…]}` — plural, an array. The singular form
->   400s, and since a failed assignment is fatal, **every** derivation would
->   have failed.
-> - A guardrail carrying `limit_usd` must also carry `reset_interval`; there is
->   no lifetime budget window. `/keys` is different — a `limit` with no
->   `limit_reset` is a valid lifetime cap on that key. The admin API now rejects
->   the impossible combination at save time.
-> - `allowed_models` entries must be real model slugs; `openrouter/auto` is
->   rejected. The capability probe therefore sends a name-only guardrail, so its
->   answer can't be muddied by an unrelated validation error.
->
-> `ErrGuardrailsUnavailable` (402/403/404) remains as a fallback but has not been
-> observed. It is **fatal by default** — silently degrading would mint an
-> unrestricted key; degrading is opt-in and additionally requires a spend cap.
-> Re-run the probe against any new account via Accounts → *Test key*, or
-> `POST /api/accounts/{id}/openrouter/check`.
+> `POST /keys` returns **201** with `{"data":{"hash":…},"key":"sk-or-…"}` —
+> plaintext at the top level, returned exactly once. A `limit` with no
+> `limit_reset` is accepted as a lifetime cap. `DELETE /keys/{hash}` returns 200
+> `{"deleted":true}` and a repeat returns 404, so idempotent revocation is safe.
+> `GET /keys` succeeds for a provisioning key, which is what the admin *Test key*
+> action (`POST /api/accounts/{id}/openrouter/check`) uses to catch the one
+> misconfiguration that silently breaks everything: pasting the inference key.
+> That check is read-only and creates nothing on the operator's account.
 
-### The allowlist is one source of truth
+### Editing the policy revokes outstanding keys
 
-The admin edits one model list per account. It drives **both** the guardrail
-(server-side enforcement) and which profile files each device writes
-(client-side visibility), so the model picker can never offer something the key
-would be rejected for.
-
-Editing the policy revokes every key already derived from that account: each one
-has the *old* policy baked into its own guardrail. Devices re-derive on their
-next sync.
+Every key already derived from an account was minted with the *old* spend cap, so
+changing it has to revoke them — otherwise the edit would apply to new devices
+only. Devices re-derive on their next sync.
 
 ### Revocation actually revokes
 
@@ -376,6 +348,6 @@ Each step lands in its own PR. After step 1, every subsequent step is "add anoth
 - **Activity bus across the wire.** Today's `activity.Bus` lives in-process and is consumed by SSE handlers. In split mode, vault is the publisher; the agent and frontend are subscribers. The existing SSE handler at `/api/activity/stream` becomes the canonical wire format; in-process subscribers wrap it. No schema change.
 - **Settings split.** Some settings are frontend-only (theme, sidebar mode). Some belong to the vault (poll interval, default thresholds). One belongs to the *agent* (`restore_native_on_quit` — it gates a local action). The new schema scopes those: vault stores vault settings; agent has its own small `agent-config.json` for restore_on_quit and vault_url.
 - **Web UI shipping.** TBD whether to embed the React build inside the vault binary (`embed.FS`) or ship it as a separate static file directory. Lean toward embed for a single self-contained binary.
-- ~~**OpenRouter guardrail availability.**~~ **Settled 2026-07-31**: guardrails work on a personal account (201 on create). The degraded path is retained for accounts where they turn out not to be, and `guardrail_enforced` on the grant reports which one applied so the UI never implies enforcement that isn't there.
+- ~~**OpenRouter guardrail availability.**~~ **Moot as of 2026-07-31.** Guardrails were verified to work on a personal account, but they were then dropped from the design: the per-key spend cap already bounds cost, so server-side model enforcement wasn't worth an extra upstream object, an extra derivation step and an extra failure mode per device. The model list is client-side visibility only.
 - **Multi-account OpenRouter pools.** Several OpenRouter accounts may be configured, but selection is deliberately not the LRU selector — it is the lowest-id active, fully-configured account, so a device keeps deriving from the same one. "Several configured, the first wins", not a load-balanced pool. Spreading devices across accounts would only make a device's key hop on unrelated pool changes; if a real need appears, it wants its own design.
 - **Backfill of existing local installs.** Combined mode reads the existing `~/.foxy-switcher/state.db` unchanged. There's no data migration — the schema is the same. Switching an existing user to vault mode means: stand up vault on a remote host, copy `state.db` over, point the agent at the URL.

@@ -25,9 +25,9 @@ const (
 type sidebarMode int
 
 const (
-	sidebarExpanded sidebarMode = iota // ≥120 cols — full label + icon column
-	sidebarCollapsed                   // 80–119 cols — icon-only column
-	sidebarTabs                        // <80 cols — top-row tab strip, no left column
+	sidebarExpanded  sidebarMode = iota // ≥120 cols — full label + icon column
+	sidebarCollapsed                    // 80–119 cols — icon-only column
+	sidebarTabs                         // <80 cols — top-row tab strip, no left column
 )
 
 // sidebarMode breakpoints chosen to match `view_list.go`'s layout tiers so the

@@ -19,11 +19,11 @@ import (
 type dashboardPage struct {
 	width, height int
 
-	data       Dashboard
-	dataReady  bool
-	recent     []ActivityEvent
-	loadedAt   time.Time
-	loadErr    string
+	data      Dashboard
+	dataReady bool
+	recent    []ActivityEvent
+	loadedAt  time.Time
+	loadErr   string
 
 	// External slices the App pushes in via setAccounts before each render so
 	// the page doesn't have to round-trip through the daemon for data the
@@ -94,10 +94,10 @@ func (p *dashboardPage) onLoaded(msg dashboardLoadedMsg) {
 }
 
 // view paints the dashboard. Three-row vertical layout:
-//   1. Hero strip — currently-in-use account with its three usage bars.
-//   2. KPI row    — three cards side-by-side (or stacked when narrow).
-//   3. 24h trend  — three colored sparklines.
-//   4. Top-5 + recent activity — two columns when wide, stacked when narrow.
+//  1. Hero strip — currently-in-use account with its three usage bars.
+//  2. KPI row    — three cards side-by-side (or stacked when narrow).
+//  3. 24h trend  — three colored sparklines.
+//  4. Top-5 + recent activity — two columns when wide, stacked when narrow.
 //
 // All sections gracefully degrade to a single-line placeholder when their
 // data isn't ready yet, so the page is never blank during the first tick.

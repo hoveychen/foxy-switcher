@@ -30,8 +30,8 @@ type OpenRouterKeys struct {
 
 // OpenRouterAPI is the slice of the openrouter client this service uses.
 type OpenRouterAPI interface {
-	DeriveDeviceKey(ctx context.Context, spec openrouter.DeriveSpec) (openrouter.DerivedKey, error)
-	RevokeDerivedKey(ctx context.Context, keyHash, guardrailID string) error
+	DeriveDeviceKey(ctx context.Context, spec openrouter.DeriveSpec) (openrouter.Key, error)
+	RevokeDerivedKey(ctx context.Context, keyHash string) error
 }
 
 // NewOpenRouterKeys returns the production service, talking to the real
@@ -108,54 +108,39 @@ func (k *OpenRouterKeys) EnsureDeviceKey(ctx context.Context, deviceID string) (
 	if err != nil {
 		return OpenRouterGrant{}, fmt.Errorf("account %d: %w", acc.ID, err)
 	}
-	// The model list always drives the device's profile files — that is what makes
-	// a model appear in Fleet's picker. Whether it is ALSO enforced upstream is
-	// the account's choice: passing no models means no guardrail is created and
-	// the key relies on its own spend cap. See OpenRouterAccountConfig.EnforceModels.
-	var enforcedModels []string
-	if cfg.EnforceModels {
-		enforcedModels = cfg.AllowedModels
-	}
+	// The model list is NOT sent upstream: it drives the device's profile files,
+	// which is what makes a model appear in the picker. What bounds cost is the
+	// key's own spend cap, below.
 	derived, err := k.newClient(mgmtKey).DeriveDeviceKey(ctx, openrouter.DeriveSpec{
-		KeyName:       openRouterKeyName(deviceID),
-		GuardrailName: openRouterKeyName(deviceID),
-		AllowedModels: enforcedModels,
-		LimitUSD:      cfg.LimitUSD,
-		LimitReset:    cfg.LimitReset,
-		WorkspaceID:   cfg.WorkspaceID,
-		// Degrading to an advisory allowlist is a deployment decision, not one
-		// this code should make silently. It stays off until an operator has run
-		// the capability probe and accepted the trade-off.
-		AllowUnenforcedModels: false,
+		KeyName:     openRouterKeyName(deviceID),
+		LimitUSD:    cfg.LimitUSD,
+		LimitReset:  cfg.LimitReset,
+		WorkspaceID: cfg.WorkspaceID,
 	})
 	if err != nil {
 		return OpenRouterGrant{}, fmt.Errorf("derive OpenRouter key for device %s: %w", deviceID, err)
 	}
 
 	row := store.DeviceOpenRouterKey{
-		DeviceID:    deviceID,
-		AccountID:   acc.ID,
-		KeyHash:     derived.Hash,
-		KeySecret:   derived.Secret,
-		GuardrailID: derived.GuardrailID,
-		ExpiresAt:   derived.ExpiresAt,
+		DeviceID:  deviceID,
+		AccountID: acc.ID,
+		KeyHash:   derived.Hash,
+		KeySecret: derived.Secret,
+		ExpiresAt: derived.ExpiresAt,
 	}
 	if err := k.st.PutDeviceOpenRouterKey(ctx, row); err != nil {
 		// We hold a live upstream key we're about to forget about. Kill it rather
 		// than leak an unrevocable credential.
 		cleanup := context.WithoutCancel(ctx)
-		if rerr := k.newClient(mgmtKey).RevokeDerivedKey(cleanup, derived.Hash, derived.GuardrailID); rerr != nil {
+		if rerr := k.newClient(mgmtKey).RevokeDerivedKey(cleanup, derived.Hash); rerr != nil {
 			k.logger.Printf("[openrouter] LEAKED key %s for device %s: could not persist (%v) and could not revoke (%v)",
 				derived.Hash, deviceID, err, rerr)
 		}
 		return OpenRouterGrant{}, err
 	}
-	k.logger.Printf("[openrouter] derived key for device %s from account %d (%s), %d model(s), guardrail_enforced=%v",
-		deviceID, acc.ID, acc.Name, len(cfg.AllowedModels), derived.GuardrailEnforced)
-
-	grant := k.grant(acc, cfg, row)
-	grant.GuardrailEnforced = derived.GuardrailEnforced
-	return grant, nil
+	k.logger.Printf("[openrouter] derived key for device %s from account %d (%s), %d model(s) offered",
+		deviceID, acc.ID, acc.Name, len(cfg.AllowedModels))
+	return k.grant(acc, cfg, row), nil
 }
 
 // RevokeDeviceKeys kills every runtime key minted for a device. Called when a
@@ -183,9 +168,8 @@ func (k *OpenRouterKeys) RevokeDeviceKeys(ctx context.Context, deviceID string) 
 }
 
 // RevokeAccountKeys kills every key derived from one account. Called when the
-// account's allowlist or spend cap changes (every outstanding key encodes the
-// old policy in its guardrail, so they must all go), and when the account is
-// deleted.
+// account's spend cap changes (every outstanding key was minted with the old
+// cap, so they must all go), and when the account is deleted.
 func (k *OpenRouterKeys) RevokeAccountKeys(ctx context.Context, accountID int64) error {
 	rows, err := k.st.ListAccountOpenRouterKeys(ctx, accountID)
 	if err != nil {
@@ -213,7 +197,7 @@ func (k *OpenRouterKeys) revokeOne(ctx context.Context, accountID int64, row sto
 	if err != nil {
 		return err
 	}
-	if err := k.newClient(mgmtKey).RevokeDerivedKey(ctx, row.KeyHash, row.GuardrailID); err != nil {
+	if err := k.newClient(mgmtKey).RevokeDerivedKey(ctx, row.KeyHash); err != nil {
 		return fmt.Errorf("revoke OpenRouter key %s for device %s: %w", row.KeyHash, row.DeviceID, err)
 	}
 	if err := k.st.DeleteDeviceOpenRouterKey(ctx, row.DeviceID, row.AccountID); err != nil {
@@ -249,8 +233,8 @@ func (k *OpenRouterKeys) pickAccount(ctx context.Context) (store.Account, store.
 			continue
 		}
 		if len(cfg.AllowedModels) == 0 {
-			// An empty allowlist would mint a key with no guardrail and no models
-			// to offer — a device would get a working key and an empty dropdown.
+			// An empty list would leave the device with a working key and an empty
+			// model picker — nothing to select, so nothing to do.
 			continue
 		}
 		has, err := k.st.HasOpenRouterManagementKey(ctx, a.ID)
@@ -273,10 +257,6 @@ func (k *OpenRouterKeys) grant(acc store.Account, cfg store.OpenRouterAccountCon
 		BaseURL:       DefaultOpenRouterBaseURL,
 		AllowedModels: cfg.AllowedModels,
 		ExpiresAt:     row.ExpiresAt,
-		// A stored row that carries a guardrail id was enforced when minted.
-		// Derivation refuses the unenforced path outright today, so this is
-		// belt-and-braces rather than the only signal.
-		GuardrailEnforced: row.GuardrailID != "",
 	}
 }
 

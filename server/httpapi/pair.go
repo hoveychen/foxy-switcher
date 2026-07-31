@@ -21,9 +21,9 @@ import (
 // the same httpclient, so both surfaces share one implementation.
 
 type pairInitRequest struct {
-	VaultURL    string                  `json:"vault_url"`
-	DeviceName  string                  `json:"device_name"`
-	ClientNonce string                  `json:"client_nonce"`
+	VaultURL    string                   `json:"vault_url"`
+	DeviceName  string                   `json:"device_name"`
+	ClientNonce string                   `json:"client_nonce"`
 	DeviceMeta  *httpclient.PairMetadata `json:"device_meta,omitempty"`
 }
 

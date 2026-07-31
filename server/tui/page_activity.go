@@ -405,7 +405,7 @@ func (p *activityPage) renderFooter() string {
 	}
 	hint := "f filter · ↑/↓ scroll · g/G top/bottom · r refresh"
 	stamp := "refreshed " + humanAge(p.loadedAt)
-	return helpStyle.Render(hint+" · "+stamp)
+	return helpStyle.Render(hint + " · " + stamp)
 }
 
 // flattenWhitespace collapses any run of whitespace (incl. newlines and tabs)

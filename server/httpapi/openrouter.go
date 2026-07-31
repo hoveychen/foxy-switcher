@@ -13,10 +13,10 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
 
-// openrouter.go is the admin surface for OpenRouter accounts: create one,
-// edit its derivation template (the model allowlist and spend cap that drive
-// BOTH the upstream guardrail and the device's profile files), store its
-// management key, and probe what the account's plan actually supports.
+// openrouter.go is the admin surface for OpenRouter accounts: create one, edit
+// its derivation template (the model list each device offers and the spend cap
+// each device's key carries), store its management key, and verify that key is
+// really a provisioning key.
 //
 // The management key is write-only across this API. It goes in, but no handler
 // ever reads it back out — the UI renders a "configured / not configured" flag
@@ -42,11 +42,6 @@ type openRouterView struct {
 	LimitUSD      float64  `json:"limit_usd,omitempty"`
 	LimitReset    string   `json:"limit_reset,omitempty"`
 	WorkspaceID   string   `json:"workspace_id,omitempty"`
-	// EnforceModels reports whether an upstream guardrail backs the allowlist.
-	// Off by default: a derived key already caps spend, tracks usage and revokes
-	// per device on its own; the guardrail only adds server-side model
-	// restriction.
-	EnforceModels bool `json:"enforce_models"`
 	// HasManagementKey is how the UI shows configured-ness without the secret.
 	HasManagementKey bool `json:"has_management_key"`
 	// DerivedKeyCount is how many devices currently hold a key from this
@@ -78,7 +73,6 @@ func (s *Server) openRouterConfigFor(ctx context.Context, a store.Account) (*ope
 		LimitUSD:         cfg.LimitUSD,
 		LimitReset:       cfg.LimitReset,
 		WorkspaceID:      cfg.WorkspaceID,
-		EnforceModels:    cfg.EnforceModels,
 		HasManagementKey: hasKey,
 		DerivedKeyCount:  len(rows),
 	}, nil
@@ -94,7 +88,6 @@ type openRouterAccountReq struct {
 	LimitReset    string   `json:"limit_reset"`
 	WorkspaceID   string   `json:"workspace_id"`
 	ManagementKey string   `json:"management_key"`
-	EnforceModels bool     `json:"enforce_models"`
 }
 
 var validLimitResets = map[string]bool{
@@ -110,17 +103,6 @@ func (r *openRouterAccountReq) normalise() error {
 	if r.LimitUSD < 0 {
 		return errors.New("limit_usd cannot be negative")
 	}
-	// Verified against the live API: a GUARDRAIL carrying limit_usd must also
-	// carry reset_interval ("Reset interval is required when setting a budget
-	// limit"); there is no lifetime budget window on a guardrail. `/keys` has no
-	// such rule — a `limit` with no `limit_reset` is a valid lifetime cap on the
-	// key — so this only bites when a guardrail is actually going to be created.
-	// Reject it at save time rather than letting every device's derivation fail
-	// later with a raw upstream validation error.
-	if r.EnforceModels && r.LimitUSD > 0 && r.LimitReset == "" {
-		return errors.New("a spend cap needs limit_reset (daily, weekly or monthly) — " +
-			"OpenRouter has no lifetime budget window")
-	}
 	return nil
 }
 
@@ -130,7 +112,6 @@ func (r openRouterAccountReq) config() store.OpenRouterAccountConfig {
 		LimitUSD:      r.LimitUSD,
 		LimitReset:    r.LimitReset,
 		WorkspaceID:   strings.TrimSpace(r.WorkspaceID),
-		EnforceModels: r.EnforceModels,
 	}
 	cfg.Normalise()
 	return cfg
@@ -200,10 +181,9 @@ func (s *Server) handleCreateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 // template.
 //
 // Any policy change revokes every key already derived from this account. That
-// is not over-caution: each outstanding key carries the OLD allowlist and cap
-// baked into its own upstream guardrail, so leaving them alive would mean the
-// admin's edit silently applies to new devices only. Re-derivation happens on
-// each device's next config fetch.
+// is not over-caution: each outstanding key was minted with the OLD spend cap,
+// so leaving them alive would mean the admin's edit silently applies to new
+// devices only. Re-derivation happens on each device's next config fetch.
 func (s *Server) handleUpdateOpenRouterAccount(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -275,7 +255,6 @@ func policyChanged(oldCfg, newCfg store.OpenRouterAccountConfig) bool {
 	if oldCfg.LimitUSD != newCfg.LimitUSD ||
 		oldCfg.LimitReset != newCfg.LimitReset ||
 		oldCfg.WorkspaceID != newCfg.WorkspaceID ||
-		oldCfg.EnforceModels != newCfg.EnforceModels ||
 		len(oldCfg.AllowedModels) != len(newCfg.AllowedModels) {
 		return true
 	}
@@ -289,11 +268,10 @@ func policyChanged(oldCfg, newCfg store.OpenRouterAccountConfig) bool {
 	return false
 }
 
-// handleCheckOpenRouterAccount runs the capability probe against the stored
-// management key. This is the design's blocking prerequisite made operable:
-// it answers "is the model allowlist actually enforced server-side, or only
-// advisory?" against a real account, and catches the common
-// inference-key-instead-of-provisioning-key mistake.
+// handleCheckOpenRouterAccount verifies the stored credential really is a
+// provisioning key — the one misconfiguration that silently breaks everything
+// (an admin pasting the sk-or- key they use for chat). Read-only: it lists keys
+// rather than creating anything on the operator's account.
 func (s *Server) handleCheckOpenRouterAccount(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -309,14 +287,13 @@ func (s *Server) handleCheckOpenRouterAccount(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	caps, err := (&openrouter.Client{ManagementKey: key}).CheckCapabilities(r.Context())
+	caps, err := (&openrouter.Client{ManagementKey: key}).CheckManagementKey(r.Context())
 	if err != nil {
 		http.Error(w, "probe OpenRouter: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"management_key_valid": caps.ManagementKeyValid,
-		"guardrails_available": caps.GuardrailsAvailable,
 		"detail":               caps.Detail,
 	})
 }

@@ -84,7 +84,7 @@ func getWithBearer(t *testing.T, url, token string) *http.Response {
 func TestOpenRouterConfigIdentifiesTheDeviceFromItsToken(t *testing.T) {
 	or := &grantingOpenRouter{grant: vault.OpenRouterGrant{
 		AccountID: 7, AccountName: "pool", BaseURL: vault.DefaultOpenRouterBaseURL,
-		AllowedModels: []string{"deepseek/deepseek-v4-flash"}, GuardrailEnforced: true,
+		AllowedModels: []string{"deepseek/deepseek-v4-flash"},
 	}}
 	st, tsrv := newGrantFixture(t, or)
 	tokenA := pairedDevice(t, st, "dev-a")
@@ -105,8 +105,8 @@ func TestOpenRouterConfigIdentifiesTheDeviceFromItsToken(t *testing.T) {
 	if len(or.asked) != 1 || or.asked[0] != "dev-a" {
 		t.Fatalf("server asked about %v, want [dev-a]", or.asked)
 	}
-	if len(grant.AllowedModels) != 1 || !grant.GuardrailEnforced || grant.BaseURL == "" {
-		t.Fatalf("grant = %+v, want models + enforcement flag + base url on the wire", grant)
+	if len(grant.AllowedModels) != 1 || grant.BaseURL == "" {
+		t.Fatalf("grant = %+v, want the model list + base url on the wire", grant)
 	}
 }
 

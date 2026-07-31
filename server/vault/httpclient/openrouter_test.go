@@ -20,16 +20,12 @@ import (
 // without reaching the network.
 type fakeORAPI struct{ n int }
 
-func (f *fakeORAPI) DeriveDeviceKey(_ context.Context, spec openrouter.DeriveSpec) (openrouter.DerivedKey, error) {
+func (f *fakeORAPI) DeriveDeviceKey(_ context.Context, spec openrouter.DeriveSpec) (openrouter.Key, error) {
 	f.n++
-	return openrouter.DerivedKey{
-		Key:               openrouter.Key{Hash: "kh", Secret: "sk-or-runtime"},
-		GuardrailID:       "gr",
-		GuardrailEnforced: true,
-	}, nil
+	return openrouter.Key{Hash: "kh", Secret: "sk-or-runtime"}, nil
 }
 
-func (f *fakeORAPI) RevokeDerivedKey(context.Context, string, string) error { return nil }
+func (f *fakeORAPI) RevokeDerivedKey(context.Context, string) error { return nil }
 
 // newORRoundtrip wires the full chain, mirroring newRoundtripFixture but with
 // the OpenRouter derivation service attached.
@@ -95,9 +91,6 @@ func TestOpenRouterConfigRoundTrip(t *testing.T) {
 	}
 	if len(grant.AllowedModels) != 1 || grant.AllowedModels[0] != "deepseek/deepseek-v4-flash" {
 		t.Fatalf("AllowedModels = %v", grant.AllowedModels)
-	}
-	if !grant.GuardrailEnforced {
-		t.Fatal("GuardrailEnforced lost in transit — the agent could not warn about an advisory allowlist")
 	}
 	if grant.AccountName != "pool" {
 		t.Fatalf("AccountName = %q", grant.AccountName)

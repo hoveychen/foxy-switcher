@@ -20,10 +20,10 @@ const (
 	ProviderClaude = "claude"
 	ProviderCodex  = "codex"
 	// ProviderOpenRouter is the pay-as-you-go third-party pool. Unlike the two
-	// subscription providers it is NOT lease-managed: OpenRouter bills per
-	// token and enforces spend via guardrails, so concurrent use of one account
-	// from many devices is harmless and LRU rotation buys nothing. Each
-	// authorised device instead gets its own derived runtime key, tracked in
+	// subscription providers it is NOT lease-managed: OpenRouter bills per token
+	// and caps spend per key, so concurrent use of one account from many devices
+	// is harmless and LRU rotation buys nothing. Each authorised device instead
+	// gets its own derived runtime key, tracked in
 	// device_openrouter_keys (see openrouter.go). An OpenRouter accounts row
 	// carries no secret at all: access_token / refresh_token stay empty and
 	// credential_json holds only the derivation template
@@ -37,7 +37,7 @@ const (
 // ~/.foxy-switcher.
 type Account struct {
 	ID               int64
-	Provider         string // "claude" | "codex"
+	Provider         string // "claude" | "codex" | "openrouter"
 	Name             string
 	AccessToken      string
 	RefreshToken     string

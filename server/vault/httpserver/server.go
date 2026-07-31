@@ -435,8 +435,8 @@ func (s *Server) handleOpenRouterConfig(w http.ResponseWriter, r *http.Request) 
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		// Anything else is a real fault (upstream down, no management key,
-		// guardrails refused). Surface it so the device logs something an
+		// Anything else is a real fault (upstream down, no management key, a key
+		// that isn't a provisioning key). Surface it so the device logs something an
 		// operator can act on rather than silently running without OpenRouter.
 		writeError(w, http.StatusBadGateway, err)
 		return

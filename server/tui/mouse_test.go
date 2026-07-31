@@ -153,4 +153,3 @@ func TestHandleMouseLeftClickMovesCursor(t *testing.T) {
 		t.Errorf("left-click on account row: cursor = %d, want 2", m.cursor)
 	}
 }
-

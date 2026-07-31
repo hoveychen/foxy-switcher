@@ -13,11 +13,11 @@ import { t, tf } from "../i18n";
 // the vault, and never comes back over the API either — hence "leave blank to
 // keep" on edit rather than a pre-filled field.
 //
-// The model allowlist is the single source of truth for two things at once: the
-// upstream guardrail that enforces it server-side, and which model profiles a
-// device writes for codex. That is why editing it is a heavier action than it
-// looks — every key already derived from this account is revoked, because each
-// carries the old policy baked into its own guardrail.
+// The model list decides which codex profile files each device writes, and
+// therefore what appears in its model picker. The spend cap is what actually
+// bounds a device's cost — it rides on the derived key itself, along with that
+// key's own usage counters, so editing the cap revokes the keys already handed
+// out (they were minted with the old one).
 
 const LIMIT_RESETS = ["", "daily", "weekly", "monthly"] as const;
 
@@ -40,7 +40,6 @@ export function OpenRouterModal({
   const [limitReset, setLimitReset] = useState("");
   const [workspaceID, setWorkspaceID] = useState("");
   const [managementKey, setManagementKey] = useState("");
-  const [enforceModels, setEnforceModels] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [caps, setCaps] = useState<OpenRouterCapabilities | null>(null);
@@ -57,7 +56,6 @@ export function OpenRouterModal({
     setLimitReset(cfg?.limit_reset ?? "");
     setWorkspaceID(cfg?.workspace_id ?? "");
     setManagementKey("");
-    setEnforceModels(cfg?.enforce_models ?? false);
     setError(null);
     setCaps(null);
   }, [open, account]);
@@ -68,19 +66,11 @@ export function OpenRouterModal({
     .filter(Boolean);
   const parsedLimit = limitUSD.trim() === "" ? 0 : Number(limitUSD);
   const limitInvalid = Number.isNaN(parsedLimit) || parsedLimit < 0;
-  // OpenRouter cannot express a never-resetting budget: a guardrail carrying
-  // limit_usd must also carry reset_interval. Block the combination here rather
-  // than letting the save 400 — the two fields are right next to each other, so
-  // the fix is obvious in place.
-  // Guardrail-only rule: /guardrails rejects limit_usd without reset_interval,
-  // while /keys accepts a lifetime cap. So this only applies when enforcing.
-  const resetMissing = enforceModels && parsedLimit > 0 && limitReset === "";
   const derivedKeys = account?.openrouter?.derived_key_count ?? 0;
 
   const canSubmit =
     !busy &&
     !limitInvalid &&
-    !resetMissing &&
     parsedModels.length > 0 &&
     (editing ? true : name.trim() !== "" && managementKey.trim() !== "");
 
@@ -93,7 +83,6 @@ export function OpenRouterModal({
         limit_usd: parsedLimit,
         limit_reset: limitReset,
         workspace_id: workspaceID.trim(),
-        enforce_models: enforceModels,
       };
       if (editing && account) {
         await apiClient.updateOpenRouterAccount(account.id, {
@@ -118,10 +107,9 @@ export function OpenRouterModal({
     }
   }
 
-  // The capability probe answers the one question the whole design hinges on:
-  // does this account's plan actually enforce the model allowlist server-side,
-  // or is it only advisory? Surfacing it here means an operator can find out
-  // without reading logs.
+  // Catches the one misconfiguration that silently breaks everything: pasting
+  // the sk-or- inference key instead of a provisioning key. Read-only, so
+  // clicking it can't disturb the operator's OpenRouter account.
   async function check() {
     if (!account) return;
     setChecking(true);
@@ -207,20 +195,11 @@ export function OpenRouterModal({
               disabled={busy}
             >
               {LIMIT_RESETS.map((v) => (
-                <option
-                  key={v || "lifetime"}
-                  value={v}
-                  disabled={v === "" && enforceModels && parsedLimit > 0}
-                >
+                <option key={v || "lifetime"} value={v}>
                   {t(`openrouter.reset.${v || "lifetime"}`)}
                 </option>
               ))}
             </select>
-            {resetMissing && (
-              <span className="text-meta or-hint or-hint-error">
-                {t("openrouter.field.reset_required")}
-              </span>
-            )}
           </label>
         </div>
 
@@ -231,19 +210,6 @@ export function OpenRouterModal({
             value={workspaceID}
             onChange={(e) => setWorkspaceID(e.target.value)}
             placeholder={t("openrouter.field.workspace_placeholder")}
-            disabled={busy}
-          />
-        </label>
-
-        <label className="settings-row or-form-row">
-          <span className="or-field">
-            <span className="settings-row-label">{t("openrouter.field.enforce")}</span>
-            <span className="text-meta or-hint">{t("openrouter.field.enforce_hint")}</span>
-          </span>
-          <input
-            type="checkbox"
-            checked={enforceModels}
-            onChange={(e) => setEnforceModels(e.target.checked)}
             disabled={busy}
           />
         </label>
@@ -287,9 +253,7 @@ export function OpenRouterModal({
             {caps && (
               <p
                 className={`text-meta or-hint ${
-                  caps.management_key_valid && caps.guardrails_available
-                    ? "or-hint-ok"
-                    : "or-hint-warn"
+                  caps.management_key_valid ? "or-hint-ok" : "or-hint-error"
                 }`}
               >
                 {caps.detail}

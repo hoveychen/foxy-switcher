@@ -28,9 +28,9 @@ import (
 //     device actually received. Revoking one device means deleting one row here
 //     plus one DELETE /api/v1/keys/{hash} upstream — no other device is touched.
 //
-// There are no lease rows for OpenRouter. It bills per token and caps spend
-// with guardrails, so parallel use of one account across devices is harmless
-// and the LRU/lease machinery would only make devices fight each other. See
+// There are no lease rows for OpenRouter. It bills per token and caps spend per
+// key, so parallel use of one account across devices is harmless and the
+// LRU/lease machinery would only make devices fight each other. See
 // ProviderOpenRouter.
 
 const openrouterSchema = `
@@ -54,11 +54,6 @@ CREATE TABLE IF NOT EXISTS device_openrouter_keys (
   -- legitimately leaves the vault — but only ever to the one device it was
   -- minted for.
   key_secret   TEXT    NOT NULL DEFAULT '',
-  -- guardrail_id is the guardrail carrying allowed_models + the spend cap.
-  -- Empty means the derivation ran WITHOUT server-side model enforcement (the
-  -- account's plan doesn't expose guardrails); the model allowlist then only
-  -- constrains which profile files the device writes. See EnsureDeviceKey.
-  guardrail_id TEXT    NOT NULL DEFAULT '',
   created_at   INTEGER NOT NULL,
   expires_at   INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (device_id, account_id)
@@ -70,10 +65,9 @@ CREATE INDEX IF NOT EXISTS device_openrouter_keys_account
 // OpenRouterAccountConfig is the JSON document stored in
 // Account.CredentialJSON for provider="openrouter" rows. It is the single
 // source of truth the admin edits once and that then drives BOTH sides of the
-// contract: the guardrail's allowed_models (server-side enforcement) and which
-// `or-<model>.config.toml` profile files the device writes (client-side
-// visibility). Keeping it in one place is what prevents the "model shows up in
-// Fleet's dropdown but OpenRouter rejects it" mismatch.
+// contract: what each device's derived key is capped at, and which
+// `or-<model>.config.toml` profile files the device writes — i.e. which models
+// appear in the picker.
 //
 // It deliberately contains NO secret — see the openrouter_management_keys note
 // above.
@@ -82,26 +76,12 @@ type OpenRouterAccountConfig struct {
 	AllowedModels []string `json:"allowed_models"`
 	// LimitUSD caps spend on each derived key. 0 = no cap.
 	LimitUSD float64 `json:"limit_usd,omitempty"`
-	// LimitReset is OpenRouter's reset_interval — "daily"/"weekly"/"monthly".
-	// Empty means the limit never resets (a lifetime cap).
+	// LimitReset is OpenRouter's limit_reset — "daily"/"weekly"/"monthly".
+	// Empty means the limit never resets (a lifetime cap), which `/keys` accepts.
 	LimitReset string `json:"limit_reset,omitempty"`
 	// WorkspaceID scopes minted keys to an OpenRouter workspace. Empty = the
 	// management key's default workspace.
 	WorkspaceID string `json:"workspace_id,omitempty"`
-	// EnforceModels adds an upstream Guardrail carrying AllowedModels, so the
-	// model restriction is enforced by OpenRouter and not merely by which
-	// profile files the device writes.
-	//
-	// Default OFF, because a guardrail buys exactly one thing and it isn't the
-	// expensive one. A derived key already gives per-device spend caps
-	// (limit / limit_reset), per-device usage tracking (usage_daily / weekly /
-	// monthly) and per-device revocation on its own. What the guardrail adds is
-	// stopping a device from calling a model outside the list — and since the
-	// spend cap bounds the money either way, that only changes how much work the
-	// capped dollars buy, not how many dollars are at risk. Turn it on when
-	// devices are less trusted than the cap alone allows for; it costs an extra
-	// upstream object per device and an extra derivation step that can fail.
-	EnforceModels bool `json:"enforce_models,omitempty"`
 }
 
 // ParseOpenRouterConfig decodes an OpenRouter account's credential_json.
@@ -251,12 +231,11 @@ func (s *Store) DeleteOpenRouterManagementKey(ctx context.Context, accountID int
 // account. KeyHash is the revocation handle; KeySecret is the bearer token the
 // device's codex sessions actually use.
 type DeviceOpenRouterKey struct {
-	DeviceID    string
-	AccountID   int64
-	KeyHash     string
-	KeySecret   string
-	GuardrailID string
-	CreatedAt   int64
+	DeviceID  string
+	AccountID int64
+	KeyHash   string
+	KeySecret string
+	CreatedAt int64
 	// ExpiresAt is the key's upstream expiry (unix millis). 0 = never expires.
 	ExpiresAt int64
 }
@@ -283,15 +262,14 @@ func (s *Store) PutDeviceOpenRouterKey(ctx context.Context, k DeviceOpenRouterKe
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO device_openrouter_keys
-		   (device_id, account_id, key_hash, key_secret, guardrail_id, created_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		   (device_id, account_id, key_hash, key_secret, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(device_id, account_id) DO UPDATE SET
-		   key_hash     = excluded.key_hash,
-		   key_secret   = excluded.key_secret,
-		   guardrail_id = excluded.guardrail_id,
-		   created_at   = excluded.created_at,
-		   expires_at   = excluded.expires_at`,
-		k.DeviceID, k.AccountID, k.KeyHash, k.KeySecret, k.GuardrailID, k.CreatedAt, k.ExpiresAt)
+		   key_hash   = excluded.key_hash,
+		   key_secret = excluded.key_secret,
+		   created_at = excluded.created_at,
+		   expires_at = excluded.expires_at`,
+		k.DeviceID, k.AccountID, k.KeyHash, k.KeySecret, k.CreatedAt, k.ExpiresAt)
 	return err
 }
 
@@ -300,10 +278,10 @@ func (s *Store) PutDeviceOpenRouterKey(ctx context.Context, k DeviceOpenRouterKe
 func (s *Store) DeviceOpenRouterKeyFor(ctx context.Context, deviceID string, accountID int64) (*DeviceOpenRouterKey, error) {
 	k := DeviceOpenRouterKey{DeviceID: deviceID, AccountID: accountID}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT key_hash, key_secret, guardrail_id, created_at, expires_at
+		`SELECT key_hash, key_secret, created_at, expires_at
 		   FROM device_openrouter_keys WHERE device_id = ? AND account_id = ?`,
 		deviceID, accountID).
-		Scan(&k.KeyHash, &k.KeySecret, &k.GuardrailID, &k.CreatedAt, &k.ExpiresAt)
+		Scan(&k.KeyHash, &k.KeySecret, &k.CreatedAt, &k.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -328,7 +306,7 @@ func (s *Store) ListAccountOpenRouterKeys(ctx context.Context, accountID int64) 
 
 func (s *Store) queryOpenRouterKeys(ctx context.Context, where string, arg any) ([]DeviceOpenRouterKey, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT device_id, account_id, key_hash, key_secret, guardrail_id, created_at, expires_at
+		`SELECT device_id, account_id, key_hash, key_secret, created_at, expires_at
 		   FROM device_openrouter_keys WHERE `+where+` ORDER BY created_at DESC`, arg)
 	if err != nil {
 		return nil, err
@@ -338,7 +316,7 @@ func (s *Store) queryOpenRouterKeys(ctx context.Context, where string, arg any) 
 	for rows.Next() {
 		var k DeviceOpenRouterKey
 		if err := rows.Scan(&k.DeviceID, &k.AccountID, &k.KeyHash, &k.KeySecret,
-			&k.GuardrailID, &k.CreatedAt, &k.ExpiresAt); err != nil {
+			&k.CreatedAt, &k.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -347,7 +325,7 @@ func (s *Store) queryOpenRouterKeys(ctx context.Context, where string, arg any) 
 }
 
 // DeleteDeviceOpenRouterKey removes one mapping row. Idempotent. Upstream
-// revocation is the caller's job — see openrouter.Revoker.
+// revocation is the caller's job — see vault.OpenRouterKeys.
 func (s *Store) DeleteDeviceOpenRouterKey(ctx context.Context, deviceID string, accountID int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM device_openrouter_keys WHERE device_id = ? AND account_id = ?`,

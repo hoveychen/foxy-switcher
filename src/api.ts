@@ -206,20 +206,15 @@ export interface Account {
   openrouter?: OpenRouterConfig;
 }
 
-// OpenRouterConfig is the single source of truth an admin edits per OpenRouter
-// account. The same allowlist drives the upstream guardrail (server-side
-// enforcement) and which model profiles each device writes for codex, so the
-// dropdown can never offer a model the key would be rejected for.
+// OpenRouterConfig is what an admin edits per OpenRouter account: which models
+// each device offers (one codex profile file each) and the spend cap every
+// derived device key carries.
 export interface OpenRouterConfig {
   allowed_models: string[];
   limit_usd?: number;
   // "" | "daily" | "weekly" | "monthly"; empty means a lifetime cap.
   limit_reset?: string;
   workspace_id?: string;
-  // Whether an upstream guardrail backs the allowlist. Off by default: a
-  // derived key already caps spend, tracks usage and revokes per device on its
-  // own, so the guardrail's only addition is server-side model restriction.
-  enforce_models: boolean;
   // The management key itself is write-only over the API; this is how the UI
   // shows whether one is configured.
   has_management_key: boolean;
@@ -228,12 +223,12 @@ export interface OpenRouterConfig {
   derived_key_count: number;
 }
 
-// OpenRouterCapabilities is the result of probing an account's management key.
-// guardrails_available answers whether the model allowlist is actually enforced
-// server-side or is only advisory (client-side visibility plus the spend cap).
+// OpenRouterCapabilities is the result of verifying an account's stored
+// credential really is a provisioning key — the one misconfiguration that
+// silently breaks everything (pasting the inference key instead). The check is
+// read-only; it lists keys rather than creating anything.
 export interface OpenRouterCapabilities {
   management_key_valid: boolean;
-  guardrails_available: boolean;
   detail: string;
 }
 
@@ -736,7 +731,7 @@ export const apiClient = {
   // workspace's device-code toggle.
   // OpenRouter accounts have no OAuth flow: the admin supplies a management key
   // and a policy, and each authorised device later derives its own capped
-  // runtime key from it.
+  // runtime key from it in a single upstream call.
   createOpenRouterAccount: (body: {
     name: string;
     allowed_models: string[];
@@ -744,15 +739,13 @@ export const apiClient = {
     limit_reset: string;
     workspace_id?: string;
     management_key: string;
-    enforce_models: boolean;
   }) =>
     api<{ account: Account }>("/api/accounts/openrouter", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  // Editing the policy revokes every key already derived from this account —
-  // each one has the old allowlist and cap baked into its own guardrail.
-  // Omit management_key to keep the stored one.
+  // Editing the spend cap revokes every key already derived from this account —
+  // each was minted with the old cap. Omit management_key to keep the stored one.
   updateOpenRouterAccount: (
     id: number,
     body: {
@@ -761,15 +754,14 @@ export const apiClient = {
       limit_reset: string;
       workspace_id?: string;
       management_key?: string;
-      enforce_models: boolean;
     },
   ) =>
     api<{ account: Account }>(`/api/accounts/${id}/openrouter`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  // Probes the stored management key against OpenRouter: is it a management key
-  // at all, and does this plan actually enforce the model allowlist?
+  // Verifies the stored credential is really a provisioning key, not the
+  // inference key. Read-only — it lists keys rather than creating anything.
   checkOpenRouterAccount: (id: number) =>
     api<OpenRouterCapabilities>(`/api/accounts/${id}/openrouter/check`, {
       method: "POST",
