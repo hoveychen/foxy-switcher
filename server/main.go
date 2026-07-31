@@ -230,6 +230,12 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// table directly for skip-decisions — going through the Service would
 	// make the per-tick check needlessly indirect.
 	vaultSvc := vault.NewInProc(st)
+	// OpenRouter key derivation is vault-internal — it holds the management key
+	// path and decides what a given device id may have — so it is a collaborator
+	// of the vault HTTP server and the admin API rather than part of
+	// vault.Service, which remote agents drive. Constructed unconditionally:
+	// with no OpenRouter account configured it simply reports none available.
+	openRouterKeys := vault.NewOpenRouterKeys(st, logger)
 	rf := refresh.New(st, logger)
 	rf.Bus = bus
 	rf.IsAccountInUse = st.IsAccountLeased
@@ -239,6 +245,9 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 
 	server := httpapi.New(st, pkce, rf, opts.DataDir)
 	server.Bus = bus
+	// The admin API needs the derivation service so an allowlist / spend-cap
+	// edit can revoke the runtime keys minted under the old policy.
+	server.SetOpenRouterKeys(openRouterKeys)
 	server.Mode = modeName(opts.Mode)
 	if opts.Mode == modeVault {
 		// Vault mode means the frontend httpapi is reachable beyond
@@ -282,6 +291,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	suppressCredInject := opts.NoCredInject || opts.Mode == modeVault
 	var cc *credinject.Coordinator
 	var codexManager *openai.Manager
+	var orWriter *openRouterWriter
 	if !suppressCredInject {
 		backend, err := credinject.NewBackend()
 		if err != nil {
@@ -313,6 +323,20 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 			codexManager.SetDeviceID(cc.DeviceID())
 			server.Codex = codexManager
 			server.CodexStorage = codexStorage
+		}
+		// Combined mode is its own vault, so the grant comes from the in-process
+		// derivation service rather than over HTTP. The device id is the local one
+		// credinject persists; combined mode has no devices row, and
+		// DeviceAllowsProvider deliberately leaves un-paired ids un-gated.
+		if home, homeErr := openai.DefaultCodexHome(); homeErr != nil {
+			logger.Printf("warning: resolve CODEX_HOME: %v (OpenRouter disabled)", homeErr)
+		} else if exe, exeErr := resolveExePath(); exeErr != nil {
+			logger.Printf("warning: resolve own executable path: %v (OpenRouter disabled)", exeErr)
+		} else {
+			orWriter = newOpenRouterWriter(
+				inprocGrantSource{keys: openRouterKeys, deviceID: cc.DeviceID()},
+				home, exe, logger)
+			orWriter.Start(ctx)
 		}
 	}
 
@@ -389,11 +413,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// vault HTTP server rather than vault.Service, which remote agents drive.
 	// Constructed unconditionally: with no OpenRouter account configured it
 	// simply reports none available.
-	openRouterKeys := vault.NewOpenRouterKeys(st, logger)
 	vaultHTTP.OpenRouter = openRouterKeys
-	// The admin API needs the same service so an allowlist / spend-cap edit can
-	// revoke the runtime keys minted under the old policy.
-	server.SetOpenRouterKeys(openRouterKeys)
 	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
 	// Re-expose the frontend httpapi under /agent/v1/api/ so a remote
 	// agent can drive the same view + lease routes via the bearer-auth'd
@@ -435,6 +455,11 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// stop without holding a device token. Loopback-gated; see
 	// loopbackOnly + quitHandler in quit.go.
 	rootMux.HandleFunc("POST /api/quit", loopbackOnly(quitHandler(logger, quit)))
+	// Loopback-only: hands out a live third-party API key, and in vault mode the
+	// listener is bound beyond 127.0.0.1. Registered on rootMux (above the
+	// catch-all and outside vault-mode BearerAuth) because codex has no device
+	// token — running on this machine is the authorisation.
+	rootMux.HandleFunc("GET /api/cred/openrouter-token", loopbackOnly(openRouterTokenHandler(orWriter)))
 	rootMux.Handle("/", server.Handler())
 	httpSrv := &http.Server{
 		Handler:           rootMux,

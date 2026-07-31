@@ -79,6 +79,44 @@ embedding a daemon if none is already serving on the data dir.`,
 	cmd.AddCommand(newUnpairCmd())
 	cmd.AddCommand(newTUICmd())
 	cmd.AddCommand(newServerCmd())
+	cmd.AddCommand(newCredCmd())
+	return cmd
+}
+
+// newCredCmd groups the machine-facing credential helpers — commands another
+// program executes, not ones a human types. Their contract is stricter than a
+// normal subcommand's: stdout is the value, nothing else.
+func newCredCmd() *cobra.Command {
+	var dataDir string
+	cmd := &cobra.Command{
+		Use:   "cred",
+		Short: "Credential helpers invoked by other tools (not usually run by hand).",
+	}
+	cmd.PersistentFlags().StringVar(&dataDir, "data-dir", "",
+		"directory containing the daemon's port file (default ~/.foxy-switcher)")
+
+	token := &cobra.Command{
+		Use:   "openrouter-token",
+		Short: "Print this device's current OpenRouter API key (used by codex).",
+		Long: `openrouter-token prints the OpenRouter runtime key the vault issued to
+this device, and nothing else — codex reads the whole of stdout as the
+bearer token.
+
+codex invokes this itself: foxy writes an
+` + "`[model_providers.openrouter.auth] command = …`" + ` entry into config.toml
+so the key is fetched from the running daemon on demand instead of being
+stored on disk. Running it by hand is only useful for debugging.
+
+Exits non-zero (with a message on stderr) when the daemon isn't running or
+this device isn't authorised for OpenRouter, so codex reports an auth
+failure rather than sending an empty token.`,
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			return runCredOpenRouterToken(dataDir, c.OutOrStdout())
+		},
+	}
+	cmd.AddCommand(token)
 	return cmd
 }
 
