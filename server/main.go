@@ -384,6 +384,13 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// More specific patterns win over the catch-all "/" mount.
 	rootMux := http.NewServeMux()
 	vaultHTTP := httpserver.New(vaultSvc, st)
+	// OpenRouter key derivation is vault-internal — it holds the management key
+	// path and decides what a given device id may have — so it hangs off the
+	// vault HTTP server rather than vault.Service, which remote agents drive.
+	// Constructed unconditionally: with no OpenRouter account configured it
+	// simply reports none available.
+	openRouterKeys := vault.NewOpenRouterKeys(st, logger)
+	vaultHTTP.OpenRouter = openRouterKeys
 	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
 	// Re-expose the frontend httpapi under /agent/v1/api/ so a remote
 	// agent can drive the same view + lease routes via the bearer-auth'd

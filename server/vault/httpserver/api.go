@@ -288,6 +288,15 @@ func (s *Server) handleAPIDevicesRevoke(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, errors.New("id required"))
 		return
 	}
+	// Kill the device's OpenRouter keys BEFORE dropping the row. Order matters:
+	// the mapping rows are the only record of which upstream keys belong to this
+	// device, so deleting the device first would strand them. A revoke failure
+	// aborts the whole operation for the same reason — better a device that is
+	// still listed than a live third-party key nobody can find.
+	if err := s.revokeDeviceOpenRouter(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if err := s.st.DeleteDevice(r.Context(), req.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -296,9 +305,16 @@ func (s *Server) handleAPIDevicesRevoke(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleAPIDevicesSuspend temporarily kicks a device without deleting it:
-// it stamps disabled_at (so BearerAuth 401s the token) and releases any
-// leases the device holds so the accounts return to the pool immediately.
-// The row and token_hash survive, so a later Resume needs no re-pair.
+// it stamps disabled_at (so BearerAuth 401s the token), releases any leases the
+// device holds so the accounts return to the pool immediately, and revokes its
+// OpenRouter keys. The row and token_hash survive, so a later Resume needs no
+// re-pair.
+//
+// The OpenRouter revoke is not optional here. A derived runtime key talks to
+// OpenRouter directly and never presents the device token, so disabled_at does
+// nothing to it — without revocation a "suspended" device would keep spending
+// on the pool indefinitely. Resume re-derives a fresh key on the device's next
+// request, which is one upstream round trip, so this costs little.
 func (s *Server) handleAPIDevicesSuspend(w http.ResponseWriter, r *http.Request) {
 	var req apiRevokeReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -322,6 +338,10 @@ func (s *Server) handleAPIDevicesSuspend(w http.ResponseWriter, r *http.Request)
 	// that, but we surface it as 500 so the operator knows the pool didn't
 	// fully free — the lease will still expire on its own TTL.
 	if _, err := s.st.ReleaseDeviceLeases(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.revokeDeviceOpenRouter(r.Context(), req.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
