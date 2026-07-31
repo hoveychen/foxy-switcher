@@ -355,17 +355,27 @@ function AccountCard({
           // OpenRouter is pay-as-you-go: there are no subscription usage
           // windows to render. Show the policy that actually governs it — how
           // many models devices may pick and the per-key spend cap.
-          <div className="usage-row usage-row-compact">
-            <span className="usage-label">{t("accounts.openrouter.policy")}</span>
-            <span className="usage-empty">
-              {tf("accounts.openrouter.policy_value", {
-                models: a.openrouter?.allowed_models.length ?? 0,
-                limit: a.openrouter?.limit_usd
-                  ? `$${a.openrouter.limit_usd}`
-                  : t("accounts.openrouter.no_limit"),
-              })}
-            </span>
-          </div>
+          <>
+            <div className="usage-row usage-row-compact">
+              <span className="usage-label">{t("accounts.openrouter.policy")}</span>
+              <span className="usage-empty">
+                {tf("accounts.openrouter.policy_value", {
+                  models: a.openrouter?.allowed_models.length ?? 0,
+                  limit: a.openrouter?.limit_usd
+                    ? `$${a.openrouter.limit_usd}`
+                    : t("accounts.openrouter.no_limit"),
+                })}
+              </span>
+            </div>
+            <div className="usage-row usage-row-compact">
+              <span className="usage-label">{t("accounts.openrouter.credit")}</span>
+              <span className={`usage-empty ${a.openrouter?.out_of_credit ? "or-hint-error" : ""}`}>
+                {a.openrouter?.credit
+                  ? `$${a.openrouter.credit.remaining.toFixed(2)}`
+                  : t("accounts.openrouter.credit_unknown")}
+              </span>
+            </div>
+          </>
         ) : (
           <>
             <UsageMiniBar

@@ -25,8 +25,12 @@
 //   - A `limit` with no `limit_reset` is accepted: that's a lifetime cap.
 //   - `DELETE /keys/{hash}` returns 200 {"deleted":true}; a repeat returns 404,
 //     so idempotent revocation is safe.
-//   - `GET /keys` succeeds for a provisioning key, which is what
-//     CheckManagementKey uses to tell one from an ordinary inference key.
+//   - `GET /key` (singular) is self-introspection: it reports
+//     `is_provisioning_key` / `is_management_key` plus this key's own `limit`,
+//     `limit_remaining` and `usage*`. That flag is how a pasted key's kind is
+//     detected rather than declared.
+//   - `GET /credits` reports account-level `total_credits` / `total_usage`;
+//     remaining is the difference. This is the "out of money" signal.
 //
 // Response decoding stays lenient about data-envelope vs flat placement of the
 // key secret and hash, since only the observed shape is proven.
@@ -77,9 +81,13 @@ type Client struct {
 	// BaseURL defaults to DefaultBaseURL. Overridden by tests and by
 	// self-hosted / regional deployments.
 	BaseURL string
-	// ManagementKey authenticates every call in this package. Never leaves the
-	// vault process.
-	ManagementKey string
+	// APIKey authenticates every call in this package. It may be a provisioning
+	// key or an ordinary one — deliberately not named ManagementKey, because
+	// supporting both is the point.
+	//
+	// A provisioning key never leaves the vault process. An ordinary one is what
+	// gets served to devices, since there is nothing to derive from it.
+	APIKey string
 	// HTTP defaults to a client with defaultTimeout.
 	HTTP *http.Client
 }
@@ -100,7 +108,7 @@ func (c *Client) httpClient() *http.Client {
 
 // do issues one management call. `out` may be nil for responses we don't read.
 func (c *Client) do(ctx context.Context, op, method, path string, body, out any) error {
-	if strings.TrimSpace(c.ManagementKey) == "" {
+	if strings.TrimSpace(c.APIKey) == "" {
 		return fmt.Errorf("openrouter: %s: no management key configured", op)
 	}
 	var reader io.Reader
@@ -115,7 +123,7 @@ func (c *Client) do(ctx context.Context, op, method, path string, body, out any)
 	if err != nil {
 		return fmt.Errorf("openrouter: %s: %w", op, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.ManagementKey)
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -306,36 +314,143 @@ func (c *Client) RevokeDerivedKey(ctx context.Context, keyHash string) error {
 	return c.DeleteKey(ctx, keyHash)
 }
 
-// --- management key probe -------------------------------------------------
+// --- key introspection ----------------------------------------------------
 
-// Capabilities is what CheckManagementKey found out about a credential.
+// KeyInfo is what a key says about itself via GET /key. Used for two things:
+// deciding whether a pasted key can mint per-device keys, and reading that one
+// key's own remaining allowance.
+type KeyInfo struct {
+	// IsProvisioning means this key can create and delete other keys. That, not
+	// anything the admin declares, is what decides whether foxy derives a
+	// per-device key or hands this one out directly.
+	IsProvisioning bool
+	// Label is OpenRouter's redacted display form ("sk-or-v1-abc...xyz"). Safe to
+	// show; it is not the key.
+	Label string
+	// Limit / LimitRemaining are this key's own cap. Nil when uncapped —
+	// distinguished from zero, which would otherwise read as "exhausted".
+	Limit          *float64
+	LimitRemaining *float64
+	// Usage is spend on this key so far, and the per-device tracking signal.
+	Usage float64
+}
+
+// keyInfoResponse mirrors the observed {"data":{…}} envelope.
+type keyInfoResponse struct {
+	Data struct {
+		Label             string   `json:"label"`
+		IsProvisioningKey bool     `json:"is_provisioning_key"`
+		IsManagementKey   bool     `json:"is_management_key"`
+		Limit             *float64 `json:"limit"`
+		LimitRemaining    *float64 `json:"limit_remaining"`
+		Usage             float64  `json:"usage"`
+	} `json:"data"`
+}
+
+// KeySelf reports what the configured key says about itself.
+//
+// This is the whole of key-kind detection, and it is why the admin never has to
+// declare which sort of key they pasted: OpenRouter tells us. It is also
+// read-only, so running it on every save costs nothing but a round trip.
+func (c *Client) KeySelf(ctx context.Context) (KeyInfo, error) {
+	var resp keyInfoResponse
+	if err := c.do(ctx, "get key", http.MethodGet, "/key", nil, &resp); err != nil {
+		return KeyInfo{}, err
+	}
+	return KeyInfo{
+		// Either flag means it can mint: OpenRouter reports both for a
+		// provisioning key, and accepting either avoids depending on which name
+		// they settle on.
+		IsProvisioning: resp.Data.IsProvisioningKey || resp.Data.IsManagementKey,
+		Label:          resp.Data.Label,
+		Limit:          resp.Data.Limit,
+		LimitRemaining: resp.Data.LimitRemaining,
+		Usage:          resp.Data.Usage,
+	}, nil
+}
+
+// --- account balance ------------------------------------------------------
+
+// Credits is the account-level balance — the "out of money" signal that decides
+// whether an account should still be handed out.
+type Credits struct {
+	Total float64
+	Used  float64
+}
+
+// Remaining is what's left to spend.
+func (c Credits) Remaining() float64 { return c.Total - c.Used }
+
+type creditsResponse struct {
+	Data struct {
+		TotalCredits float64 `json:"total_credits"`
+		TotalUsage   float64 `json:"total_usage"`
+	} `json:"data"`
+}
+
+// AccountCredits reads the account's balance.
+//
+// Account-level rather than per-key on purpose: rotating between accounts is
+// about which account still has money, and a per-key cap is a different
+// question (answered by KeySelf.LimitRemaining).
+func (c *Client) AccountCredits(ctx context.Context) (Credits, error) {
+	var resp creditsResponse
+	if err := c.do(ctx, "get credits", http.MethodGet, "/credits", nil, &resp); err != nil {
+		return Credits{}, err
+	}
+	return Credits{Total: resp.Data.TotalCredits, Used: resp.Data.TotalUsage}, nil
+}
+
+// --- key probe ------------------------------------------------------------
+
+// Capabilities is what CheckKey found out about a credential.
 type Capabilities struct {
-	// ManagementKeyValid is false when the credential isn't a management key at
-	// all — the usual "pasted the inference key" case.
-	ManagementKeyValid bool
+	// KeyValid is false when the credential isn't accepted by OpenRouter at all.
+	KeyValid bool
+	// CanMintKeys means it is a provisioning key: foxy can mint a separate,
+	// separately revocable key per device from it.
+	CanMintKeys bool
+	// CreditTotal / CreditRemaining are the account balance, when readable.
+	CreditTotal     float64
+	CreditRemaining float64
+	// CreditKnown distinguishes "balance is zero" from "couldn't read it".
+	CreditKnown bool
 	// Detail is a human-readable note for the admin UI.
 	Detail string
 }
 
-// CheckManagementKey verifies a credential really is a provisioning key.
+// CheckKey verifies the configured key works and reports what it can do — mint
+// per-device keys or not — plus the account balance when readable.
 //
-// Read-only by design: it lists keys rather than creating anything. The earlier
-// probe created and deleted a throwaway guardrail, which was both a mutation on
-// the operator's account and — as the live run showed — able to fail for reasons
-// having nothing to do with the credential. Listing can only fail for the one
-// reason we're asking about.
-func (c *Client) CheckManagementKey(ctx context.Context) (Capabilities, error) {
-	err := c.do(ctx, "list keys", http.MethodGet, "/keys", nil, nil)
-	switch {
-	case err == nil:
-		return Capabilities{ManagementKeyValid: true,
-			Detail: "management key valid — foxy can mint and revoke per-device keys"}, nil
-	case errors.Is(err, ErrUnauthorized):
-		return Capabilities{
-			Detail: "not a valid management key — paste a provisioning key, not an inference key"}, nil
-	default:
+// Read-only throughout: GET /key and GET /credits. Nothing is created on the
+// operator's account, and neither call can fail for a reason unrelated to what
+// is being asked.
+func (c *Client) CheckKey(ctx context.Context) (Capabilities, error) {
+	info, err := c.KeySelf(ctx)
+	if errors.Is(err, ErrUnauthorized) {
+		return Capabilities{Detail: "OpenRouter rejected this key"}, nil
+	}
+	if err != nil {
 		return Capabilities{}, err
 	}
+	caps := Capabilities{KeyValid: true, CanMintKeys: info.IsProvisioning}
+	if info.IsProvisioning {
+		caps.Detail = "provisioning key — each authorised device gets its own key, " +
+			"revocable on its own"
+	} else {
+		caps.Detail = "ordinary API key — every authorised device shares it, so revoking " +
+			"one device cannot revoke this key. Fine for a single machine; paste a " +
+			"provisioning key to get per-device keys"
+	}
+	// A balance we can't read is reported as unknown rather than as an error: the
+	// key itself is already known good, and that is the question being asked.
+	if credits, cerr := c.AccountCredits(ctx); cerr == nil {
+		caps.CreditTotal = credits.Total
+		caps.CreditRemaining = credits.Remaining()
+		caps.CreditKnown = true
+		caps.Detail += fmt.Sprintf(" · $%.2f credit remaining", credits.Remaining())
+	}
+	return caps, nil
 }
 
 // --- helpers --------------------------------------------------------------

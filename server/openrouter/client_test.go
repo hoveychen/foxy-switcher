@@ -49,7 +49,7 @@ func newFake(t *testing.T, handler func(c call) (int, string)) (*Client, *fakeAP
 		_, _ = io.WriteString(w, body)
 	}))
 	t.Cleanup(srv.Close)
-	return &Client{BaseURL: srv.URL, ManagementKey: "sk-or-mgmt", HTTP: srv.Client()}, f
+	return &Client{BaseURL: srv.URL, APIKey: "sk-or-mgmt", HTTP: srv.Client()}, f
 }
 
 func (f *fakeAPI) seen() []call {
@@ -253,42 +253,6 @@ func TestRevokeSurfacesARealFailure(t *testing.T) {
 
 // --- management key probe --------------------------------------------------
 
-// The probe is read-only: it lists keys rather than creating a throwaway
-// object. The earlier guardrail-based probe mutated the operator's account and
-// could fail for reasons unrelated to the credential.
-func TestCheckManagementKeyIsReadOnly(t *testing.T) {
-	c, f := newFake(t, happyHandler)
-	caps, err := c.CheckManagementKey(context.Background())
-	if err != nil {
-		t.Fatalf("CheckManagementKey: %v", err)
-	}
-	if !caps.ManagementKeyValid {
-		t.Fatalf("caps = %+v", caps)
-	}
-	wantPaths(t, f.paths(), []string{"GET /keys"})
-	for _, c := range f.seen() {
-		if c.Method != http.MethodGet {
-			t.Fatalf("probe made a %s request; it must not mutate the account", c.Method)
-		}
-	}
-}
-
-func TestCheckManagementKeyRejectsAnInferenceKey(t *testing.T) {
-	c, _ := newFake(t, func(call) (int, string) {
-		return http.StatusUnauthorized, `{"error":{"message":"Invalid management key"}}`
-	})
-	caps, err := c.CheckManagementKey(context.Background())
-	if err != nil {
-		t.Fatalf("CheckManagementKey: %v", err)
-	}
-	if caps.ManagementKeyValid {
-		t.Fatalf("caps = %+v, want invalid", caps)
-	}
-	if !strings.Contains(caps.Detail, "provisioning key") {
-		t.Fatalf("Detail = %q, should tell the admin which key to paste", caps.Detail)
-	}
-}
-
 func TestNoManagementKeyIsAClearError(t *testing.T) {
 	c := &Client{BaseURL: "http://127.0.0.1:1"}
 	if _, err := c.CreateKey(context.Background(), KeySpec{Name: "n"}); err == nil ||
@@ -306,5 +270,202 @@ func TestErrorMessageExtraction(t *testing.T) {
 		if got := errorMessage([]byte(tc.body)); got != tc.want {
 			t.Fatalf("errorMessage(%q) = %q, want %q", tc.body, got, tc.want)
 		}
+	}
+}
+
+// --- key introspection & balance -------------------------------------------
+
+// The response bodies below are the shapes observed live on 2026-07-31.
+
+const liveKeySelfBody = `{"data":{
+  "label":"sk-or-v1-4...bfc5","is_management_key":true,"is_provisioning_key":true,
+  "limit":null,"limit_reset":null,"limit_remaining":null,
+  "usage":0,"usage_daily":0,"usage_weekly":0,"usage_monthly":0,
+  "is_free_tier":false,"expires_at":null}}`
+
+const liveCreditsBody = `{"data":{"total_credits":510,"total_usage":486.056337854}}`
+
+func TestKeySelfDetectsAProvisioningKey(t *testing.T) {
+	c, f := newFake(t, func(c call) (int, string) {
+		if c.Method == http.MethodGet && c.Path == "/key" {
+			return http.StatusOK, liveKeySelfBody
+		}
+		return happyHandler(c)
+	})
+	info, err := c.KeySelf(context.Background())
+	if err != nil {
+		t.Fatalf("KeySelf: %v", err)
+	}
+	if !info.IsProvisioning {
+		t.Fatal("is_provisioning_key was not picked up — the admin would be asked to declare the kind")
+	}
+	if info.Label == "" {
+		t.Fatal("Label is the redacted display form; the UI needs it")
+	}
+	// An uncapped key reports null, which must stay distinguishable from zero —
+	// zero would read as "exhausted".
+	if info.Limit != nil || info.LimitRemaining != nil {
+		t.Fatalf("null limits decoded as %v/%v, want nil", info.Limit, info.LimitRemaining)
+	}
+	wantPaths(t, f.paths(), []string{"GET /key"})
+}
+
+func TestKeySelfDetectsAnOrdinaryKey(t *testing.T) {
+	c, _ := newFake(t, func(c call) (int, string) {
+		if c.Method == http.MethodGet && c.Path == "/key" {
+			return http.StatusOK, `{"data":{"label":"sk-or-v1-x...y",
+			  "is_management_key":false,"is_provisioning_key":false,
+			  "limit":20,"limit_remaining":19.99,"usage":0.01}}`
+		}
+		return happyHandler(c)
+	})
+	info, err := c.KeySelf(context.Background())
+	if err != nil {
+		t.Fatalf("KeySelf: %v", err)
+	}
+	if info.IsProvisioning {
+		t.Fatal("an ordinary key must not be treated as able to mint")
+	}
+	if info.Limit == nil || *info.Limit != 20 ||
+		info.LimitRemaining == nil || *info.LimitRemaining != 19.99 {
+		t.Fatalf("limits = %v/%v", info.Limit, info.LimitRemaining)
+	}
+	if info.Usage != 0.01 {
+		t.Fatalf("Usage = %v — this is the per-device tracking signal", info.Usage)
+	}
+}
+
+// Either flag should count, so detection doesn't depend on which name OpenRouter
+// settles on.
+func TestKeySelfAcceptsEitherProvisioningFlag(t *testing.T) {
+	for name, body := range map[string]string{
+		"provisioning only": `{"data":{"is_provisioning_key":true}}`,
+		"management only":   `{"data":{"is_management_key":true}}`,
+		"both":              `{"data":{"is_provisioning_key":true,"is_management_key":true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := newFake(t, func(c call) (int, string) {
+				if c.Path == "/key" {
+					return http.StatusOK, body
+				}
+				return happyHandler(c)
+			})
+			info, err := c.KeySelf(context.Background())
+			if err != nil || !info.IsProvisioning {
+				t.Fatalf("KeySelf(%s) = %+v, %v", name, info, err)
+			}
+		})
+	}
+}
+
+func TestAccountCredits(t *testing.T) {
+	c, f := newFake(t, func(c call) (int, string) {
+		if c.Method == http.MethodGet && c.Path == "/credits" {
+			return http.StatusOK, liveCreditsBody
+		}
+		return happyHandler(c)
+	})
+	credits, err := c.AccountCredits(context.Background())
+	if err != nil {
+		t.Fatalf("AccountCredits: %v", err)
+	}
+	if credits.Total != 510 {
+		t.Fatalf("Total = %v", credits.Total)
+	}
+	// remaining = total - used, the "out of money" signal.
+	if diff := credits.Remaining() - 23.943662146; diff > 1e-6 || diff < -1e-6 {
+		t.Fatalf("Remaining() = %v, want ~23.94", credits.Remaining())
+	}
+	wantPaths(t, f.paths(), []string{"GET /credits"})
+}
+
+// --- the probe -------------------------------------------------------------
+
+func TestCheckReportsKindAndBalanceReadOnly(t *testing.T) {
+	c, f := newFake(t, func(c call) (int, string) {
+		switch c.Path {
+		case "/key":
+			return http.StatusOK, liveKeySelfBody
+		case "/credits":
+			return http.StatusOK, liveCreditsBody
+		}
+		return happyHandler(c)
+	})
+	caps, err := c.CheckKey(context.Background())
+	if err != nil {
+		t.Fatalf("CheckAPIKey: %v", err)
+	}
+	if !caps.KeyValid || !caps.CanMintKeys {
+		t.Fatalf("caps = %+v", caps)
+	}
+	if !caps.CreditKnown || caps.CreditRemaining < 23 || caps.CreditRemaining > 24 {
+		t.Fatalf("caps = %+v, want the balance reported", caps)
+	}
+	// Read-only: the probe must not touch the operator's account.
+	for _, seen := range f.seen() {
+		if seen.Method != http.MethodGet {
+			t.Fatalf("probe made a %s %s request", seen.Method, seen.Path)
+		}
+	}
+}
+
+// An ordinary key is valid but cannot mint, and the admin needs to be told what
+// that costs them — every device shares it, so per-device revocation is gone.
+func TestCheckExplainsWhatAnOrdinaryKeyGivesUp(t *testing.T) {
+	c, _ := newFake(t, func(c call) (int, string) {
+		switch c.Path {
+		case "/key":
+			return http.StatusOK, `{"data":{"is_provisioning_key":false}}`
+		case "/credits":
+			return http.StatusOK, liveCreditsBody
+		}
+		return happyHandler(c)
+	})
+	caps, err := c.CheckKey(context.Background())
+	if err != nil {
+		t.Fatalf("CheckAPIKey: %v", err)
+	}
+	if !caps.KeyValid || caps.CanMintKeys {
+		t.Fatalf("caps = %+v, want valid-but-not-provisioning", caps)
+	}
+	if !strings.Contains(caps.Detail, "shares it") {
+		t.Fatalf("Detail = %q, must say every device shares the key", caps.Detail)
+	}
+}
+
+// An unreadable balance must not fail the probe: the key is already known good,
+// and that is the question being asked.
+func TestCheckToleratesAnUnreadableBalance(t *testing.T) {
+	c, _ := newFake(t, func(c call) (int, string) {
+		switch c.Path {
+		case "/key":
+			return http.StatusOK, liveKeySelfBody
+		case "/credits":
+			return http.StatusForbidden, `{"error":{"message":"nope"}}`
+		}
+		return happyHandler(c)
+	})
+	caps, err := c.CheckKey(context.Background())
+	if err != nil {
+		t.Fatalf("CheckAPIKey: %v", err)
+	}
+	if !caps.KeyValid {
+		t.Fatalf("caps = %+v, want the key still reported valid", caps)
+	}
+	if caps.CreditKnown {
+		t.Fatal("an unreadable balance must be reported as unknown, not as zero")
+	}
+}
+
+func TestCheckRejectsAKeyOpenRouterDoesNotAccept(t *testing.T) {
+	c, _ := newFake(t, func(call) (int, string) {
+		return http.StatusUnauthorized, `{"error":{"message":"Invalid API key"}}`
+	})
+	caps, err := c.CheckKey(context.Background())
+	if err != nil {
+		t.Fatalf("CheckAPIKey: %v", err)
+	}
+	if caps.KeyValid || caps.CanMintKeys {
+		t.Fatalf("caps = %+v, want both false", caps)
 	}
 }

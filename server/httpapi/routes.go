@@ -84,6 +84,9 @@ type Server struct {
 	// already derived from that account. Set by main in vault/combined mode via
 	// SetOpenRouterKeys; nil is valid (no devices, so no derived keys).
 	openRouterKeys OpenRouterKeyService
+	// openRouterClientFor builds an OpenRouter client for a key. Nil uses the
+	// real one; tests substitute a fake so key-kind detection needs no network.
+	openRouterClientFor func(apiKey string) openRouterKeyReader
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {

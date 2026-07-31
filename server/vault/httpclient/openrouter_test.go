@@ -50,7 +50,7 @@ func newORRoundtrip(t *testing.T, grantDevice bool) (*store.Store, *Client) {
 	}); err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	if err := st.SetOpenRouterManagementKey(ctx, acc.ID, "sk-or-mgmt"); err != nil {
+	if err := st.SetOpenRouterCredential(ctx, acc.ID, "sk-or-mgmt", true); err != nil {
 		t.Fatalf("mgmt: %v", err)
 	}
 
