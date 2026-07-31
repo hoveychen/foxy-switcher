@@ -99,13 +99,13 @@ export function OpenRouterModal({
           ...body,
           // Blank means "keep the stored key" — the API never hands it back, so
           // sending an empty string is the only way to say "unchanged".
-          ...(managementKey.trim() ? { management_key: managementKey.trim() } : {}),
+          ...(managementKey.trim() ? { api_key: managementKey.trim() } : {}),
         });
       } else {
         await apiClient.createOpenRouterAccount({
           ...body,
           name: name.trim(),
-          management_key: managementKey.trim(),
+          api_key: managementKey.trim(),
         });
       }
       onSaved();
@@ -233,14 +233,14 @@ export function OpenRouterModal({
             value={managementKey}
             onChange={(e) => setManagementKey(e.target.value)}
             placeholder={t(
-              editing && account?.openrouter?.has_management_key
+              editing && account?.openrouter?.has_api_key
                 ? "openrouter.field.management_key_keep"
                 : "openrouter.field.management_key_placeholder",
             )}
             disabled={busy}
           />
           <span className="text-meta or-hint">{t("openrouter.field.management_key_hint")}</span>
-          {editing && account?.openrouter?.has_management_key && (
+          {editing && account?.openrouter?.has_api_key && (
             <span className="text-meta or-hint">
               {t(
                 account.openrouter.is_provisioning
@@ -289,7 +289,7 @@ export function OpenRouterModal({
             {caps && (
               <p
                 className={`text-meta or-hint ${
-                  caps.management_key_valid ? "or-hint-ok" : "or-hint-error"
+                  caps.is_provisioning ? "or-hint-ok" : "or-hint-error"
                 }`}
               >
                 {caps.detail}

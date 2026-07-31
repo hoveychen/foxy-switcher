@@ -81,9 +81,13 @@ type Client struct {
 	// BaseURL defaults to DefaultBaseURL. Overridden by tests and by
 	// self-hosted / regional deployments.
 	BaseURL string
-	// ManagementKey authenticates every call in this package. Never leaves the
-	// vault process.
-	ManagementKey string
+	// APIKey authenticates every call in this package. It may be a provisioning
+	// key or an ordinary one — deliberately not named ManagementKey, because
+	// supporting both is the point.
+	//
+	// A provisioning key never leaves the vault process. An ordinary one is what
+	// gets served to devices, since there is nothing to derive from it.
+	APIKey string
 	// HTTP defaults to a client with defaultTimeout.
 	HTTP *http.Client
 }
@@ -104,7 +108,7 @@ func (c *Client) httpClient() *http.Client {
 
 // do issues one management call. `out` may be nil for responses we don't read.
 func (c *Client) do(ctx context.Context, op, method, path string, body, out any) error {
-	if strings.TrimSpace(c.ManagementKey) == "" {
+	if strings.TrimSpace(c.APIKey) == "" {
 		return fmt.Errorf("openrouter: %s: no management key configured", op)
 	}
 	var reader io.Reader
@@ -119,7 +123,7 @@ func (c *Client) do(ctx context.Context, op, method, path string, body, out any)
 	if err != nil {
 		return fmt.Errorf("openrouter: %s: %w", op, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.ManagementKey)
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -399,12 +403,13 @@ func (c *Client) AccountCredits(ctx context.Context) (Credits, error) {
 
 // --- key probe ------------------------------------------------------------
 
-// Capabilities is what CheckManagementKey found out about a credential.
+// Capabilities is what CheckKey found out about a credential.
 type Capabilities struct {
 	// KeyValid is false when the credential isn't accepted by OpenRouter at all.
 	KeyValid bool
-	// ManagementKeyValid means it can additionally mint per-device keys.
-	ManagementKeyValid bool
+	// CanMintKeys means it is a provisioning key: foxy can mint a separate,
+	// separately revocable key per device from it.
+	CanMintKeys bool
 	// CreditTotal / CreditRemaining are the account balance, when readable.
 	CreditTotal     float64
 	CreditRemaining float64
@@ -414,13 +419,13 @@ type Capabilities struct {
 	Detail string
 }
 
-// CheckManagementKey verifies the configured key works and reports what it can
-// do — mint per-device keys or not — plus the account balance when readable.
+// CheckKey verifies the configured key works and reports what it can do — mint
+// per-device keys or not — plus the account balance when readable.
 //
 // Read-only throughout: GET /key and GET /credits. Nothing is created on the
 // operator's account, and neither call can fail for a reason unrelated to what
 // is being asked.
-func (c *Client) CheckManagementKey(ctx context.Context) (Capabilities, error) {
+func (c *Client) CheckKey(ctx context.Context) (Capabilities, error) {
 	info, err := c.KeySelf(ctx)
 	if errors.Is(err, ErrUnauthorized) {
 		return Capabilities{Detail: "OpenRouter rejected this key"}, nil
@@ -428,7 +433,7 @@ func (c *Client) CheckManagementKey(ctx context.Context) (Capabilities, error) {
 	if err != nil {
 		return Capabilities{}, err
 	}
-	caps := Capabilities{KeyValid: true, ManagementKeyValid: info.IsProvisioning}
+	caps := Capabilities{KeyValid: true, CanMintKeys: info.IsProvisioning}
 	if info.IsProvisioning {
 		caps.Detail = "provisioning key — each authorised device gets its own key, " +
 			"revocable on its own"

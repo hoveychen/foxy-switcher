@@ -42,8 +42,8 @@ type openRouterView struct {
 	LimitUSD      float64  `json:"limit_usd,omitempty"`
 	LimitReset    string   `json:"limit_reset,omitempty"`
 	WorkspaceID   string   `json:"workspace_id,omitempty"`
-	// HasManagementKey is how the UI shows configured-ness without the secret.
-	HasManagementKey bool `json:"has_management_key"`
+	// HasAPIKey is how the UI shows configured-ness without the secret.
+	HasAPIKey bool `json:"has_api_key"`
 	// IsProvisioning reports what the stored key can do, as detected at save
 	// time. True: each device gets its own revocable key. False: every device
 	// shares this one, so revoking a device can't revoke the key.
@@ -95,7 +95,7 @@ func (s *Server) openRouterConfigFor(ctx context.Context, a store.Account) (*ope
 	case err != nil:
 		return nil, err
 	default:
-		view.HasManagementKey = true
+		view.HasAPIKey = true
 		view.IsProvisioning = cred.IsProvisioning
 		view.OutOfCredit = !cred.HasCredit()
 		if cred.CreditCheckedAt != 0 {
@@ -109,16 +109,17 @@ func (s *Server) openRouterConfigFor(ctx context.Context, a store.Account) (*ope
 	return view, nil
 }
 
-// openRouterAccountReq is the create/update payload. ManagementKey is optional
-// on update ("" = leave the stored one alone) so an admin can retune the model
-// list without re-pasting the secret.
+// openRouterAccountReq is the create/update payload. APIKey is optional on
+// update ("" = leave the stored one alone) so an admin can retune the model list
+// without re-pasting the secret. It may be a provisioning key or an ordinary
+// one; which it is gets detected, not declared.
 type openRouterAccountReq struct {
 	Name          string   `json:"name"`
 	AllowedModels []string `json:"allowed_models"`
 	LimitUSD      float64  `json:"limit_usd"`
 	LimitReset    string   `json:"limit_reset"`
 	WorkspaceID   string   `json:"workspace_id"`
-	ManagementKey string   `json:"management_key"`
+	APIKey        string   `json:"api_key"`
 }
 
 var validLimitResets = map[string]bool{
@@ -165,7 +166,7 @@ func (s *Server) handleCreateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 		http.Error(w, "name required", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.ManagementKey) == "" {
+	if strings.TrimSpace(req.APIKey) == "" {
 		http.Error(w, "api_key required — the vault needs a key to hand devices",
 			http.StatusBadRequest)
 		return
@@ -173,7 +174,7 @@ func (s *Server) handleCreateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 	// Ask OpenRouter what sort of key this is rather than making the admin
 	// declare it. Also validates the key before we store it, so a typo fails at
 	// save time instead of at every device's first request.
-	isProvisioning, err := s.detectOpenRouterKeyKind(r.Context(), req.ManagementKey)
+	isProvisioning, err := s.detectOpenRouterKeyKind(r.Context(), req.APIKey)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -200,7 +201,7 @@ func (s *Server) handleCreateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 		http.Error(w, "save OpenRouter config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.Store.SetOpenRouterCredential(r.Context(), acc.ID, req.ManagementKey, isProvisioning); err != nil {
+	if err := s.Store.SetOpenRouterCredential(r.Context(), acc.ID, req.APIKey, isProvisioning); err != nil {
 		http.Error(w, "save API key: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -257,7 +258,7 @@ func (s *Server) handleUpdateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 	// Rotating the management key also invalidates outstanding keys: the new key
 	// may not even be able to revoke what the old one minted, so we must clear
 	// them while the old key still works.
-	rotatingKey := strings.TrimSpace(req.ManagementKey) != ""
+	rotatingKey := strings.TrimSpace(req.APIKey) != ""
 	if policyChanged(oldCfg, newCfg) || rotatingKey {
 		if err := s.revokeOpenRouterAccountKeys(r.Context(), id); err != nil {
 			http.Error(w, "revoke outstanding device keys: "+err.Error(), http.StatusBadGateway)
@@ -269,12 +270,12 @@ func (s *Server) handleUpdateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if rotatingKey {
-		isProvisioning, derr := s.detectOpenRouterKeyKind(r.Context(), req.ManagementKey)
+		isProvisioning, derr := s.detectOpenRouterKeyKind(r.Context(), req.APIKey)
 		if derr != nil {
 			http.Error(w, derr.Error(), http.StatusBadGateway)
 			return
 		}
-		if err := s.Store.SetOpenRouterCredential(r.Context(), id, req.ManagementKey, isProvisioning); err != nil {
+		if err := s.Store.SetOpenRouterCredential(r.Context(), id, req.APIKey, isProvisioning); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -331,7 +332,7 @@ func (s *Server) handleCheckOpenRouterAccount(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	caps, err := s.newOpenRouterClient(cred.APIKey).CheckManagementKey(r.Context())
+	caps, err := s.newOpenRouterClient(cred.APIKey).CheckKey(r.Context())
 	if err != nil {
 		http.Error(w, "probe OpenRouter: "+err.Error(), http.StatusBadGateway)
 		return
@@ -339,8 +340,8 @@ func (s *Server) handleCheckOpenRouterAccount(w http.ResponseWriter, r *http.Req
 	// Re-record the detected kind: a key can be upgraded (or the account's plan
 	// changed) after it was saved, and leaving a stale flag would mean deriving
 	// against a key that can't mint, or vice versa.
-	if caps.KeyValid && caps.ManagementKeyValid != cred.IsProvisioning {
-		if err := s.Store.SetOpenRouterCredential(r.Context(), id, cred.APIKey, caps.ManagementKeyValid); err != nil {
+	if caps.KeyValid && caps.CanMintKeys != cred.IsProvisioning {
+		if err := s.Store.SetOpenRouterCredential(r.Context(), id, cred.APIKey, caps.CanMintKeys); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -355,12 +356,11 @@ func (s *Server) handleCheckOpenRouterAccount(w http.ResponseWriter, r *http.Req
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"key_valid":            caps.KeyValid,
-		"management_key_valid": caps.ManagementKeyValid,
-		"is_provisioning":      caps.ManagementKeyValid,
-		"credit_known":         caps.CreditKnown,
-		"credit_remaining":     caps.CreditRemaining,
-		"detail":               caps.Detail,
+		"key_valid":        caps.KeyValid,
+		"is_provisioning":  caps.CanMintKeys,
+		"credit_known":     caps.CreditKnown,
+		"credit_remaining": caps.CreditRemaining,
+		"detail":           caps.Detail,
 	})
 }
 
@@ -387,7 +387,7 @@ func (s *Server) detectOpenRouterKeyKind(ctx context.Context, apiKey string) (bo
 // needs.
 type openRouterKeyReader interface {
 	KeySelf(ctx context.Context) (openrouter.KeyInfo, error)
-	CheckManagementKey(ctx context.Context) (openrouter.Capabilities, error)
+	CheckKey(ctx context.Context) (openrouter.Capabilities, error)
 }
 
 // newOpenRouterClient builds a client for one key. Overridden in tests.
@@ -395,7 +395,7 @@ func (s *Server) newOpenRouterClient(apiKey string) openRouterKeyReader {
 	if s.openRouterClientFor != nil {
 		return s.openRouterClientFor(apiKey)
 	}
-	return &openrouter.Client{ManagementKey: apiKey}
+	return &openrouter.Client{APIKey: apiKey}
 }
 
 // SetOpenRouterClientFactory swaps the client constructor. Tests only.

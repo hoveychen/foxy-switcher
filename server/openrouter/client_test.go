@@ -49,7 +49,7 @@ func newFake(t *testing.T, handler func(c call) (int, string)) (*Client, *fakeAP
 		_, _ = io.WriteString(w, body)
 	}))
 	t.Cleanup(srv.Close)
-	return &Client{BaseURL: srv.URL, ManagementKey: "sk-or-mgmt", HTTP: srv.Client()}, f
+	return &Client{BaseURL: srv.URL, APIKey: "sk-or-mgmt", HTTP: srv.Client()}, f
 }
 
 func (f *fakeAPI) seen() []call {
@@ -391,11 +391,11 @@ func TestCheckReportsKindAndBalanceReadOnly(t *testing.T) {
 		}
 		return happyHandler(c)
 	})
-	caps, err := c.CheckManagementKey(context.Background())
+	caps, err := c.CheckKey(context.Background())
 	if err != nil {
-		t.Fatalf("CheckManagementKey: %v", err)
+		t.Fatalf("CheckAPIKey: %v", err)
 	}
-	if !caps.KeyValid || !caps.ManagementKeyValid {
+	if !caps.KeyValid || !caps.CanMintKeys {
 		t.Fatalf("caps = %+v", caps)
 	}
 	if !caps.CreditKnown || caps.CreditRemaining < 23 || caps.CreditRemaining > 24 {
@@ -421,11 +421,11 @@ func TestCheckExplainsWhatAnOrdinaryKeyGivesUp(t *testing.T) {
 		}
 		return happyHandler(c)
 	})
-	caps, err := c.CheckManagementKey(context.Background())
+	caps, err := c.CheckKey(context.Background())
 	if err != nil {
-		t.Fatalf("CheckManagementKey: %v", err)
+		t.Fatalf("CheckAPIKey: %v", err)
 	}
-	if !caps.KeyValid || caps.ManagementKeyValid {
+	if !caps.KeyValid || caps.CanMintKeys {
 		t.Fatalf("caps = %+v, want valid-but-not-provisioning", caps)
 	}
 	if !strings.Contains(caps.Detail, "shares it") {
@@ -445,9 +445,9 @@ func TestCheckToleratesAnUnreadableBalance(t *testing.T) {
 		}
 		return happyHandler(c)
 	})
-	caps, err := c.CheckManagementKey(context.Background())
+	caps, err := c.CheckKey(context.Background())
 	if err != nil {
-		t.Fatalf("CheckManagementKey: %v", err)
+		t.Fatalf("CheckAPIKey: %v", err)
 	}
 	if !caps.KeyValid {
 		t.Fatalf("caps = %+v, want the key still reported valid", caps)
@@ -461,11 +461,11 @@ func TestCheckRejectsAKeyOpenRouterDoesNotAccept(t *testing.T) {
 	c, _ := newFake(t, func(call) (int, string) {
 		return http.StatusUnauthorized, `{"error":{"message":"Invalid API key"}}`
 	})
-	caps, err := c.CheckManagementKey(context.Background())
+	caps, err := c.CheckKey(context.Background())
 	if err != nil {
-		t.Fatalf("CheckManagementKey: %v", err)
+		t.Fatalf("CheckAPIKey: %v", err)
 	}
-	if caps.KeyValid || caps.ManagementKeyValid {
+	if caps.KeyValid || caps.CanMintKeys {
 		t.Fatalf("caps = %+v, want both false", caps)
 	}
 }

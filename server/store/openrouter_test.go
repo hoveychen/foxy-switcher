@@ -134,7 +134,7 @@ func TestOpenRouterAPIKeyNeverRidesOnAccount(t *testing.T) {
 	acc := newOpenRouterAccount(t, st, "pool-a")
 	const mgmt = "sk-or-v1-MANAGEMENT-KEY-DO-NOT-LEAK"
 	if err := st.SetOpenRouterCredential(ctx, acc.ID, mgmt, true); err != nil {
-		t.Fatalf("SetOpenRouterManagementKey: %v", err)
+		t.Fatalf("SetOpenRouterAPIKey: %v", err)
 	}
 	if err := st.SetOpenRouterConfig(ctx, acc.ID, OpenRouterAccountConfig{
 		AllowedModels: []string{"deepseek/deepseek-v4-flash"}, LimitUSD: 5,

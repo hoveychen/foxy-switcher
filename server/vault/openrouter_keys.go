@@ -44,7 +44,7 @@ func NewOpenRouterKeys(st *store.Store, logger *log.Logger) *OpenRouterKeys {
 		st:     st,
 		logger: logger,
 		newClient: func(managementKey string) OpenRouterAPI {
-			return &openrouter.Client{ManagementKey: managementKey}
+			return &openrouter.Client{APIKey: managementKey}
 		},
 	}
 }

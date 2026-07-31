@@ -57,7 +57,7 @@ func NewCreditPoller(st *store.Store, logger *log.Logger) *CreditPoller {
 		st:     st,
 		logger: logger,
 		newClient: func(apiKey string) CreditReader {
-			return &openrouter.Client{ManagementKey: apiKey}
+			return &openrouter.Client{APIKey: apiKey}
 		},
 		stop: make(chan struct{}),
 		done: make(chan struct{}),

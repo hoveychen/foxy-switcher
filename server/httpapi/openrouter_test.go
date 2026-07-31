@@ -44,7 +44,7 @@ func (f *fakeORKeyReader) KeySelf(context.Context) (openrouter.KeyInfo, error) {
 	return openrouter.KeyInfo{IsProvisioning: f.provisioning}, nil
 }
 
-func (f *fakeORKeyReader) CheckManagementKey(context.Context) (openrouter.Capabilities, error) {
+func (f *fakeORKeyReader) CheckKey(context.Context) (openrouter.Capabilities, error) {
 	if f.err != nil {
 		return openrouter.Capabilities{}, f.err
 	}
@@ -52,7 +52,7 @@ func (f *fakeORKeyReader) CheckManagementKey(context.Context) (openrouter.Capabi
 		return *f.caps, nil
 	}
 	return openrouter.Capabilities{
-		KeyValid: true, ManagementKeyValid: f.provisioning, Detail: "ok",
+		KeyValid: true, CanMintKeys: f.provisioning, Detail: "ok",
 	}, nil
 }
 
@@ -122,7 +122,7 @@ func createAccount(t *testing.T, srv *Server) accountView {
 		"allowed_models": []string{"openai/gpt-oss-120b", "deepseek/deepseek-v4-flash"},
 		"limit_usd":      25,
 		"limit_reset":    "monthly",
-		"management_key": "sk-or-mgmt",
+		"api_key":        "sk-or-mgmt",
 	}))
 }
 
@@ -142,8 +142,8 @@ func TestCreateOpenRouterAccount(t *testing.T) {
 	if strings.Join(got.OpenRouter.AllowedModels, ",") != strings.Join(want, ",") {
 		t.Fatalf("AllowedModels = %v, want %v", got.OpenRouter.AllowedModels, want)
 	}
-	if !got.OpenRouter.HasManagementKey {
-		t.Fatal("HasManagementKey = false after supplying one")
+	if !got.OpenRouter.HasAPIKey {
+		t.Fatal("HasAPIKey = false after supplying one")
 	}
 	if got.OpenRouter.LimitUSD != 25 || got.OpenRouter.LimitReset != "monthly" {
 		t.Fatalf("limits = %+v", got.OpenRouter)
@@ -184,10 +184,10 @@ func TestManagementKeyIsWriteOnlyOverTheAPI(t *testing.T) {
 func TestCreateOpenRouterAccountValidation(t *testing.T) {
 	srv, _ := newOpenRouterServer(t)
 	for name, body := range map[string]map[string]any{
-		"no name":           {"management_key": "k"},
+		"no name":           {"api_key": "k"},
 		"no management key": {"name": "pool"},
-		"bad limit reset":   {"name": "pool", "management_key": "k", "limit_reset": "hourly"},
-		"negative limit":    {"name": "pool", "management_key": "k", "limit_usd": -1},
+		"bad limit reset":   {"name": "pool", "api_key": "k", "limit_reset": "hourly"},
+		"negative limit":    {"name": "pool", "api_key": "k", "limit_usd": -1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := doJSON(t, srv, http.MethodPost, "/api/accounts/openrouter", body)
@@ -225,7 +225,7 @@ func TestPolicyEditRevokesOutstandingKeys(t *testing.T) {
 		},
 		"management key rotated": {
 			"allowed_models": []string{"deepseek/deepseek-v4-flash", "openai/gpt-oss-120b"},
-			"limit_usd":      25, "limit_reset": "monthly", "management_key": "sk-or-mgmt-2",
+			"limit_usd":      25, "limit_reset": "monthly", "api_key": "sk-or-mgmt-2",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -359,7 +359,7 @@ func TestKeyKindIsDetectedNotDeclared(t *testing.T) {
 			env.reader.provisioning = provisioning
 
 			got := decodeAccount(t, doJSON(t, srv, http.MethodPost, "/api/accounts/openrouter", map[string]any{
-				"name": "pool", "management_key": "sk-or-pasted",
+				"name": "pool", "api_key": "sk-or-pasted",
 				"allowed_models": []string{"a/b"}, "limit_usd": 5, "limit_reset": "monthly",
 			}))
 			if got.OpenRouter.IsProvisioning != provisioning {
@@ -383,7 +383,7 @@ func TestRejectedKeyFailsAtSaveTime(t *testing.T) {
 	env.reader.err = openrouter.ErrUnauthorized
 
 	w := doJSON(t, srv, http.MethodPost, "/api/accounts/openrouter", map[string]any{
-		"name": "pool", "management_key": "sk-or-typo", "allowed_models": []string{"a/b"},
+		"name": "pool", "api_key": "sk-or-typo", "allowed_models": []string{"a/b"},
 	})
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 (%s)", w.Code, w.Body.String())
@@ -396,7 +396,7 @@ func TestRejectedKeyFailsAtSaveTime(t *testing.T) {
 	var out struct{ Accounts []accountView }
 	_ = json.Unmarshal(list.Body.Bytes(), &out)
 	for _, a := range out.Accounts {
-		if a.OpenRouter != nil && a.OpenRouter.HasManagementKey {
+		if a.OpenRouter != nil && a.OpenRouter.HasAPIKey {
 			t.Fatalf("a rejected key was stored anyway: %+v", a.OpenRouter)
 		}
 	}
@@ -415,7 +415,7 @@ func TestRotatingTheKeyReDetectsItsKind(t *testing.T) {
 	w := doJSON(t, srv, http.MethodPost,
 		"/api/accounts/"+strconv.FormatInt(acc.ID, 10)+"/openrouter", map[string]any{
 			"allowed_models": []string{"openai/gpt-oss-120b", "deepseek/deepseek-v4-flash"},
-			"limit_usd":      25, "limit_reset": "monthly", "management_key": "sk-or-plain",
+			"limit_usd":      25, "limit_reset": "monthly", "api_key": "sk-or-plain",
 		})
 	got := decodeAccount(t, w)
 	if got.OpenRouter.IsProvisioning {
@@ -484,7 +484,7 @@ func TestProbeRefreshesKindAndBalance(t *testing.T) {
 
 	// The same key now reports as provisioning (upgraded upstream).
 	env.reader.caps = &openrouter.Capabilities{
-		KeyValid: true, ManagementKeyValid: true,
+		KeyValid: true, CanMintKeys: true,
 		CreditKnown: true, CreditTotal: 100, CreditRemaining: 42, Detail: "ok",
 	}
 	w := doJSON(t, srv, http.MethodPost,

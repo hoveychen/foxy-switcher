@@ -217,7 +217,7 @@ export interface OpenRouterConfig {
   workspace_id?: string;
   // The key itself is write-only over the API; this is how the UI shows whether
   // one is configured.
-  has_management_key: boolean;
+  has_api_key: boolean;
   // What the stored key can do, as detected at save time. true: each device gets
   // its own revocable key. false: every device shares this one, so revoking a
   // device cannot revoke the key.
@@ -239,7 +239,6 @@ export interface OpenRouterConfig {
 // read-only; it lists keys rather than creating anything.
 export interface OpenRouterCapabilities {
   key_valid: boolean;
-  management_key_valid: boolean;
   is_provisioning: boolean;
   credit_known: boolean;
   credit_remaining: number;
@@ -752,14 +751,14 @@ export const apiClient = {
     limit_usd: number;
     limit_reset: string;
     workspace_id?: string;
-    management_key: string;
+    api_key: string;
   }) =>
     api<{ account: Account }>("/api/accounts/openrouter", {
       method: "POST",
       body: JSON.stringify(body),
     }),
   // Editing the spend cap revokes every key already derived from this account —
-  // each was minted with the old cap. Omit management_key to keep the stored one.
+  // each was minted with the old cap. Omit api_key to keep the stored one.
   updateOpenRouterAccount: (
     id: number,
     body: {
@@ -767,7 +766,7 @@ export const apiClient = {
       limit_usd: number;
       limit_reset: string;
       workspace_id?: string;
-      management_key?: string;
+      api_key?: string;
     },
   ) =>
     api<{ account: Account }>(`/api/accounts/${id}/openrouter`, {
