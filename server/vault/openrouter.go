@@ -39,6 +39,14 @@ type OpenRouterGrant struct {
 	AllowedModels []string `json:"allowed_models"`
 	// ExpiresAt is the key's upstream expiry (unix millis); 0 = never.
 	ExpiresAt int64 `json:"expires_at,omitempty"`
+	// DeviceScoped reports whether APIKey was minted for this device alone.
+	//
+	// True: the account holds a provisioning key, so this device got its own key
+	// and revoking the device revokes it. False: the account holds an ordinary API
+	// key, which is served to every authorised device as-is — fine for a single
+	// machine, but revoking one device cannot revoke the key. Surfaced so the UI
+	// states which it is rather than implying a revocability it doesn't have.
+	DeviceScoped bool `json:"device_scoped"`
 }
 
 // DefaultOpenRouterBaseURL is the public OpenRouter API root. Used when the

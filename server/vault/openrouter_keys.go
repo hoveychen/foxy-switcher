@@ -83,14 +83,35 @@ func (k *OpenRouterKeys) EnsureDeviceKey(ctx context.Context, deviceID string) (
 		return OpenRouterGrant{}, selector.ErrNoAvailable
 	}
 
-	acc, cfg, err := k.pickAccount(ctx)
+	acc, cfg, cred, err := k.pickAccount(ctx)
 	if err != nil {
 		return OpenRouterGrant{}, err
 	}
 
-	// Reuse an existing, unexpired key. Config edits don't have to be detected
-	// here: changing an account's allowlist revokes that account's keys up front
-	// (see RevokeAccountKeys), so a surviving row is by definition current.
+	// An ordinary (non-provisioning) key can't mint anything, so it is served
+	// straight through. That is the whole point of supporting it: for a single
+	// machine, deriving a key from a provisioning key buys nothing, and asking for
+	// a provisioning key hands the daemon the power to add and delete every key on
+	// the account just to solve "one machine needs one key".
+	//
+	// The cost, stated plainly in the grant and in the admin UI, is that every
+	// authorised device shares this key — so revoking one device cannot revoke it.
+	if !cred.IsProvisioning {
+		return k.sharedGrant(acc, cfg, cred), nil
+	}
+
+	// Reuse an existing, unexpired key for the CHOSEN account. Keyed on acc.ID, so
+	// rotating to a different account correctly derives a fresh key rather than
+	// re-serving the drained account's one.
+	//
+	// The old account's key is deliberately left alive: it is capped, it can't
+	// spend on an account with no money, and keeping it makes rotating back
+	// instant if the operator tops that account up. It stays revocable — a device
+	// revoke walks every row for the device, whichever account each came from.
+	//
+	// Config edits don't have to be detected here: changing an account's policy
+	// revokes that account's keys up front (see RevokeAccountKeys), so a surviving
+	// row is by definition current.
 	if existing, err := k.st.DeviceOpenRouterKeyFor(ctx, deviceID, acc.ID); err == nil {
 		if !existing.Expired(time.Now()) && existing.KeySecret != "" {
 			return k.grant(acc, cfg, *existing), nil
@@ -104,10 +125,6 @@ func (k *OpenRouterKeys) EnsureDeviceKey(ctx context.Context, deviceID string) (
 		return OpenRouterGrant{}, err
 	}
 
-	cred, err := k.st.OpenRouterCredential(ctx, acc.ID)
-	if err != nil {
-		return OpenRouterGrant{}, fmt.Errorf("account %d: %w", acc.ID, err)
-	}
 	mgmtKey := cred.APIKey
 	// The model list is NOT sent upstream: it drives the device's profile files,
 	// which is what makes a model appear in the picker. What bounds cost is the
@@ -208,22 +225,35 @@ func (k *OpenRouterKeys) revokeOne(ctx context.Context, accountID int64, row sto
 	return nil
 }
 
-// pickAccount chooses which OpenRouter account a device derives from.
+// pickAccount chooses which OpenRouter account serves a device.
 //
-// Selection is deliberately NOT the LRU selector: OpenRouter accounts aren't a
-// scarce rotating resource, so "spread devices across accounts" would buy
-// nothing and make a device's key jump between accounts on unrelated pool
-// changes. The rule is instead the most boring stable one — lowest id among
-// fully configured, active accounts — so a device keeps deriving from the same
-// account across restarts. Multi-account OpenRouter pools are therefore
-// "several configured, the first one wins", not a load-balanced pool; the
-// design contract doesn't ask for more than that.
-func (k *OpenRouterKeys) pickAccount(ctx context.Context) (store.Account, store.OpenRouterAccountConfig, error) {
+// Ordering is deliberately NOT the LRU selector: spreading devices across
+// accounts would buy nothing and make a device's key hop between accounts on
+// unrelated pool changes. The rule is the most boring stable one — lowest id
+// first — so a device keeps using the same account across restarts.
+//
+// What the ordering IS combined with is eligibility, which is the selector's
+// other job and does matter here: an account with no credit left is skipped, so
+// the pool rolls onto the next funded one instead of handing out a key that will
+// 402. That is the whole of "rotate when the money runs out" — no lease, no LRU,
+// just skip the broke ones and keep the order stable.
+//
+// An account is skipped when it is paused, has no key on file, has no models
+// configured (a working key with an empty picker is no use), has an unreadable
+// config, or is out of credit. A never-polled balance counts as funded — see
+// store.OpenRouterCredential.HasCredit for why "unknown" must not mean "broke".
+func (k *OpenRouterKeys) pickAccount(ctx context.Context) (
+	store.Account, store.OpenRouterAccountConfig, store.OpenRouterCredential, error,
+) {
+	none := func(err error) (store.Account, store.OpenRouterAccountConfig, store.OpenRouterCredential, error) {
+		return store.Account{}, store.OpenRouterAccountConfig{}, store.OpenRouterCredential{}, err
+	}
 	accs, err := k.st.ListProvider(ctx, store.ProviderOpenRouter)
 	if err != nil {
-		return store.Account{}, store.OpenRouterAccountConfig{}, err
+		return none(err)
 	}
 	sort.Slice(accs, func(i, j int) bool { return accs[i].ID < accs[j].ID })
+	var skippedBroke int
 	for _, a := range accs {
 		if a.Status != store.StatusActive {
 			continue
@@ -234,20 +264,30 @@ func (k *OpenRouterKeys) pickAccount(ctx context.Context) (store.Account, store.
 			continue
 		}
 		if len(cfg.AllowedModels) == 0 {
-			// An empty list would leave the device with a working key and an empty
-			// model picker — nothing to select, so nothing to do.
 			continue
 		}
-		has, err := k.st.HasOpenRouterCredential(ctx, a.ID)
+		cred, err := k.st.OpenRouterCredential(ctx, a.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
 		if err != nil {
-			return store.Account{}, store.OpenRouterAccountConfig{}, err
+			return none(err)
 		}
-		if !has {
+		if !cred.HasCredit() {
+			// Say so per account: "OpenRouter stopped working" is much harder to
+			// diagnose than "both accounts are out of money".
+			k.logger.Printf("[openrouter] account %d (%s): skipping, $%.2f credit remaining (floor $%.2f)",
+				a.ID, a.Name, cred.CreditRemaining, store.MinUsableCredit)
+			skippedBroke++
 			continue
 		}
-		return a, cfg, nil
+		return a, cfg, cred, nil
 	}
-	return store.Account{}, store.OpenRouterAccountConfig{}, ErrNoOpenRouterAccount
+	if skippedBroke > 0 {
+		return none(fmt.Errorf("%w: %d account(s) skipped for insufficient credit",
+			ErrNoOpenRouterAccount, skippedBroke))
+	}
+	return none(ErrNoOpenRouterAccount)
 }
 
 func (k *OpenRouterKeys) grant(acc store.Account, cfg store.OpenRouterAccountConfig, row store.DeviceOpenRouterKey) OpenRouterGrant {
@@ -258,6 +298,24 @@ func (k *OpenRouterKeys) grant(acc store.Account, cfg store.OpenRouterAccountCon
 		BaseURL:       DefaultOpenRouterBaseURL,
 		AllowedModels: cfg.AllowedModels,
 		ExpiresAt:     row.ExpiresAt,
+		DeviceScoped:  true,
+	}
+}
+
+// sharedGrant hands out the account's own key, unmodified. Used when the stored
+// credential can't mint (an ordinary API key), so there is nothing to derive.
+//
+// No device_openrouter_keys row is written: there is no per-device key to track
+// and nothing this vault could revoke. DeviceScoped=false is how that reaches
+// the UI, which must not imply a revocability it doesn't have.
+func (k *OpenRouterKeys) sharedGrant(acc store.Account, cfg store.OpenRouterAccountConfig, cred store.OpenRouterCredential) OpenRouterGrant {
+	return OpenRouterGrant{
+		AccountID:     acc.ID,
+		AccountName:   acc.Name,
+		APIKey:        cred.APIKey,
+		BaseURL:       DefaultOpenRouterBaseURL,
+		AllowedModels: cfg.AllowedModels,
+		DeviceScoped:  false,
 	}
 }
 
