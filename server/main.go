@@ -391,6 +391,9 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// simply reports none available.
 	openRouterKeys := vault.NewOpenRouterKeys(st, logger)
 	vaultHTTP.OpenRouter = openRouterKeys
+	// The admin API needs the same service so an allowlist / spend-cap edit can
+	// revoke the runtime keys minted under the old policy.
+	server.SetOpenRouterKeys(openRouterKeys)
 	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
 	// Re-expose the frontend httpapi under /agent/v1/api/ so a remote
 	// agent can drive the same view + lease routes via the bearer-auth'd

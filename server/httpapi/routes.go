@@ -80,6 +80,10 @@ type Server struct {
 	// codexLogins tracks in-flight Codex OAuth logins (see codex_login.go).
 	// Zero value is ready; the map is created lazily on first use.
 	codexLogins codexLoginStore
+	// openRouterKeys lets account-policy edits invalidate the runtime keys
+	// already derived from that account. Set by main in vault/combined mode via
+	// SetOpenRouterKeys; nil is valid (no devices, so no derived keys).
+	openRouterKeys OpenRouterKeyService
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {
@@ -96,6 +100,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/import-codex", s.handleImportCodex)
 	mux.HandleFunc("POST /api/accounts/codex-login", s.handleCodexLoginStart)
 	mux.HandleFunc("POST /api/accounts/codex-login/callback", s.handleCodexLoginCallback)
+	mux.HandleFunc("POST /api/accounts/openrouter", s.handleCreateOpenRouterAccount)
+	mux.HandleFunc("POST /api/accounts/{id}/openrouter", s.handleUpdateOpenRouterAccount)
+	mux.HandleFunc("POST /api/accounts/{id}/openrouter/check", s.handleCheckOpenRouterAccount)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /api/accounts/{id}/resume", s.handleResume)
@@ -254,6 +261,10 @@ type accountView struct {
 	// handleListAccounts via store.ListAccountsWithLeases.
 	Lease *accountLeaseView `json:"lease,omitempty"`
 	InUse bool              `json:"in_use"`
+	// OpenRouter carries the derivation template for provider="openrouter"
+	// rows and is nil for every other provider. It never includes the
+	// management key — only whether one is on file.
+	OpenRouter *openRouterView `json:"openrouter,omitempty"`
 	// Tokens are deliberately omitted from the UI surface.
 }
 
@@ -343,6 +354,12 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	for i, av := range accs {
 		v := toView(av.Account)
 		v.InUse = av.Account.Provider == store.ProviderCodex && av.Account.ID == codexManagedID
+		orCfg, err := s.openRouterConfigFor(r.Context(), av.Account)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		v.OpenRouter = orCfg
 		if av.Lease != nil {
 			v.Lease = &accountLeaseView{
 				DeviceID:   av.Lease.DeviceID,

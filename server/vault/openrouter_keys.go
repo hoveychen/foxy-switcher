@@ -49,6 +49,13 @@ func NewOpenRouterKeys(st *store.Store, logger *log.Logger) *OpenRouterKeys {
 	}
 }
 
+// SetClientFactory swaps the management-client constructor. Exported for tests
+// in other packages that need the real derivation logic against a fake
+// upstream; production code never calls it.
+func (k *OpenRouterKeys) SetClientFactory(f func(managementKey string) OpenRouterAPI) {
+	k.newClient = f
+}
+
 // ErrNoOpenRouterAccount means no OpenRouter account is usable right now:
 // none exists, none is active, or none has both a management key and a model
 // allowlist configured. Distinct from "this device isn't allowed OpenRouter",

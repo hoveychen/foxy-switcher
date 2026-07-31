@@ -105,6 +105,11 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("POST /agent/v1/leases", s.handleAcquireLease)
 	protected.HandleFunc("POST /agent/v1/leases/{id}/renew", s.handleRenewLease)
 	protected.HandleFunc("DELETE /agent/v1/leases/{id}", s.handleReleaseLease)
+	// OpenRouter is a GET with no body and no device id in the path: the
+	// device's identity comes from its bearer token, so an agent can only ever
+	// ask for its OWN key. There is no pick/acquire/renew/release counterpart —
+	// a pay-as-you-go key is not a leased resource.
+	protected.HandleFunc("GET /agent/v1/openrouter/config", s.handleOpenRouterConfig)
 	mux.Handle("/agent/v1/", s.requireBearer(protected))
 	return mux
 }
@@ -399,6 +404,44 @@ func (s *Server) handleUpdateTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- openrouter -----------------------------------------------------------
+
+// handleOpenRouterConfig hands the calling device its OpenRouter grant,
+// deriving one on first call. The device id is read from the bearer context and
+// never from the request, so a compromised agent can't mint or read a key for
+// another machine.
+//
+// 204 means "nothing for you" and covers both "this device isn't granted
+// OpenRouter" and "no OpenRouter account is configured" — from the agent's
+// point of view the action is the same (write no provider block, remove any it
+// previously wrote), and collapsing them avoids telling an unprivileged device
+// whether the vault has OpenRouter accounts at all.
+func (s *Server) handleOpenRouterConfig(w http.ResponseWriter, r *http.Request) {
+	if s.OpenRouter == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	devID, _ := DeviceFromContext(r.Context())
+	if devID == "" || devID == SessionDeviceID {
+		// A cookie session is an admin, not a device: it has no derived key.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	grant, err := s.OpenRouter.EnsureDeviceKey(r.Context(), devID)
+	if err != nil {
+		if errors.Is(err, selector.ErrNoAvailable) || errors.Is(err, vault.ErrNoOpenRouterAccount) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// Anything else is a real fault (upstream down, no management key,
+		// guardrails refused). Surface it so the device logs something an
+		// operator can act on rather than silently running without OpenRouter.
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, grant)
 }
 
 // --- leases ---------------------------------------------------------------
