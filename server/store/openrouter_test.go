@@ -127,13 +127,13 @@ func TestSetOpenRouterConfigRoundTripsThroughStore(t *testing.T) {
 // runtime keys for every device, and GET /agent/v1/accounts serialises
 // store.Account verbatim to every paired device. So the key must be reachable
 // only through its own table, and must not appear anywhere in an Account.
-func TestOpenRouterManagementKeyNeverRidesOnAccount(t *testing.T) {
+func TestOpenRouterAPIKeyNeverRidesOnAccount(t *testing.T) {
 	st := openTempStore(t)
 	ctx := context.Background()
 
 	acc := newOpenRouterAccount(t, st, "pool-a")
 	const mgmt = "sk-or-v1-MANAGEMENT-KEY-DO-NOT-LEAK"
-	if err := st.SetOpenRouterManagementKey(ctx, acc.ID, mgmt); err != nil {
+	if err := st.SetOpenRouterCredential(ctx, acc.ID, mgmt, true); err != nil {
 		t.Fatalf("SetOpenRouterManagementKey: %v", err)
 	}
 	if err := st.SetOpenRouterConfig(ctx, acc.ID, OpenRouterAccountConfig{
@@ -162,46 +162,46 @@ func TestOpenRouterManagementKeyNeverRidesOnAccount(t *testing.T) {
 	}
 
 	// And it must still be readable through its own accessor.
-	got, err := st.OpenRouterManagementKey(ctx, acc.ID)
-	if err != nil || got != mgmt {
-		t.Fatalf("OpenRouterManagementKey = %q, %v; want the stored key", got, err)
+	cred, err := st.OpenRouterCredential(ctx, acc.ID)
+	if err != nil || cred.APIKey != mgmt {
+		t.Fatalf("OpenRouterCredential = %+v, %v; want the stored key", cred, err)
 	}
-	has, err := st.HasOpenRouterManagementKey(ctx, acc.ID)
+	has, err := st.HasOpenRouterCredential(ctx, acc.ID)
 	if err != nil || !has {
 		t.Fatalf("HasOpenRouterManagementKey = %v, %v; want true", has, err)
 	}
 }
 
-func TestOpenRouterManagementKeyLifecycle(t *testing.T) {
+func TestOpenRouterCredentialLifecycle(t *testing.T) {
 	st := openTempStore(t)
 	ctx := context.Background()
 	acc := newOpenRouterAccount(t, st, "pool-a")
 
-	if _, err := st.OpenRouterManagementKey(ctx, acc.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := st.OpenRouterCredential(ctx, acc.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unset key = %v, want ErrNotFound", err)
 	}
-	if has, err := st.HasOpenRouterManagementKey(ctx, acc.ID); err != nil || has {
+	if has, err := st.HasOpenRouterCredential(ctx, acc.ID); err != nil || has {
 		t.Fatalf("HasOpenRouterManagementKey on unset = %v, %v; want false, nil", has, err)
 	}
-	if err := st.SetOpenRouterManagementKey(ctx, acc.ID, "k1"); err != nil {
+	if err := st.SetOpenRouterCredential(ctx, acc.ID, "k1", true); err != nil {
 		t.Fatalf("set k1: %v", err)
 	}
 	// Replacing (rotating the management key) updates in place, not inserts.
-	if err := st.SetOpenRouterManagementKey(ctx, acc.ID, "k2"); err != nil {
+	if err := st.SetOpenRouterCredential(ctx, acc.ID, "k2", true); err != nil {
 		t.Fatalf("set k2: %v", err)
 	}
-	if got, _ := st.OpenRouterManagementKey(ctx, acc.ID); got != "k2" {
-		t.Fatalf("after rotate = %q, want k2", got)
+	if got, _ := st.OpenRouterCredential(ctx, acc.ID); got.APIKey != "k2" {
+		t.Fatalf("after rotate = %q, want k2", got.APIKey)
 	}
 	// An empty value un-configures the account rather than storing "".
-	if err := st.SetOpenRouterManagementKey(ctx, acc.ID, "  "); err != nil {
+	if err := st.SetOpenRouterCredential(ctx, acc.ID, "  ", true); err != nil {
 		t.Fatalf("set empty: %v", err)
 	}
-	if _, err := st.OpenRouterManagementKey(ctx, acc.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := st.OpenRouterCredential(ctx, acc.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("after blanking = %v, want ErrNotFound", err)
 	}
 	// Delete is idempotent.
-	if err := st.DeleteOpenRouterManagementKey(ctx, acc.ID); err != nil {
+	if err := st.DeleteOpenRouterCredential(ctx, acc.ID); err != nil {
 		t.Fatalf("delete twice: %v", err)
 	}
 }
@@ -375,4 +375,170 @@ func newOpenRouterAccount(t *testing.T, st *Store, name string) *Account {
 		t.Fatalf("upsert openrouter account %q: %v", name, err)
 	}
 	return acc
+}
+
+func TestOpenRouterCredentialKindAndCredit(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+	acc := newOpenRouterAccount(t, st, "pool-a")
+
+	// An ordinary inference key: nothing to derive from, so it is served to
+	// devices as-is.
+	if err := st.SetOpenRouterCredential(ctx, acc.ID, "sk-or-plain", false); err != nil {
+		t.Fatalf("set plain: %v", err)
+	}
+	cred, err := st.OpenRouterCredential(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if cred.APIKey != "sk-or-plain" || cred.IsProvisioning {
+		t.Fatalf("cred = %+v, want a non-provisioning key", cred)
+	}
+	// Never polled, so the balance is unknown — which must read as usable.
+	if cred.CreditCheckedAt != 0 || !cred.HasCredit() {
+		t.Fatalf("cred = %+v; an unpolled account must not be treated as broke", cred)
+	}
+
+	if err := st.SetOpenRouterCredit(ctx, acc.ID, 510, 23.94); err != nil {
+		t.Fatalf("SetOpenRouterCredit: %v", err)
+	}
+	cred, _ = st.OpenRouterCredential(ctx, acc.ID)
+	if cred.CreditTotal != 510 || cred.CreditRemaining != 23.94 {
+		t.Fatalf("credit = %+v", cred)
+	}
+	if cred.CreditCheckedAt == 0 {
+		t.Fatal("a successful poll must stamp checked_at, or HasCredit stays in 'unknown'")
+	}
+	if !cred.HasCredit() {
+		t.Fatal("$23.94 should be usable")
+	}
+}
+
+func TestHasCreditThreshold(t *testing.T) {
+	polled := func(remaining float64) OpenRouterCredential {
+		return OpenRouterCredential{CreditRemaining: remaining, CreditCheckedAt: 1}
+	}
+	// A small buffer rather than zero: the poller samples periodically, so aiming
+	// at exactly empty guarantees some requests land after the money is gone.
+	if polled(0).HasCredit() {
+		t.Fatal("an empty account must not be handed out")
+	}
+	if polled(MinUsableCredit - 0.01).HasCredit() {
+		t.Fatal("below the floor must not be handed out")
+	}
+	if !polled(MinUsableCredit).HasCredit() {
+		t.Fatal("exactly at the floor should still be usable")
+	}
+	if polled(-5).HasCredit() {
+		t.Fatal("an overdrawn account must not be handed out")
+	}
+	// Unknown (never polled) stays usable — a failed poll must not lock an
+	// operator out of their own pool.
+	if !(OpenRouterCredential{CreditRemaining: 0}).HasCredit() {
+		t.Fatal("never-polled must read as usable")
+	}
+}
+
+// Replacing the key resets the balance: a different key may belong to a
+// different OpenRouter account entirely, so carrying the old figure over would
+// make an empty account look funded (or vice versa).
+func TestReplacingTheKeyResetsCreditState(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+	acc := newOpenRouterAccount(t, st, "pool-a")
+
+	if err := st.SetOpenRouterCredential(ctx, acc.ID, "sk-or-a", true); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := st.SetOpenRouterCredit(ctx, acc.ID, 100, 90); err != nil {
+		t.Fatalf("credit: %v", err)
+	}
+	if err := st.SetOpenRouterCredential(ctx, acc.ID, "sk-or-b", false); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	cred, _ := st.OpenRouterCredential(ctx, acc.ID)
+	if cred.CreditCheckedAt != 0 || cred.CreditRemaining != 0 {
+		t.Fatalf("credit state survived a key swap: %+v", cred)
+	}
+	if cred.IsProvisioning {
+		t.Fatal("the kind must follow the new key")
+	}
+}
+
+func TestSetOpenRouterCreditRequiresACredential(t *testing.T) {
+	st := openTempStore(t)
+	if err := st.SetOpenRouterCredit(context.Background(), 999, 10, 5); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound rather than a silent no-op", err)
+	}
+}
+
+// TestMigrationFromManagementKeysTable covers an install that ran the earlier
+// build: rows in openrouter_management_keys must come across, flagged
+// provisioning (that table could only ever hold provisioning keys), and the old
+// table must survive — dropping the only copy of a credential is the one
+// mistake here that can't be undone.
+func TestMigrationFromManagementKeysTable(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/legacy.db"
+
+	st := openStoreAt(t, path)
+	ctx := context.Background()
+	acc := newOpenRouterAccount(t, st, "pool-a")
+	// Simulate the old build's state: a row in the legacy table, none in the new.
+	if _, err := st.db.ExecContext(ctx,
+		`CREATE TABLE IF NOT EXISTS openrouter_management_keys (
+		   account_id INTEGER PRIMARY KEY, management_key TEXT NOT NULL, updated_at INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO openrouter_management_keys (account_id, management_key, updated_at) VALUES (?, ?, ?)`,
+		acc.ID, "sk-or-legacy", 12345); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+	if err := st.DeleteOpenRouterCredential(ctx, acc.ID); err != nil {
+		t.Fatalf("clear new table: %v", err)
+	}
+	st.Close()
+
+	// Re-open: Open runs the migration.
+	st2 := openStoreAt(t, path)
+	cred, err := st2.OpenRouterCredential(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("after migration: %v", err)
+	}
+	if cred.APIKey != "sk-or-legacy" {
+		t.Fatalf("APIKey = %q, want the legacy key carried over", cred.APIKey)
+	}
+	if !cred.IsProvisioning {
+		t.Fatal("a legacy management key must be flagged provisioning")
+	}
+	var legacyCount int
+	if err := st2.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM openrouter_management_keys`).Scan(&legacyCount); err != nil {
+		t.Fatalf("count legacy: %v", err)
+	}
+	if legacyCount != 1 {
+		t.Fatalf("legacy row count = %d, want it left in place", legacyCount)
+	}
+
+	// Idempotent, and must not clobber a newer value.
+	if err := st2.SetOpenRouterCredential(ctx, acc.ID, "sk-or-current", false); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	st2.Close()
+	st3 := openStoreAt(t, path)
+	cred, _ = st3.OpenRouterCredential(ctx, acc.ID)
+	if cred.APIKey != "sk-or-current" || cred.IsProvisioning {
+		t.Fatalf("re-running the migration clobbered the current credential: %+v", cred)
+	}
+}
+
+func openStoreAt(t *testing.T, path string) *Store {
+	t.Helper()
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(%s): %v", path, err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
 }

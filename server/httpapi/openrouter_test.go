@@ -128,9 +128,9 @@ func TestManagementKeyIsWriteOnlyOverTheAPI(t *testing.T) {
 	}
 
 	// It must nonetheless be usable internally.
-	key, err := srv.Store.OpenRouterManagementKey(context.Background(), created.ID)
-	if err != nil || key != "sk-or-mgmt" {
-		t.Fatalf("stored key = %q, %v", key, err)
+	cred, err := srv.Store.OpenRouterCredential(context.Background(), created.ID)
+	if err != nil || cred.APIKey != "sk-or-mgmt" {
+		t.Fatalf("stored key = %+v, %v", cred, err)
 	}
 }
 

@@ -112,7 +112,7 @@ func newOpenRouterFixture(t *testing.T) *openRouterFixture {
 	}); err != nil {
 		t.Fatalf("set config: %v", err)
 	}
-	if err := st.SetOpenRouterManagementKey(ctx, acc.ID, "sk-or-mgmt"); err != nil {
+	if err := st.SetOpenRouterCredential(ctx, acc.ID, "sk-or-mgmt", true); err != nil {
 		t.Fatalf("set management key: %v", err)
 	}
 	if err := st.InsertDevice(ctx, store.Device{
@@ -277,21 +277,21 @@ func TestRevokeKeepsRowWhenUpstreamRefuses(t *testing.T) {
 	}
 }
 
-// TestRevokeWithoutManagementKeyRefusesRatherThanForget covers the operator
-// mistake of clearing the management key while devices still hold derived keys.
-func TestRevokeWithoutManagementKeyRefusesRatherThanForget(t *testing.T) {
+// TestRevokeWithoutAPIKeyRefusesRatherThanForget covers the operator mistake of
+// clearing the account's key while devices still hold derived keys.
+func TestRevokeWithoutAPIKeyRefusesRatherThanForget(t *testing.T) {
 	f := newOpenRouterFixture(t)
 	ctx := context.Background()
 	if _, err := f.svc.EnsureDeviceKey(ctx, "dev-1"); err != nil {
 		t.Fatalf("EnsureDeviceKey: %v", err)
 	}
-	if err := f.st.DeleteOpenRouterManagementKey(ctx, f.acc.ID); err != nil {
+	if err := f.st.DeleteOpenRouterCredential(ctx, f.acc.ID); err != nil {
 		t.Fatalf("delete management key: %v", err)
 	}
 
 	err := f.svc.RevokeDeviceKeys(ctx, "dev-1")
-	if err == nil || !strings.Contains(err.Error(), "no management key on file") {
-		t.Fatalf("err = %v, want an explicit 'cannot revoke, no management key' failure", err)
+	if err == nil || !strings.Contains(err.Error(), "no API key on file") {
+		t.Fatalf("err = %v, want an explicit 'cannot revoke, no key on file' failure", err)
 	}
 	if rows, _ := f.st.ListDeviceOpenRouterKeys(ctx, "dev-1"); len(rows) != 1 {
 		t.Fatal("the row must survive — it holds the only handle that can ever kill this key")
@@ -390,10 +390,10 @@ func TestPickAccountSkipsUnconfiguredAccounts(t *testing.T) {
 	// must be skipped rather than producing a key with an empty dropdown or a
 	// derivation that can't authenticate.
 	t.Run("no management key", func(t *testing.T) {
-		if err := f.st.DeleteOpenRouterManagementKey(ctx, f.acc.ID); err != nil {
+		if err := f.st.DeleteOpenRouterCredential(ctx, f.acc.ID); err != nil {
 			t.Fatalf("delete: %v", err)
 		}
-		defer func() { _ = f.st.SetOpenRouterManagementKey(ctx, f.acc.ID, "sk-or-mgmt") }()
+		defer func() { _ = f.st.SetOpenRouterCredential(ctx, f.acc.ID, "sk-or-mgmt", true) }()
 		if _, err := f.svc.EnsureDeviceKey(ctx, "dev-1"); !errors.Is(err, ErrNoOpenRouterAccount) {
 			t.Fatalf("err = %v, want ErrNoOpenRouterAccount", err)
 		}
@@ -442,7 +442,7 @@ func TestPickAccountIsStableAcrossCalls(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	if err := f.st.SetOpenRouterManagementKey(ctx, second.ID, "sk-or-mgmt-2"); err != nil {
+	if err := f.st.SetOpenRouterCredential(ctx, second.ID, "sk-or-mgmt-2", true); err != nil {
 		t.Fatalf("mgmt: %v", err)
 	}
 

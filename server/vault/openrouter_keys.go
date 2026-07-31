@@ -104,10 +104,11 @@ func (k *OpenRouterKeys) EnsureDeviceKey(ctx context.Context, deviceID string) (
 		return OpenRouterGrant{}, err
 	}
 
-	mgmtKey, err := k.st.OpenRouterManagementKey(ctx, acc.ID)
+	cred, err := k.st.OpenRouterCredential(ctx, acc.ID)
 	if err != nil {
 		return OpenRouterGrant{}, fmt.Errorf("account %d: %w", acc.ID, err)
 	}
+	mgmtKey := cred.APIKey
 	// The model list is NOT sent upstream: it drives the device's profile files,
 	// which is what makes a model appear in the picker. What bounds cost is the
 	// key's own spend cap, below.
@@ -186,18 +187,18 @@ func (k *OpenRouterKeys) RevokeAccountKeys(ctx context.Context, accountID int64)
 
 // revokeOne deletes a single key upstream and then locally.
 func (k *OpenRouterKeys) revokeOne(ctx context.Context, accountID int64, row store.DeviceOpenRouterKey) error {
-	mgmtKey, err := k.st.OpenRouterManagementKey(ctx, accountID)
+	cred, err := k.st.OpenRouterCredential(ctx, accountID)
 	if errors.Is(err, store.ErrNotFound) {
 		// The management key is gone, so we can no longer revoke upstream. Say so
 		// loudly and keep the row: dropping it would erase the only record that
 		// this key exists, and it would keep working forever.
-		return fmt.Errorf("cannot revoke OpenRouter key %s for device %s: account %d has no management key on file "+
+		return fmt.Errorf("cannot revoke OpenRouter key %s for device %s: account %d has no API key on file "+
 			"(re-enter it, then retry)", row.KeyHash, row.DeviceID, accountID)
 	}
 	if err != nil {
 		return err
 	}
-	if err := k.newClient(mgmtKey).RevokeDerivedKey(ctx, row.KeyHash); err != nil {
+	if err := k.newClient(cred.APIKey).RevokeDerivedKey(ctx, row.KeyHash); err != nil {
 		return fmt.Errorf("revoke OpenRouter key %s for device %s: %w", row.KeyHash, row.DeviceID, err)
 	}
 	if err := k.st.DeleteDeviceOpenRouterKey(ctx, row.DeviceID, row.AccountID); err != nil {
@@ -237,7 +238,7 @@ func (k *OpenRouterKeys) pickAccount(ctx context.Context) (store.Account, store.
 			// model picker — nothing to select, so nothing to do.
 			continue
 		}
-		has, err := k.st.HasOpenRouterManagementKey(ctx, a.ID)
+		has, err := k.st.HasOpenRouterCredential(ctx, a.ID)
 		if err != nil {
 			return store.Account{}, store.OpenRouterAccountConfig{}, err
 		}

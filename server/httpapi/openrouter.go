@@ -60,7 +60,7 @@ func (s *Server) openRouterConfigFor(ctx context.Context, a store.Account) (*ope
 	if err != nil {
 		return nil, err
 	}
-	hasKey, err := s.Store.HasOpenRouterManagementKey(ctx, a.ID)
+	hasKey, err := s.Store.HasOpenRouterCredential(ctx, a.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -161,8 +161,8 @@ func (s *Server) handleCreateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 		http.Error(w, "save OpenRouter config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.Store.SetOpenRouterManagementKey(r.Context(), acc.ID, req.ManagementKey); err != nil {
-		http.Error(w, "save management key: "+err.Error(), http.StatusInternalServerError)
+	if err := s.Store.SetOpenRouterCredential(r.Context(), acc.ID, req.ManagementKey, true); err != nil {
+		http.Error(w, "save API key: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.Bus.EmitInfo(activity.TypeAccountAdded, acc.ID,
@@ -230,7 +230,7 @@ func (s *Server) handleUpdateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if rotatingKey {
-		if err := s.Store.SetOpenRouterManagementKey(r.Context(), id, req.ManagementKey); err != nil {
+		if err := s.Store.SetOpenRouterCredential(r.Context(), id, req.ManagementKey, true); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -278,16 +278,16 @@ func (s *Server) handleCheckOpenRouterAccount(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	key, err := s.Store.OpenRouterManagementKey(r.Context(), id)
+	cred, err := s.Store.OpenRouterCredential(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		http.Error(w, "no management key on file for this account", http.StatusBadRequest)
+		http.Error(w, "no API key on file for this account", http.StatusBadRequest)
 		return
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	caps, err := (&openrouter.Client{ManagementKey: key}).CheckManagementKey(r.Context())
+	caps, err := (&openrouter.Client{ManagementKey: cred.APIKey}).CheckManagementKey(r.Context())
 	if err != nil {
 		http.Error(w, "probe OpenRouter: "+err.Error(), http.StatusBadGateway)
 		return

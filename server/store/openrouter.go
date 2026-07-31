@@ -20,10 +20,12 @@ import (
 //     agent-facing GET /agent/v1/accounts serialises store.Account verbatim,
 //     tokens included; anything we put on the row is visible to every paired
 //     device.
-//   - openrouter_management_keys holds the account's management key, the
-//     credential that can mint and revoke runtime keys. It lives in its own
-//     table precisely so it can never ride along on an Account serialisation.
-//     Nothing outside the vault process ever reads it.
+//   - openrouter_credentials holds the account's API key — provisioning or
+//     ordinary — plus the observed account balance. It lives in its own table
+//     precisely so the key can never ride along on an Account serialisation.
+//     Nothing outside the vault process reads the key, except that an ordinary
+//     (non-provisioning) key IS what gets served to authorised devices, since
+//     there is nothing to derive from it.
 //   - device_openrouter_keys records which derived runtime key each authorised
 //     device actually received. Revoking one device means deleting one row here
 //     plus one DELETE /api/v1/keys/{hash} upstream — no other device is touched.
@@ -34,9 +36,22 @@ import (
 // ProviderOpenRouter.
 
 const openrouterSchema = `
-CREATE TABLE IF NOT EXISTS openrouter_management_keys (
+CREATE TABLE IF NOT EXISTS openrouter_credentials (
   account_id     INTEGER PRIMARY KEY,
-  management_key TEXT    NOT NULL,
+  -- api_key is whatever the admin pasted. It may be a provisioning key (foxy
+  -- mints a separate key per device from it) or an ordinary inference key (foxy
+  -- hands it to devices as-is). Which one it is is DETECTED, not declared —
+  -- GET /api/v1/key reports is_provisioning_key — so the admin just pastes a key.
+  api_key        TEXT    NOT NULL,
+  -- is_provisioning records that detection. 1 = can mint per-device keys.
+  is_provisioning INTEGER NOT NULL DEFAULT 0,
+  -- Observed account balance, refreshed by the credit poller. remaining is
+  -- total_credits - total_usage from GET /api/v1/credits. checked_at == 0 means
+  -- "never polled", which is treated as eligible: a never-polled or
+  -- poll-failing account must not be silently locked out of its own pool.
+  credit_total     REAL    NOT NULL DEFAULT 0,
+  credit_remaining REAL    NOT NULL DEFAULT 0,
+  credit_checked_at INTEGER NOT NULL DEFAULT 0,
   updated_at     INTEGER NOT NULL
 );
 
@@ -69,7 +84,7 @@ CREATE INDEX IF NOT EXISTS device_openrouter_keys_account
 // `or-<model>.config.toml` profile files the device writes — i.e. which models
 // appear in the picker.
 //
-// It deliberately contains NO secret — see the openrouter_management_keys note
+// It deliberately contains NO secret — see the openrouter_credentials note
 // above.
 type OpenRouterAccountConfig struct {
 	// AllowedModels are OpenRouter model slugs ("deepseek/deepseek-v4-flash").
@@ -170,45 +185,120 @@ func (s *Store) OpenRouterConfig(ctx context.Context, accountID int64) (OpenRout
 	return ParseOpenRouterConfig(acc.CredentialJSON)
 }
 
-// --- management key -------------------------------------------------------
+// --- account credential -----------------------------------------------------
 
-// SetOpenRouterManagementKey stores (or replaces) the management key used to
-// mint and revoke this account's derived runtime keys. Passing an empty key
-// deletes the row — that is how an admin un-configures an account without
-// deleting it.
-func (s *Store) SetOpenRouterManagementKey(ctx context.Context, accountID int64, key string) error {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return s.DeleteOpenRouterManagementKey(ctx, accountID)
+// OpenRouterCredential is an account's stored API key plus what we know about
+// it: whether it can mint per-device keys, and how much credit the account has
+// left.
+type OpenRouterCredential struct {
+	AccountID int64
+	// APIKey is whatever the admin pasted — provisioning or ordinary. Never
+	// leaves the vault when IsProvisioning; served to devices as-is when not.
+	APIKey string
+	// IsProvisioning is detected, not declared: GET /api/v1/key reports
+	// is_provisioning_key. True means foxy can mint a separate, separately
+	// revocable key per device. False means every authorised device shares this
+	// one key — fine for a single machine, and a real trade-off for several.
+	IsProvisioning bool
+	// CreditTotal / CreditRemaining come from GET /api/v1/credits
+	// (total_credits, total_credits - total_usage).
+	CreditTotal     float64
+	CreditRemaining float64
+	// CreditCheckedAt is when the poller last succeeded (unix millis). 0 = never.
+	CreditCheckedAt int64
+	UpdatedAt       int64
+}
+
+// MinUsableCredit is the balance below which an account stops being handed out.
+// A small buffer rather than zero: a request already in flight when the balance
+// hits nothing fails mid-session, and the poller only samples periodically, so
+// aiming at exactly empty guarantees some requests land after the money is gone.
+const MinUsableCredit = 0.50
+
+// HasCredit reports whether the account looks fundable.
+//
+// A never-polled account (CheckedAt == 0) counts as fundable. That is
+// deliberate: the poller can fail for reasons that have nothing to do with the
+// balance (offline vault, an inference key that can't read /credits), and
+// treating "we don't know" as "no money" would lock an operator out of their own
+// pool over a failed HTTP call. OpenRouter's own 402 is the backstop.
+func (c OpenRouterCredential) HasCredit() bool {
+	if c.CreditCheckedAt == 0 {
+		return true
+	}
+	return c.CreditRemaining >= MinUsableCredit
+}
+
+// SetOpenRouterCredential stores (or replaces) an account's API key. The
+// is-provisioning flag is the caller's detection result. Credit state is left
+// alone on update — it belongs to the poller — except that replacing the key
+// resets it, since a different key may see a different account entirely.
+//
+// An empty key deletes the row: that is how an admin un-configures an account
+// without deleting it.
+func (s *Store) SetOpenRouterCredential(ctx context.Context, accountID int64, apiKey string, isProvisioning bool) error {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return s.DeleteOpenRouterCredential(ctx, accountID)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO openrouter_management_keys (account_id, management_key, updated_at)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT(account_id) DO UPDATE
-		   SET management_key = excluded.management_key, updated_at = excluded.updated_at`,
-		accountID, key, time.Now().UnixMilli())
+		`INSERT INTO openrouter_credentials
+		   (account_id, api_key, is_provisioning, credit_total, credit_remaining,
+		    credit_checked_at, updated_at)
+		 VALUES (?, ?, ?, 0, 0, 0, ?)
+		 ON CONFLICT(account_id) DO UPDATE SET
+		   api_key           = excluded.api_key,
+		   is_provisioning   = excluded.is_provisioning,
+		   credit_total      = 0,
+		   credit_remaining  = 0,
+		   credit_checked_at = 0,
+		   updated_at        = excluded.updated_at`,
+		accountID, apiKey, boolToInt(isProvisioning), time.Now().UnixMilli())
 	return err
 }
 
-// OpenRouterManagementKey returns the account's management key. ErrNotFound
-// when the admin hasn't entered one yet — callers surface that as "this
-// account can't derive keys" rather than attempting an unauthenticated call.
-func (s *Store) OpenRouterManagementKey(ctx context.Context, accountID int64) (string, error) {
-	var key string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT management_key FROM openrouter_management_keys WHERE account_id = ?`,
-		accountID).Scan(&key)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNotFound
+// SetOpenRouterCredit records a successful balance poll.
+func (s *Store) SetOpenRouterCredit(ctx context.Context, accountID int64, total, remaining float64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE openrouter_credentials
+		    SET credit_total = ?, credit_remaining = ?, credit_checked_at = ?
+		  WHERE account_id = ?`,
+		total, remaining, time.Now().UnixMilli(), accountID)
+	if err != nil {
+		return err
 	}
-	return key, err
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
-// HasOpenRouterManagementKey reports whether a key is on file. The admin UI
-// renders "configured / not configured" off this without ever fetching the
-// secret itself.
-func (s *Store) HasOpenRouterManagementKey(ctx context.Context, accountID int64) (bool, error) {
-	_, err := s.OpenRouterManagementKey(ctx, accountID)
+// OpenRouterCredential returns the account's credential. ErrNotFound when the
+// admin hasn't entered a key yet — callers surface that as "this account isn't
+// usable" rather than attempting an unauthenticated call.
+func (s *Store) OpenRouterCredential(ctx context.Context, accountID int64) (OpenRouterCredential, error) {
+	c := OpenRouterCredential{AccountID: accountID}
+	var isProv int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT api_key, is_provisioning, credit_total, credit_remaining,
+		        credit_checked_at, updated_at
+		   FROM openrouter_credentials WHERE account_id = ?`, accountID).
+		Scan(&c.APIKey, &isProv, &c.CreditTotal, &c.CreditRemaining,
+			&c.CreditCheckedAt, &c.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OpenRouterCredential{}, ErrNotFound
+	}
+	if err != nil {
+		return OpenRouterCredential{}, err
+	}
+	c.IsProvisioning = isProv != 0
+	return c, nil
+}
+
+// HasOpenRouterCredential reports whether a key is on file. The admin UI renders
+// "configured / not configured" off this without ever fetching the secret.
+func (s *Store) HasOpenRouterCredential(ctx context.Context, accountID int64) (bool, error) {
+	_, err := s.OpenRouterCredential(ctx, accountID)
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
@@ -218,10 +308,11 @@ func (s *Store) HasOpenRouterManagementKey(ctx context.Context, accountID int64)
 	return true, nil
 }
 
-// DeleteOpenRouterManagementKey drops the stored key. Idempotent.
-func (s *Store) DeleteOpenRouterManagementKey(ctx context.Context, accountID int64) error {
+// DeleteOpenRouterCredential drops the stored key and its credit state.
+// Idempotent.
+func (s *Store) DeleteOpenRouterCredential(ctx context.Context, accountID int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM openrouter_management_keys WHERE account_id = ?`, accountID)
+		`DELETE FROM openrouter_credentials WHERE account_id = ?`, accountID)
 	return err
 }
 

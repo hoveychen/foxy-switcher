@@ -26,9 +26,8 @@ const (
 	// gets its own derived runtime key, tracked in
 	// device_openrouter_keys (see openrouter.go). An OpenRouter accounts row
 	// carries no secret at all: access_token / refresh_token stay empty and
-	// credential_json holds only the derivation template
-	// (OpenRouterAccountConfig). The management key that mints derived keys
-	// lives in openrouter_management_keys and is never handed to a device.
+	// credential_json holds only the policy template (OpenRouterAccountConfig).
+	// The account's API key lives in openrouter_credentials.
 	ProviderOpenRouter = "openrouter"
 )
 
@@ -334,7 +333,41 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply openrouter schema: %w", err)
 	}
+	if err := migrateOpenRouterManagementKeys(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate openrouter management keys: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrateOpenRouterManagementKeys carries rows over from the original
+// openrouter_management_keys table, which only ever held provisioning keys, into
+// openrouter_credentials. The rename happened when ordinary (non-provisioning)
+// API keys became supported and "management key" stopped being an accurate name
+// for the column's contents.
+//
+// The old table is left in place rather than dropped: it is inert once copied,
+// and dropping a table holding the only copy of a credential is the one mistake
+// here that can't be undone. Idempotent — the INSERT ignores rows already
+// migrated, and is_provisioning is 1 because that table could only hold
+// provisioning keys.
+func migrateOpenRouterManagementKeys(db *sql.DB) error {
+	var name string
+	err := db.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='openrouter_management_keys'`).
+		Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // fresh install, nothing to carry over
+	}
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+INSERT OR IGNORE INTO openrouter_credentials
+  (account_id, api_key, is_provisioning, credit_total, credit_remaining, credit_checked_at, updated_at)
+SELECT account_id, management_key, 1, 0, 0, 0, updated_at
+  FROM openrouter_management_keys`)
+	return err
 }
 
 // migrateLegacyOrgUnique rebuilds the accounts table without the original
