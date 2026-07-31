@@ -215,12 +215,22 @@ export interface OpenRouterConfig {
   // "" | "daily" | "weekly" | "monthly"; empty means a lifetime cap.
   limit_reset?: string;
   workspace_id?: string;
-  // The management key itself is write-only over the API; this is how the UI
-  // shows whether one is configured.
+  // The key itself is write-only over the API; this is how the UI shows whether
+  // one is configured.
   has_management_key: boolean;
+  // What the stored key can do, as detected at save time. true: each device gets
+  // its own revocable key. false: every device shares this one, so revoking a
+  // device cannot revoke the key.
+  is_provisioning: boolean;
   // How many devices currently hold a key derived from this account — the blast
   // radius of a policy edit, which revokes all of them.
   derived_key_count: number;
+  // Balance as last polled. Absent when never polled — render "unknown", never
+  // "$0", which would read as broke.
+  credit?: { total: number; remaining: number; checked_at: number };
+  // Mirrors the selector's own verdict, so the badge and the routing decision
+  // can't disagree.
+  out_of_credit: boolean;
 }
 
 // OpenRouterCapabilities is the result of verifying an account's stored
@@ -228,7 +238,11 @@ export interface OpenRouterConfig {
 // silently breaks everything (pasting the inference key instead). The check is
 // read-only; it lists keys rather than creating anything.
 export interface OpenRouterCapabilities {
+  key_valid: boolean;
   management_key_valid: boolean;
+  is_provisioning: boolean;
+  credit_known: boolean;
+  credit_remaining: number;
   detail: string;
 }
 

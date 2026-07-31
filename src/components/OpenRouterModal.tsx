@@ -7,11 +7,16 @@ import { t, tf } from "../i18n";
 // OpenRouterModal adds or retunes an OpenRouter pool account.
 //
 // There is no OAuth dance here, unlike Claude and Codex: OpenRouter accounts
-// are configured, not signed in to. The admin supplies a management key plus a
-// policy (which models, how much spend), and each authorised device later
-// derives its own capped runtime key from it. The management key never leaves
-// the vault, and never comes back over the API either — hence "leave blank to
-// keep" on edit rather than a pre-filled field.
+// are configured, not signed in to. The admin pastes an API key plus a policy
+// (which models, how much spend). The key never comes back over the API — hence
+// "leave blank to keep" on edit rather than a pre-filled field.
+//
+// Either kind of key works and the admin does not have to say which: on save,
+// foxy asks OpenRouter (GET /key reports is_provisioning_key) and the answer
+// decides the behaviour. A provisioning key means every authorised device gets
+// its own revocable key; an ordinary key is handed to devices as-is, which is
+// the right shape for a single machine and is shown as "shared" so nobody
+// assumes a per-device revocability that isn't there.
 //
 // The model list decides which codex profile files each device writes, and
 // therefore what appears in its model picker. The spend cap is what actually
@@ -66,13 +71,18 @@ export function OpenRouterModal({
     .filter(Boolean);
   const parsedLimit = limitUSD.trim() === "" ? 0 : Number(limitUSD);
   const limitInvalid = Number.isNaN(parsedLimit) || parsedLimit < 0;
-  const derivedKeys = account?.openrouter?.derived_key_count ?? 0;
+  // Only meaningful for a provisioning key: a shared key has no derived keys to
+  // revoke, so the warning would be a lie.
+  const derivedKeys = account?.openrouter?.is_provisioning
+    ? (account.openrouter.derived_key_count ?? 0)
+    : 0;
 
   const canSubmit =
     !busy &&
     !limitInvalid &&
     parsedModels.length > 0 &&
     (editing ? true : name.trim() !== "" && managementKey.trim() !== "");
+  // Saving asks OpenRouter what the key is, so a bad key surfaces here.
 
   async function submit() {
     setBusy(true);
@@ -230,7 +240,33 @@ export function OpenRouterModal({
             disabled={busy}
           />
           <span className="text-meta or-hint">{t("openrouter.field.management_key_hint")}</span>
+          {editing && account?.openrouter?.has_management_key && (
+            <span className="text-meta or-hint">
+              {t(
+                account.openrouter.is_provisioning
+                  ? "openrouter.kind.provisioning"
+                  : "openrouter.kind.shared",
+              )}
+            </span>
+          )}
         </label>
+
+        {editing && account?.openrouter && (
+          <p
+            className={`text-meta or-hint ${
+              account.openrouter.out_of_credit ? "or-hint-error" : ""
+            }`}
+          >
+            {account.openrouter.credit
+              ? tf(
+                  account.openrouter.out_of_credit
+                    ? "openrouter.credit.empty"
+                    : "openrouter.credit.remaining",
+                  { remaining: account.openrouter.credit.remaining.toFixed(2) },
+                )
+              : t("openrouter.credit.unknown")}
+          </p>
+        )}
 
         {editing && derivedKeys > 0 && (
           <p className="text-meta or-hint or-hint-warn">

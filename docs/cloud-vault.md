@@ -156,6 +156,26 @@ row is deleted only *after* the upstream key is gone. A failed revoke keeps the
 row and surfaces an error — losing the hash would leave a live credential
 nobody can kill.
 
+### Two kinds of key, detected not declared
+
+The admin pastes an API key. Which sort it is comes from OpenRouter, not from a
+form field — `GET /key` reports `is_provisioning_key` — and that answer decides
+the behaviour:
+
+| Stored key | What a device gets | Revoking one device |
+|---|---|---|
+| Provisioning | its own minted key | revokes that key |
+| Ordinary | the account's key, as-is | **cannot** revoke the key |
+
+Supporting ordinary keys matters most for local/combined mode, where there is
+exactly one device: deriving buys nothing there, and *requiring* a provisioning
+key would hand the local daemon the power to add and delete every key on the
+account just to solve "one machine needs one key". The trade-off is stated in the
+grant (`device_scoped`) and in the admin UI rather than left implicit.
+
+Detection also validates: a mistyped key fails at save time instead of at every
+device's first request.
+
 ### Derivation is one call
 
 `POST /api/v1/keys`, and that's it. A derived key carries everything the
@@ -189,6 +209,37 @@ enforcement.
 > action (`POST /api/accounts/{id}/openrouter/check`) uses to catch the one
 > misconfiguration that silently breaks everything: pasting the inference key.
 > That check is read-only and creates nothing on the operator's account.
+
+### Rotation when an account runs out of money
+
+`GET /credits` gives `total_credits` / `total_usage`; the difference is the
+balance. A vault-side poller (15 min — a balance moves only as fast as real
+spend) records it per account, and account selection skips anything below a small
+floor. So when one account empties, devices roll onto the next funded one.
+
+That is *eligibility*, not leasing: ordering stays the stable lowest-id-first
+rule so a device doesn't hop accounts for no reason, and the no-leases decision
+in §6 is untouched. Rotation reaches codex for free — it fetches the token via
+`foxy cred openrouter-token` and re-reads it on `refresh_interval_ms`, so nothing
+has to be rewritten or restarted.
+
+Two rules keep this from misfiring:
+
+- **A never-polled balance counts as funded.** The poller fails for reasons that
+  have nothing to do with money, and treating "unknown" as "broke" would lock an
+  operator out of their own pool over a failed HTTP call. OpenRouter's 402 is the
+  backstop.
+- **A failed poll leaves the previous figure alone**, rather than writing a zero
+  that would read as broke.
+
+The floor is a small buffer rather than zero, because the poller samples
+periodically: aiming at exactly empty guarantees some requests land after the
+money is gone.
+
+Keys minted from an account that later empties are left alive — capped, unable to
+spend on an empty account, and instant to reuse if it is topped up. They stay
+revocable, since a device revoke walks every row for that device whichever
+account each key came from.
 
 ### Editing the policy revokes outstanding keys
 

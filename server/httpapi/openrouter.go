@@ -44,9 +44,26 @@ type openRouterView struct {
 	WorkspaceID   string   `json:"workspace_id,omitempty"`
 	// HasManagementKey is how the UI shows configured-ness without the secret.
 	HasManagementKey bool `json:"has_management_key"`
+	// IsProvisioning reports what the stored key can do, as detected at save
+	// time. True: each device gets its own revocable key. False: every device
+	// shares this one, so revoking a device can't revoke the key.
+	IsProvisioning bool `json:"is_provisioning"`
 	// DerivedKeyCount is how many devices currently hold a key from this
-	// account — the blast radius of an allowlist edit, which revokes them all.
+	// account — the blast radius of a policy edit, which revokes them all.
 	DerivedKeyCount int `json:"derived_key_count"`
+	// Credit is the account balance as last polled. Nil when never polled — the
+	// UI must show "unknown" rather than "$0", which would read as broke.
+	Credit *openRouterCreditView `json:"credit,omitempty"`
+	// OutOfCredit mirrors the selector's own verdict, so the card's badge and the
+	// routing decision can't disagree.
+	OutOfCredit bool `json:"out_of_credit"`
+}
+
+// openRouterCreditView is an account's balance as the admin UI shows it.
+type openRouterCreditView struct {
+	Total     float64 `json:"total"`
+	Remaining float64 `json:"remaining"`
+	CheckedAt int64   `json:"checked_at"`
 }
 
 // openRouterConfigFor builds the view for one account. Errors are returned
@@ -60,22 +77,36 @@ func (s *Server) openRouterConfigFor(ctx context.Context, a store.Account) (*ope
 	if err != nil {
 		return nil, err
 	}
-	hasKey, err := s.Store.HasOpenRouterCredential(ctx, a.ID)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := s.Store.ListAccountOpenRouterKeys(ctx, a.ID)
 	if err != nil {
 		return nil, err
 	}
-	return &openRouterView{
-		AllowedModels:    cfg.AllowedModels,
-		LimitUSD:         cfg.LimitUSD,
-		LimitReset:       cfg.LimitReset,
-		WorkspaceID:      cfg.WorkspaceID,
-		HasManagementKey: hasKey,
-		DerivedKeyCount:  len(rows),
-	}, nil
+	view := &openRouterView{
+		AllowedModels:   cfg.AllowedModels,
+		LimitUSD:        cfg.LimitUSD,
+		LimitReset:      cfg.LimitReset,
+		WorkspaceID:     cfg.WorkspaceID,
+		DerivedKeyCount: len(rows),
+	}
+	cred, err := s.Store.OpenRouterCredential(ctx, a.ID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		// No key yet. Leave Credit nil so the UI says "unknown", not "$0".
+	case err != nil:
+		return nil, err
+	default:
+		view.HasManagementKey = true
+		view.IsProvisioning = cred.IsProvisioning
+		view.OutOfCredit = !cred.HasCredit()
+		if cred.CreditCheckedAt != 0 {
+			view.Credit = &openRouterCreditView{
+				Total:     cred.CreditTotal,
+				Remaining: cred.CreditRemaining,
+				CheckedAt: cred.CreditCheckedAt,
+			}
+		}
+	}
+	return view, nil
 }
 
 // openRouterAccountReq is the create/update payload. ManagementKey is optional
@@ -135,8 +166,16 @@ func (s *Server) handleCreateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if strings.TrimSpace(req.ManagementKey) == "" {
-		http.Error(w, "management_key required — without it the vault cannot mint device keys",
+		http.Error(w, "api_key required — the vault needs a key to hand devices",
 			http.StatusBadRequest)
+		return
+	}
+	// Ask OpenRouter what sort of key this is rather than making the admin
+	// declare it. Also validates the key before we store it, so a typo fails at
+	// save time instead of at every device's first request.
+	isProvisioning, err := s.detectOpenRouterKeyKind(r.Context(), req.ManagementKey)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	cfg := req.config()
@@ -161,7 +200,7 @@ func (s *Server) handleCreateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 		http.Error(w, "save OpenRouter config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.Store.SetOpenRouterCredential(r.Context(), acc.ID, req.ManagementKey, true); err != nil {
+	if err := s.Store.SetOpenRouterCredential(r.Context(), acc.ID, req.ManagementKey, isProvisioning); err != nil {
 		http.Error(w, "save API key: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -230,7 +269,12 @@ func (s *Server) handleUpdateOpenRouterAccount(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if rotatingKey {
-		if err := s.Store.SetOpenRouterCredential(r.Context(), id, req.ManagementKey, true); err != nil {
+		isProvisioning, derr := s.detectOpenRouterKeyKind(r.Context(), req.ManagementKey)
+		if derr != nil {
+			http.Error(w, derr.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := s.Store.SetOpenRouterCredential(r.Context(), id, req.ManagementKey, isProvisioning); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -287,15 +331,76 @@ func (s *Server) handleCheckOpenRouterAccount(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	caps, err := (&openrouter.Client{ManagementKey: cred.APIKey}).CheckManagementKey(r.Context())
+	caps, err := s.newOpenRouterClient(cred.APIKey).CheckManagementKey(r.Context())
 	if err != nil {
 		http.Error(w, "probe OpenRouter: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	// Re-record the detected kind: a key can be upgraded (or the account's plan
+	// changed) after it was saved, and leaving a stale flag would mean deriving
+	// against a key that can't mint, or vice versa.
+	if caps.KeyValid && caps.ManagementKeyValid != cred.IsProvisioning {
+		if err := s.Store.SetOpenRouterCredential(r.Context(), id, cred.APIKey, caps.ManagementKeyValid); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	// A fresh balance while we're here — the probe is the admin's "is this
+	// working?" button, and a stale figure next to a green tick is confusing.
+	if caps.CreditKnown {
+		if err := s.Store.SetOpenRouterCredit(r.Context(), id, caps.CreditTotal, caps.CreditRemaining); err != nil &&
+			!errors.Is(err, store.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"key_valid":            caps.KeyValid,
 		"management_key_valid": caps.ManagementKeyValid,
+		"is_provisioning":      caps.ManagementKeyValid,
+		"credit_known":         caps.CreditKnown,
+		"credit_remaining":     caps.CreditRemaining,
 		"detail":               caps.Detail,
 	})
+}
+
+// detectOpenRouterKeyKind asks OpenRouter whether a key can mint other keys.
+//
+// Detection rather than declaration: the admin pastes a key and OpenRouter says
+// what it is (GET /key reports is_provisioning_key). It doubles as validation —
+// a rejected key fails here, at save time, instead of at every device's first
+// request.
+//
+// newOpenRouterClient is a field so tests don't need the network.
+func (s *Server) detectOpenRouterKeyKind(ctx context.Context, apiKey string) (bool, error) {
+	info, err := s.newOpenRouterClient(apiKey).KeySelf(ctx)
+	if errors.Is(err, openrouter.ErrUnauthorized) {
+		return false, errors.New("OpenRouter rejected this key — check it was copied in full")
+	}
+	if err != nil {
+		return false, fmt.Errorf("verify key with OpenRouter: %w", err)
+	}
+	return info.IsProvisioning, nil
+}
+
+// openRouterKeyReader is the slice of the openrouter client the admin surface
+// needs.
+type openRouterKeyReader interface {
+	KeySelf(ctx context.Context) (openrouter.KeyInfo, error)
+	CheckManagementKey(ctx context.Context) (openrouter.Capabilities, error)
+}
+
+// newOpenRouterClient builds a client for one key. Overridden in tests.
+func (s *Server) newOpenRouterClient(apiKey string) openRouterKeyReader {
+	if s.openRouterClientFor != nil {
+		return s.openRouterClientFor(apiKey)
+	}
+	return &openrouter.Client{ManagementKey: apiKey}
+}
+
+// SetOpenRouterClientFactory swaps the client constructor. Tests only.
+func (s *Server) SetOpenRouterClientFactory(f func(apiKey string) openRouterKeyReader) {
+	s.openRouterClientFor = f
 }
 
 // revokeOpenRouterAccountKeys kills every derived key for an account. With no

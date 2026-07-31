@@ -405,7 +405,8 @@ type Capabilities struct {
 	KeyValid bool
 	// ManagementKeyValid means it can additionally mint per-device keys.
 	ManagementKeyValid bool
-	// CreditRemaining is the account balance, when readable.
+	// CreditTotal / CreditRemaining are the account balance, when readable.
+	CreditTotal     float64
 	CreditRemaining float64
 	// CreditKnown distinguishes "balance is zero" from "couldn't read it".
 	CreditKnown bool
@@ -439,6 +440,7 @@ func (c *Client) CheckManagementKey(ctx context.Context) (Capabilities, error) {
 	// A balance we can't read is reported as unknown rather than as an error: the
 	// key itself is already known good, and that is the question being asked.
 	if credits, cerr := c.AccountCredits(ctx); cerr == nil {
+		caps.CreditTotal = credits.Total
 		caps.CreditRemaining = credits.Remaining()
 		caps.CreditKnown = true
 		caps.Detail += fmt.Sprintf(" · $%.2f credit remaining", credits.Remaining())
