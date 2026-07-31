@@ -1,7 +1,15 @@
 name: Release
 
-# Tag-driven release: push `vX.Y.Z` to build & upload signed .pkg + .msi as a
-# draft GitHub Release.
+# Tag-driven release: push `vX.Y.Z` to build & upload signed .pkg + .msi and
+# PUBLISH the GitHub Release immediately — every publish step below sets
+# `draft: false`, and the notes job passes `--draft=false` when editing a
+# pre-created release.
+#
+# There is deliberately no draft stage, so pushing a tag is the point of no
+# return: the release becomes `releases/latest` and the desktop app's 24h update
+# check starts offering it. To stage a release instead, mark it `--prerelease`
+# (GitHub excludes prereleases from `releases/latest`, so the update notice stays
+# quiet) and clear that once you're happy.
 #
 # ============================================================================
 # Required GitHub Secrets (signing is auto-skipped when a secret is unset, so
