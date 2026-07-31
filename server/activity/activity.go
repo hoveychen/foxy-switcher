@@ -45,10 +45,16 @@ const (
 // by the front-end's filter chips — adding a new emitter without listing it
 // here will work, but breaks discoverability.
 const (
-	TypeAccountAdded    = "account.added"
-	TypeAccountDeleted  = "account.deleted"
-	TypeAccountPaused   = "account.paused"
-	TypeAccountResumed  = "account.resumed"
+	TypeAccountAdded   = "account.added"
+	TypeAccountDeleted = "account.deleted"
+	// TypeAccountUpdated fires when an admin edits an account's policy rather
+	// than its credentials — today only the OpenRouter derivation template
+	// (model allowlist / spend cap). Worth its own event because that edit has a
+	// side effect an operator needs to see: it revokes every runtime key already
+	// derived from the account.
+	TypeAccountUpdated = "account.updated"
+	TypeAccountPaused  = "account.paused"
+	TypeAccountResumed = "account.resumed"
 	// TypeAccountNeedsReauth fires when an account's refresh_token is rejected
 	// with invalid_grant — the token is dead and the user must re-authenticate.
 	// Distinct from error.refresh (a transient/retryable failure) so the UI can
@@ -60,16 +66,16 @@ const (
 	// re-login can't fix an org-level block. A matching account.resumed event
 	// fires if a later poll succeeds (org re-enabled).
 	TypeAccountOrgDisabled = "account.org_disabled"
-	TypeCredInjected    = "cred.injected"
-	TypeCredRestored    = "cred.restored"
-	TypeCredFailed      = "cred.failed"
-	TypeTokenRefreshed  = "token.refreshed"
-	TypeUsagePolled    = "usage.polled"
-	TypeUsageBackoff   = "usage.backoff"
-	TypeDaemonStarted  = "daemon.started"
-	TypeDaemonStopped   = "daemon.stopped"
-	TypeErrorRefresh    = "error.refresh"
-	TypeErrorUsage      = "error.usage"
+	TypeCredInjected       = "cred.injected"
+	TypeCredRestored       = "cred.restored"
+	TypeCredFailed         = "cred.failed"
+	TypeTokenRefreshed     = "token.refreshed"
+	TypeUsagePolled        = "usage.polled"
+	TypeUsageBackoff       = "usage.backoff"
+	TypeDaemonStarted      = "daemon.started"
+	TypeDaemonStopped      = "daemon.stopped"
+	TypeErrorRefresh       = "error.refresh"
+	TypeErrorUsage         = "error.usage"
 )
 
 // Event is the wire / storage shape. Payload is an opaque JSON blob the UI

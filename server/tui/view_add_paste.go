@@ -35,7 +35,7 @@ func (m *model) viewAddPaste() string {
 	}
 
 	innerW := panelW - 4 // panel side borders + side padding
-	stepIndent := 11    // "Step 1   " + 1-cell breathing room
+	stepIndent := 11     // "Step 1   " + 1-cell breathing room
 	contentW := innerW - stepIndent
 	if contentW < 20 {
 		contentW = 20

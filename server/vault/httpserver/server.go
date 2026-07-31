@@ -50,6 +50,25 @@ type Server struct {
 	// without `pnpm build`, which causes those routes to fall back to the
 	// pre-merge redirect behavior (handleRoot bouncing to /admin/devices).
 	AppHandler http.Handler
+	// OpenRouter mints and revokes per-device OpenRouter runtime keys. It is
+	// deliberately NOT part of vault.Service: derived keys have no leases and
+	// remote agents must never be able to drive derivation for a *different*
+	// device, so this stays a vault-internal collaborator. Nil disables the
+	// provider entirely (no derivation, and therefore nothing to revoke).
+	OpenRouter OpenRouterKeyService
+}
+
+// OpenRouterKeyService is the vault-side derivation/revocation surface the
+// admin and agent handlers depend on. Implemented by vault.OpenRouterKeys.
+type OpenRouterKeyService interface {
+	// EnsureDeviceKey returns the device's runtime key for its authorised
+	// OpenRouter account, minting one on first call. Returns
+	// selector.ErrNoAvailable when the device isn't granted OpenRouter or no
+	// usable OpenRouter account is configured.
+	EnsureDeviceKey(ctx context.Context, deviceID string) (vault.OpenRouterGrant, error)
+	// RevokeDeviceKeys kills every runtime key minted for a device, upstream
+	// first, then locally. Idempotent.
+	RevokeDeviceKeys(ctx context.Context, deviceID string) error
 }
 
 // New constructs the handler. svc and st are non-nil. PublicBaseURL is set
@@ -86,6 +105,11 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("POST /agent/v1/leases", s.handleAcquireLease)
 	protected.HandleFunc("POST /agent/v1/leases/{id}/renew", s.handleRenewLease)
 	protected.HandleFunc("DELETE /agent/v1/leases/{id}", s.handleReleaseLease)
+	// OpenRouter is a GET with no body and no device id in the path: the
+	// device's identity comes from its bearer token, so an agent can only ever
+	// ask for its OWN key. There is no pick/acquire/renew/release counterpart —
+	// a pay-as-you-go key is not a leased resource.
+	protected.HandleFunc("GET /agent/v1/openrouter/config", s.handleOpenRouterConfig)
 	mux.Handle("/agent/v1/", s.requireBearer(protected))
 	return mux
 }
@@ -238,18 +262,19 @@ func (s *Server) handlePairPoll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.st.InsertDevice(r.Context(), store.Device{
-			ID:          deviceID,
-			Name:        p.DeviceName,
-			TokenHash:   vaultauth.HashToken(token),
-			Hostname:    p.Hostname,
-			OS:          p.OS,
-			OSVersion:   p.OSVersion,
-			Arch:        p.Arch,
-			Model:       p.Model,
-			AppVersion:  p.AppVersion,
-			ClientType:  p.ClientType,
-			AllowClaude: p.AllowClaude,
-			AllowCodex:  p.AllowCodex,
+			ID:              deviceID,
+			Name:            p.DeviceName,
+			TokenHash:       vaultauth.HashToken(token),
+			Hostname:        p.Hostname,
+			OS:              p.OS,
+			OSVersion:       p.OSVersion,
+			Arch:            p.Arch,
+			Model:           p.Model,
+			AppVersion:      p.AppVersion,
+			ClientType:      p.ClientType,
+			AllowClaude:     p.AllowClaude,
+			AllowCodex:      p.AllowCodex,
+			AllowOpenRouter: p.AllowOpenRouter,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -379,6 +404,44 @@ func (s *Server) handleUpdateTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- openrouter -----------------------------------------------------------
+
+// handleOpenRouterConfig hands the calling device its OpenRouter grant,
+// deriving one on first call. The device id is read from the bearer context and
+// never from the request, so a compromised agent can't mint or read a key for
+// another machine.
+//
+// 204 means "nothing for you" and covers both "this device isn't granted
+// OpenRouter" and "no OpenRouter account is configured" — from the agent's
+// point of view the action is the same (write no provider block, remove any it
+// previously wrote), and collapsing them avoids telling an unprivileged device
+// whether the vault has OpenRouter accounts at all.
+func (s *Server) handleOpenRouterConfig(w http.ResponseWriter, r *http.Request) {
+	if s.OpenRouter == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	devID, _ := DeviceFromContext(r.Context())
+	if devID == "" || devID == SessionDeviceID {
+		// A cookie session is an admin, not a device: it has no derived key.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	grant, err := s.OpenRouter.EnsureDeviceKey(r.Context(), devID)
+	if err != nil {
+		if errors.Is(err, selector.ErrNoAvailable) || errors.Is(err, vault.ErrNoOpenRouterAccount) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// Anything else is a real fault (upstream down, no management key, a key
+		// that isn't a provisioning key). Surface it so the device logs something an
+		// operator can act on rather than silently running without OpenRouter.
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, grant)
 }
 
 // --- leases ---------------------------------------------------------------

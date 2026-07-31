@@ -110,6 +110,7 @@ Step 2 agent routes:
 | `POST /agent/v1/leases` | AcquireLease — body: `{ account_id, device_id, ttl_ms }` |
 | `POST /agent/v1/leases/{id}/renew` | RenewLease — body: `{ ttl_ms }` |
 | `DELETE /agent/v1/leases/{id}` | ReleaseLease |
+| `GET /agent/v1/openrouter/config` | The calling device's OpenRouter grant (derived key + allowed models), or 204 |
 
 Frontend routes that previously appeared on this list (login, refresh-now, settings, dashboard, activity SSE) stay where they are under `/api/*`. The frontend talks to vault directly over HTTP regardless of deployment topology, so abstracting them through `vault.Service` would just create a parallel call path with no callers. They're documented in [architecture.md](architecture.md) and route definitions live in [server/httpapi/routes.go](../server/httpapi/routes.go).
 
@@ -125,6 +126,124 @@ Each provider's reconcile loop:
 6. Reverse-sync local CLI rotations into the vault. Claude reports its token tuple; Codex also reports the complete normalized auth document.
 
 The HTTP boundary preserves today's contract: `combined` mode runs the same handlers but skips the network hop.
+
+## OpenRouter — a provider without leases
+
+OpenRouter is in the pool alongside Claude and Codex, but almost none of the
+lease machinery applies to it, and that asymmetry is deliberate rather than an
+omission.
+
+Claude and Codex are **subscriptions**: one account has one rate-limit window,
+so two devices using it at once eat each other's quota. Hence one lease per
+account, LRU rotation, and a reconcile loop that renews.
+
+OpenRouter is **pay-as-you-go**: spend is capped per key, and concurrent use is
+harmless. Leasing it would buy nothing and cost real
+usability — devices fighting over one account, keys churning on every rotation.
+So instead of sharing one credential, **each authorised device gets its own
+derived key**.
+
+### Storage
+
+| Where | What | Reaches a device? |
+|---|---|---|
+| `accounts` row (`provider="openrouter"`) | The derivation *template*: `credential_json` holds the model list, spend cap, workspace. No secret at all. | Yes — `GET /agent/v1/accounts` serialises the row verbatim |
+| `openrouter_management_keys` | The key that mints and revokes runtime keys. | **Never.** Its own table precisely so it can't ride along on an account serialisation |
+| `device_openrouter_keys` | `(device_id, account_id)` → the derived key's hash and secret | Only the row's own device, via `/agent/v1/openrouter/config` |
+
+`key_hash` is OpenRouter's handle and the only way to revoke a key, so a local
+row is deleted only *after* the upstream key is gone. A failed revoke keeps the
+row and surfaces an error — losing the hash would leave a live credential
+nobody can kill.
+
+### Derivation is one call
+
+`POST /api/v1/keys`, and that's it. A derived key carries everything the
+per-device model needs:
+
+| Need | Field on the key |
+|---|---|
+| Per-device spend cap | `limit` + `limit_reset` (empty reset = lifetime cap) |
+| Per-device usage tracking | `usage`, `usage_daily` / `weekly` / `monthly` |
+| Per-device revocation | `DELETE /keys/{hash}` |
+
+An earlier version also created a Guardrail per device, carrying the model
+allowlist, so OpenRouter itself would reject a model outside the list. That was
+dropped. The spend cap already bounds the money, so enforcement only changed how
+much work the capped dollars bought — while costing an extra upstream object per
+device, an extra derivation step, and an extra failure mode. (That failure mode
+was not hypothetical: the assignment call was the one whose payload shape we got
+wrong.) With one object per device there is no partial state, so derivation needs
+no unwind logic at all.
+
+The model list still reaches the device — it drives the profile files, and
+therefore what appears in Fleet's picker. It is client-side visibility, not
+enforcement.
+
+> **Verified 2026-07-31** against the live API with a real provisioning key:
+> `POST /keys` returns **201** with `{"data":{"hash":…},"key":"sk-or-…"}` —
+> plaintext at the top level, returned exactly once. A `limit` with no
+> `limit_reset` is accepted as a lifetime cap. `DELETE /keys/{hash}` returns 200
+> `{"deleted":true}` and a repeat returns 404, so idempotent revocation is safe.
+> `GET /keys` succeeds for a provisioning key, which is what the admin *Test key*
+> action (`POST /api/accounts/{id}/openrouter/check`) uses to catch the one
+> misconfiguration that silently breaks everything: pasting the inference key.
+> That check is read-only and creates nothing on the operator's account.
+
+### Editing the policy revokes outstanding keys
+
+Every key already derived from an account was minted with the *old* spend cap, so
+changing it has to revoke them — otherwise the edit would apply to new devices
+only. Devices re-derive on their next sync.
+
+### Revocation actually revokes
+
+A derived key talks to OpenRouter directly and never presents the device token.
+Deleting the device row, stamping `disabled_at`, or dropping the grant therefore
+does **nothing** to it on its own. Device revoke, suspend, and
+withdraw-OpenRouter all explicitly call `DELETE /api/v1/keys/{hash}` — otherwise
+"suspended" would leave a fully working credential spending on the pool.
+
+### Device side: config files, not credentials
+
+The agent writes what codex reads, into `$CODEX_HOME`:
+
+- `config.toml` gains a `[model_providers.openrouter]` block, **edited in place**
+  between sentinel comments. It is the user's file — model, features, project
+  trust list — so it is never rewritten wholesale, and removal cuts exactly the
+  sentinel interval.
+- `or-<model>.config.toml`, one per allowed model. A provider block carries no
+  model list and codex 0.145.0 hard-rejects an inline `[profiles.x]` table, so
+  one file per model is the only way to make a model selectable. Fleet already
+  scans these; adding a model is just another file.
+
+Ownership is proven by a sentinel comment, never by filename: a file we didn't
+write is never overwritten and never deleted, no matter how well its name
+matches. A collision is reported and skipped rather than fatal.
+
+No key reaches disk. `config.toml` names a command instead:
+
+```toml
+[model_providers.openrouter.auth]
+command = "<foxy path>"
+args = ["cred", "openrouter-token"]
+```
+
+`foxy-switcher cred openrouter-token` loops back to the local daemon, which
+holds the key in memory, and prints it to stdout — codex reads the whole of
+stdout as the bearer token, so the command prints that and nothing else, and
+exits non-zero (never an empty token) when unauthorised. `env_key` was not an
+option: codex is spawned by Fleet, an environment foxy cannot reach. The
+loopback endpoint is loopback-gated and carries no auth of its own — running on
+this machine *is* the authorisation, which is sound because codex runs here too.
+
+### Not in the reconcile loop
+
+Claude and Codex need a 5s tick because leases expire and tokens rotate
+underneath them. An OpenRouter key does neither. Only the *authorisation* can
+change, so the writer polls on a 5-minute interval. Losing the grant tears the
+config down; a transient vault outage does **not** — that would drop codex's
+provider mid-session over a blip.
 
 ## Authentication (Step 3) — device flow
 
@@ -229,4 +348,6 @@ Each step lands in its own PR. After step 1, every subsequent step is "add anoth
 - **Activity bus across the wire.** Today's `activity.Bus` lives in-process and is consumed by SSE handlers. In split mode, vault is the publisher; the agent and frontend are subscribers. The existing SSE handler at `/api/activity/stream` becomes the canonical wire format; in-process subscribers wrap it. No schema change.
 - **Settings split.** Some settings are frontend-only (theme, sidebar mode). Some belong to the vault (poll interval, default thresholds). One belongs to the *agent* (`restore_native_on_quit` — it gates a local action). The new schema scopes those: vault stores vault settings; agent has its own small `agent-config.json` for restore_on_quit and vault_url.
 - **Web UI shipping.** TBD whether to embed the React build inside the vault binary (`embed.FS`) or ship it as a separate static file directory. Lean toward embed for a single self-contained binary.
+- ~~**OpenRouter guardrail availability.**~~ **Moot as of 2026-07-31.** Guardrails were verified to work on a personal account, but they were then dropped from the design: the per-key spend cap already bounds cost, so server-side model enforcement wasn't worth an extra upstream object, an extra derivation step and an extra failure mode per device. The model list is client-side visibility only.
+- **Multi-account OpenRouter pools.** Several OpenRouter accounts may be configured, but selection is deliberately not the LRU selector — it is the lowest-id active, fully-configured account, so a device keeps deriving from the same one. "Several configured, the first wins", not a load-balanced pool. Spreading devices across accounts would only make a device's key hop on unrelated pool changes; if a real need appears, it wants its own design.
 - **Backfill of existing local installs.** Combined mode reads the existing `~/.foxy-switcher/state.db` unchanged. There's no data migration — the schema is the same. Switching an existing user to vault mode means: stand up vault on a remote host, copy `state.db` over, point the agent at the URL.

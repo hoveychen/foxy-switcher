@@ -115,6 +115,36 @@ func (c *Client) PickProviderForDevice(ctx context.Context, _ time.Time, _ strin
 	return c.pickProvider(ctx, provider)
 }
 
+// OpenRouterConfig fetches this device's OpenRouter grant. Deliberately not
+// part of vault.Service: OpenRouter has no lease lifecycle for the coordinator
+// to drive, and the agent's OpenRouter writer calls this directly on
+// authorisation changes rather than every reconcile tick.
+//
+// The device is identified by the bearer token, so there is no device
+// parameter — an agent can only ever ask for its own key.
+//
+// 204 (not granted, or no account configured) maps to selector.ErrNoAvailable,
+// matching how the Claude/Codex pools report "nothing for you" so callers have
+// one branch to handle.
+func (c *Client) OpenRouterConfig(ctx context.Context) (*vault.OpenRouterGrant, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/agent/v1/openrouter/config", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, selector.ErrNoAvailable
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeError(resp)
+	}
+	var grant vault.OpenRouterGrant
+	if err := json.NewDecoder(resp.Body).Decode(&grant); err != nil {
+		return nil, fmt.Errorf("decode openrouter config: %w", err)
+	}
+	return &grant, nil
+}
+
 func (c *Client) MarkUsed(ctx context.Context, id int64) error {
 	return c.postNoBody(ctx, "/agent/v1/accounts/"+strconv.FormatInt(id, 10)+"/used")
 }

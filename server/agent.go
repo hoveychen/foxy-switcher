@@ -76,6 +76,7 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	suppressCredInject := opts.NoCredInject
 	var cc *credinject.Coordinator
 	var codexRemote *openai.RemoteManager
+	var orWriter *openRouterWriter
 	if !suppressCredInject {
 		backend, err := credinject.NewBackend()
 		if err != nil {
@@ -115,6 +116,17 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 			codexRemote.Start(ctx)
 			defer codexRemote.Stop()
 		}
+		// OpenRouter writes codex CONFIG files rather than credentials, so it
+		// hangs off its own writer instead of credinject/openai. It also stays out
+		// of the reconcile loop by design — see openrouter_agent.go.
+		if home, homeErr := openai.DefaultCodexHome(); homeErr != nil {
+			logger.Printf("warning: resolve CODEX_HOME: %v (OpenRouter disabled)", homeErr)
+		} else if exe, exeErr := resolveExePath(); exeErr != nil {
+			logger.Printf("warning: resolve own executable path: %v (OpenRouter disabled)", exeErr)
+		} else {
+			orWriter = newOpenRouterWriter(client, home, exe, logger)
+			orWriter.Start(ctx)
+		}
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
 				logger.Printf("warning: restore native credentials: %v", err)
@@ -145,6 +157,10 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 	defer os.Remove(portFile)
 
 	mux := http.NewServeMux()
+	// Loopback-only: this hands out a live third-party API key, and the agent
+	// listener may be bound beyond 127.0.0.1. codex runs on the same machine, so
+	// loopback is all it ever needs.
+	mux.HandleFunc("GET /api/cred/openrouter-token", loopbackOnly(openRouterTokenHandler(orWriter)))
 	mux.HandleFunc("GET /api/cred/status", func(w http.ResponseWriter, _ *http.Request) {
 		statusRaw, _ := json.Marshal(cc.Status())
 		var status map[string]any
@@ -232,6 +248,9 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		"POST /api/accounts/import-codex",
 		"POST /api/accounts/codex-login",
 		"POST /api/accounts/codex-login/callback",
+		"POST /api/accounts/openrouter",
+		"POST /api/accounts/{id}/openrouter",
+		"POST /api/accounts/{id}/openrouter/check",
 		"DELETE /api/accounts/{id}",
 		"POST /api/accounts/{id}/pause",
 		"POST /api/accounts/{id}/resume",

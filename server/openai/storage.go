@@ -314,6 +314,13 @@ func readCredentialMode(configPath string) string {
 	return "auto"
 }
 
+// DefaultCodexHome resolves $CODEX_HOME (falling back to ~/.codex) — the
+// directory holding both codex's credentials and its config.toml / profile
+// files. Exported because the OpenRouter writer needs the same location for a
+// completely different purpose (config, not credentials), and two independent
+// resolutions could drift apart.
+func DefaultCodexHome() (string, error) { return defaultCodexHome() }
+
 func defaultCodexHome() (string, error) {
 	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
 		return filepath.Clean(home), nil

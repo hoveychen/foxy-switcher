@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -200,10 +201,11 @@ type apiDeviceRow struct {
 	// (UnixMilli) for a suspended one. The DevicesPage renders a
 	// "suspended" badge and flips the action button to Resume when != 0.
 	DisabledAt int64 `json:"disabled_at"`
-	// AllowClaude / AllowCodex is the per-device provider allowlist the
-	// DevicesPage renders as toggles.
-	AllowClaude bool `json:"allow_claude"`
-	AllowCodex  bool `json:"allow_codex"`
+	// AllowClaude / AllowCodex / AllowOpenRouter is the per-device provider
+	// allowlist the DevicesPage renders as toggles.
+	AllowClaude     bool `json:"allow_claude"`
+	AllowCodex      bool `json:"allow_codex"`
+	AllowOpenRouter bool `json:"allow_openrouter"`
 	// CurrentLease names the account this device is currently leasing,
 	// joined with the account name so the admin DevicesPage can render
 	// "currently using X (12 min left)" without a second query. Nil when
@@ -243,20 +245,21 @@ func (s *Server) handleAPIDevicesList(w http.ResponseWriter, r *http.Request) {
 	out := make([]apiDeviceRow, 0, len(devs))
 	for _, d := range devs {
 		row := apiDeviceRow{
-			ID:         d.ID,
-			Name:       d.Name,
-			Hostname:   d.Hostname,
-			OS:         d.OS,
-			OSVersion:  d.OSVersion,
-			Arch:       d.Arch,
-			Model:      d.Model,
-			AppVersion: d.AppVersion,
-			ClientType: d.ClientType,
-			CreatedAt:   d.CreatedAt,
-			LastSeenAt:  d.LastSeenAt,
-			DisabledAt:  d.DisabledAt,
-			AllowClaude: d.AllowClaude,
-			AllowCodex:  d.AllowCodex,
+			ID:              d.ID,
+			Name:            d.Name,
+			Hostname:        d.Hostname,
+			OS:              d.OS,
+			OSVersion:       d.OSVersion,
+			Arch:            d.Arch,
+			Model:           d.Model,
+			AppVersion:      d.AppVersion,
+			ClientType:      d.ClientType,
+			CreatedAt:       d.CreatedAt,
+			LastSeenAt:      d.LastSeenAt,
+			DisabledAt:      d.DisabledAt,
+			AllowClaude:     d.AllowClaude,
+			AllowCodex:      d.AllowCodex,
+			AllowOpenRouter: d.AllowOpenRouter,
 		}
 		if l, ok := leaseByDevice[d.ID]; ok {
 			row.CurrentLease = &apiDeviceLease{
@@ -285,6 +288,15 @@ func (s *Server) handleAPIDevicesRevoke(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, errors.New("id required"))
 		return
 	}
+	// Kill the device's OpenRouter keys BEFORE dropping the row. Order matters:
+	// the mapping rows are the only record of which upstream keys belong to this
+	// device, so deleting the device first would strand them. A revoke failure
+	// aborts the whole operation for the same reason — better a device that is
+	// still listed than a live third-party key nobody can find.
+	if err := s.revokeDeviceOpenRouter(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if err := s.st.DeleteDevice(r.Context(), req.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -293,9 +305,16 @@ func (s *Server) handleAPIDevicesRevoke(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleAPIDevicesSuspend temporarily kicks a device without deleting it:
-// it stamps disabled_at (so BearerAuth 401s the token) and releases any
-// leases the device holds so the accounts return to the pool immediately.
-// The row and token_hash survive, so a later Resume needs no re-pair.
+// it stamps disabled_at (so BearerAuth 401s the token), releases any leases the
+// device holds so the accounts return to the pool immediately, and revokes its
+// OpenRouter keys. The row and token_hash survive, so a later Resume needs no
+// re-pair.
+//
+// The OpenRouter revoke is not optional here. A derived runtime key talks to
+// OpenRouter directly and never presents the device token, so disabled_at does
+// nothing to it — without revocation a "suspended" device would keep spending
+// on the pool indefinitely. Resume re-derives a fresh key on the device's next
+// request, which is one upstream round trip, so this costs little.
 func (s *Server) handleAPIDevicesSuspend(w http.ResponseWriter, r *http.Request) {
 	var req apiRevokeReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -319,6 +338,10 @@ func (s *Server) handleAPIDevicesSuspend(w http.ResponseWriter, r *http.Request)
 	// that, but we surface it as 500 so the operator knows the pool didn't
 	// fully free — the lease will still expire on its own TTL.
 	if _, err := s.st.ReleaseDeviceLeases(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.revokeDeviceOpenRouter(r.Context(), req.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -352,6 +375,11 @@ type apiDeviceProvidersReq struct {
 	ID          string `json:"id"`
 	AllowClaude bool   `json:"allow_claude"`
 	AllowCodex  bool   `json:"allow_codex"`
+	// AllowOpenRouter is a pointer so a DevicesPage build that predates the
+	// OpenRouter toggle (and therefore omits the field) can't silently revoke a
+	// grant the admin made — omitted means "leave as-is", not false. Claude /
+	// Codex keep their plain-bool shape: every shipped client sends both.
+	AllowOpenRouter *bool `json:"allow_openrouter"`
 }
 
 // handleAPIDevicesProviders updates a device's provider allowlist (the choice
@@ -369,7 +397,23 @@ func (s *Server) handleAPIDevicesProviders(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, errors.New("id required"))
 		return
 	}
-	if err := s.st.SetDeviceProviders(r.Context(), req.ID, req.AllowClaude, req.AllowCodex); err != nil {
+	// Resolve the omitted-field case against the row's current grant.
+	allowOpenRouter := false
+	if req.AllowOpenRouter != nil {
+		allowOpenRouter = *req.AllowOpenRouter
+	} else {
+		cur, err := s.st.FindDevice(r.Context(), req.ID)
+		if err != nil {
+			if notFoundIs(err) {
+				writeError(w, http.StatusNotFound, errors.New("device not found"))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		allowOpenRouter = cur.AllowOpenRouter
+	}
+	if err := s.st.SetDeviceProviders(r.Context(), req.ID, req.AllowClaude, req.AllowCodex, allowOpenRouter); err != nil {
 		if notFoundIs(err) {
 			writeError(w, http.StatusNotFound, errors.New("device not found"))
 			return
@@ -381,7 +425,28 @@ func (s *Server) handleAPIDevicesProviders(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// OpenRouter holds no lease, so ReleaseDeviceLeases above does nothing for
+	// it. Withdrawing the grant instead has to kill the device's derived key
+	// upstream — otherwise the key keeps working forever and "revoked" is a lie.
+	if !allowOpenRouter {
+		if err := s.revokeDeviceOpenRouter(r.Context(), req.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// revokeDeviceOpenRouter kills every OpenRouter runtime key minted for a
+// device, both upstream and in the local mapping table. A nil OpenRouter field
+// (combined-mode builds, tests that don't exercise the provider) makes this a
+// no-op — but only safely so, because with no revoker configured no key could
+// have been derived in the first place.
+func (s *Server) revokeDeviceOpenRouter(ctx context.Context, deviceID string) error {
+	if s.OpenRouter == nil {
+		return nil
+	}
+	return s.OpenRouter.RevokeDeviceKeys(ctx, deviceID)
 }
 
 type apiRenameReq struct {
@@ -456,8 +521,9 @@ type apiPairResolveReq struct {
 	// Provider allowlist chosen by the admin at approval. Pointers so an
 	// omitted field falls back to the default (claude on, codex off) rather
 	// than a zero-value false.
-	AllowClaude *bool `json:"allow_claude"`
-	AllowCodex  *bool `json:"allow_codex"`
+	AllowClaude     *bool `json:"allow_claude"`
+	AllowCodex      *bool `json:"allow_codex"`
+	AllowOpenRouter *bool `json:"allow_openrouter"`
 }
 
 type apiPairResolveResp struct {
@@ -485,9 +551,10 @@ func (s *Server) handleAPIPairResolve(w http.ResponseWriter, r *http.Request) {
 	case "approve":
 		token := vaultauth.NewToken()
 		deviceID := vaultauth.NewID()
-		allowClaude := req.AllowClaude == nil || *req.AllowClaude // default on
-		allowCodex := req.AllowCodex != nil && *req.AllowCodex     // default off
-		if err := s.st.ApprovePairing(r.Context(), code, deviceID, token, allowClaude, allowCodex); err != nil {
+		allowClaude := req.AllowClaude == nil || *req.AllowClaude             // default on
+		allowCodex := req.AllowCodex != nil && *req.AllowCodex                // default off
+		allowOpenRouter := req.AllowOpenRouter != nil && *req.AllowOpenRouter // default off
+		if err := s.st.ApprovePairing(r.Context(), code, deviceID, token, allowClaude, allowCodex, allowOpenRouter); err != nil {
 			if notFoundIs(err) {
 				writeError(w, http.StatusNotFound, errors.New("code expired or already used"))
 				return

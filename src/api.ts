@@ -145,7 +145,7 @@ export interface UsageWindow {
 
 export interface Account {
   id: number;
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "openrouter";
   in_use: boolean;
   name: string;
   status: string;
@@ -201,6 +201,35 @@ export interface Account {
   //   when name is empty.
   // - acquired_at / expires_at are unix millis.
   lease?: AccountLease;
+  // Derivation template for provider="openrouter" rows; absent for every other
+  // provider. Never carries the management key — only whether one is on file.
+  openrouter?: OpenRouterConfig;
+}
+
+// OpenRouterConfig is what an admin edits per OpenRouter account: which models
+// each device offers (one codex profile file each) and the spend cap every
+// derived device key carries.
+export interface OpenRouterConfig {
+  allowed_models: string[];
+  limit_usd?: number;
+  // "" | "daily" | "weekly" | "monthly"; empty means a lifetime cap.
+  limit_reset?: string;
+  workspace_id?: string;
+  // The management key itself is write-only over the API; this is how the UI
+  // shows whether one is configured.
+  has_management_key: boolean;
+  // How many devices currently hold a key derived from this account — the blast
+  // radius of a policy edit, which revokes all of them.
+  derived_key_count: number;
+}
+
+// OpenRouterCapabilities is the result of verifying an account's stored
+// credential really is a provisioning key — the one misconfiguration that
+// silently breaks everything (pasting the inference key instead). The check is
+// read-only; it lists keys rather than creating anything.
+export interface OpenRouterCapabilities {
+  management_key_valid: boolean;
+  detail: string;
 }
 
 export interface AccountLease {
@@ -700,6 +729,44 @@ export const apiClient = {
   // Claude. Unlike importCodex it needs no local Codex CLI, so it works in the
   // vault web UI; unlike the old device-code flow it doesn't depend on the
   // workspace's device-code toggle.
+  // OpenRouter accounts have no OAuth flow: the admin supplies a management key
+  // and a policy, and each authorised device later derives its own capped
+  // runtime key from it in a single upstream call.
+  createOpenRouterAccount: (body: {
+    name: string;
+    allowed_models: string[];
+    limit_usd: number;
+    limit_reset: string;
+    workspace_id?: string;
+    management_key: string;
+  }) =>
+    api<{ account: Account }>("/api/accounts/openrouter", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // Editing the spend cap revokes every key already derived from this account —
+  // each was minted with the old cap. Omit management_key to keep the stored one.
+  updateOpenRouterAccount: (
+    id: number,
+    body: {
+      allowed_models: string[];
+      limit_usd: number;
+      limit_reset: string;
+      workspace_id?: string;
+      management_key?: string;
+    },
+  ) =>
+    api<{ account: Account }>(`/api/accounts/${id}/openrouter`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // Verifies the stored credential is really a provisioning key, not the
+  // inference key. Read-only — it lists keys rather than creating anything.
+  checkOpenRouterAccount: (id: number) =>
+    api<OpenRouterCapabilities>(`/api/accounts/${id}/openrouter/check`, {
+      method: "POST",
+    }),
+
   startCodexLogin: () =>
     api<{ authorize_url: string; state: string }>("/api/accounts/codex-login", {
       method: "POST",
