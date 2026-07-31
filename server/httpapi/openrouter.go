@@ -103,6 +103,16 @@ func (r *openRouterAccountReq) normalise() error {
 	if r.LimitUSD < 0 {
 		return errors.New("limit_usd cannot be negative")
 	}
+	// Verified against the live API: a guardrail carrying limit_usd must also
+	// carry reset_interval ("Reset interval is required when setting a budget
+	// limit"). OpenRouter has no lifetime budget window, so this policy simply
+	// cannot be expressed. Reject it here rather than letting every device's
+	// derivation fail later with a raw upstream validation error, long after the
+	// save that caused it.
+	if r.LimitUSD > 0 && r.LimitReset == "" {
+		return errors.New("a spend cap needs limit_reset (daily, weekly or monthly) — " +
+			"OpenRouter has no lifetime budget window")
+	}
 	return nil
 }
 

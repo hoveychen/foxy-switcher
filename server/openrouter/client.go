@@ -10,14 +10,26 @@
 // create-guardrail → create-key → assign, and a failure partway has to unwind
 // (see DeriveDeviceKey).
 //
-// UNVERIFIED WIRE SHAPES. The request/response field names below come from the
-// design contract's reading of OpenRouter's docs, not from a live call — this
-// package was written without a management key on hand. Response decoding is
-// therefore deliberately lenient (it accepts both a bare object and a
-// {"data":{…}} envelope, and looks for the key secret in either position), and
-// CheckCapabilities exists so an operator can validate a real key against a
-// real account before any of this is relied on. Treat a first live run as the
-// verification step, not as a regression.
+// WIRE SHAPES VERIFIED against the live API on 2026-07-31 with a real
+// provisioning key. Confirmed:
+//
+//   - Guardrails ARE available on a personal account — the design's open
+//     question. `POST /guardrails` returned 201, so ErrGuardrailsUnavailable is
+//     a fallback that has not been observed in practice.
+//   - Creation returns 201 (not 200); `POST /keys` answers
+//     {"data":{"hash":…}, "key":"sk-or-…"} with the plaintext at top level.
+//   - Assignment wants {"key_hashes":[…]} — plural, an array.
+//   - A guardrail with limit_usd MUST carry reset_interval; `/keys` does not
+//     (a `limit` with no `limit_reset` is a lifetime cap on that key).
+//   - allowed_models entries must be real model slugs; "openrouter/auto" is
+//     rejected.
+//   - DELETE returns 200 {"deleted":true}; a repeat returns 404.
+//
+// The first three of those were wrong in the original implementation and were
+// only caught by making the calls — the assignment field name in particular
+// would have made every derivation fail. live_contract_test.go pins each one.
+// Response decoding stays lenient about the data-envelope vs flat placement of
+// the key secret, since only the observed shape is proven.
 package openrouter
 
 import (
@@ -182,6 +194,22 @@ type GuardrailSpec struct {
 	ResetInterval string `json:"reset_interval,omitempty"`
 }
 
+// validate rejects a spec OpenRouter would refuse, before spending a round trip
+// on it. A budget limit with no reset interval is the one combination
+// /guardrails rejects outright ("Reset interval is required when setting a
+// budget limit"), and it is reachable from the UI, so the error names the field
+// to fix rather than surfacing a raw Zod dump at first derivation.
+//
+// This is guardrail-specific: /keys happily accepts a `limit` with no
+// `limit_reset`, which is a lifetime cap on that key (verified).
+func (s GuardrailSpec) validate() error {
+	if s.LimitUSD > 0 && strings.TrimSpace(s.ResetInterval) == "" {
+		return errors.New("openrouter: a spend cap needs a reset interval " +
+			"(daily/weekly/monthly) — OpenRouter has no lifetime budget window")
+	}
+	return nil
+}
+
 // idResponse decodes an id from either a bare object or a {"data":{…}}
 // envelope. Both shapes appear across OpenRouter's management endpoints.
 type idResponse struct {
@@ -205,6 +233,9 @@ func (r idResponse) id() string {
 func (c *Client) CreateGuardrail(ctx context.Context, spec GuardrailSpec) (string, error) {
 	if strings.TrimSpace(spec.Name) == "" {
 		return "", errors.New("openrouter: guardrail name required")
+	}
+	if err := spec.validate(); err != nil {
+		return "", err
 	}
 	var resp idResponse
 	if err := c.do(ctx, "create guardrail", http.MethodPost, "/guardrails", spec, &resp); err != nil {
@@ -240,7 +271,9 @@ func (c *Client) AssignGuardrailToKey(ctx context.Context, guardrailID, keyHash 
 	if guardrailID == "" || keyHash == "" {
 		return errors.New("openrouter: guardrail id and key hash required")
 	}
-	body := map[string]any{"key_hash": keyHash}
+	// key_hashes, plural and an array — verified against the live API. The
+	// singular form returns 400 ZodError "expected array, received undefined".
+	body := map[string]any{"key_hashes": []string{keyHash}}
 	err := c.do(ctx, "assign guardrail", http.MethodPost,
 		"/guardrails/"+guardrailID+"/assignments/keys", body, nil)
 	if unavailable(err) {
@@ -399,6 +432,16 @@ type DerivedKey struct {
 //     but is unconstrained, so we delete both and return the error rather than
 //     shipping a key that looks restricted and isn't.
 func (c *Client) DeriveDeviceKey(ctx context.Context, spec DeriveSpec) (DerivedKey, error) {
+	// Validate before touching upstream: a refusal partway through would mean
+	// unwinding state we never needed to create. Only when a guardrail is
+	// actually going to be created, though — verified that /keys accepts a
+	// `limit` with no `limit_reset` (a lifetime cap on the key is fine); it is
+	// specifically /guardrails that rejects that combination.
+	if len(spec.AllowedModels) > 0 {
+		if err := (GuardrailSpec{LimitUSD: spec.LimitUSD, ResetInterval: spec.LimitReset}).validate(); err != nil {
+			return DerivedKey{}, err
+		}
+	}
 	var guardrailID string
 	enforced := false
 	if len(spec.AllowedModels) > 0 {
@@ -497,11 +540,12 @@ type Capabilities struct {
 // distinctively and deleted in the same call; a leaked one is inert (assigned
 // to no key).
 func (c *Client) CheckCapabilities(ctx context.Context) (Capabilities, error) {
-	id, err := c.CreateGuardrail(ctx, GuardrailSpec{
-		Name:          "foxy-capability-probe",
-		AllowedModels: []string{"openrouter/auto"},
-		LimitUSD:      1,
-	})
+	// Name only. Verified: a name-only guardrail creates fine (201), whereas the
+	// obvious richer probe fails for reasons that have nothing to do with
+	// capability — "openrouter/auto" is rejected as an allowed_models entry, and
+	// a limit_usd without a reset_interval is rejected too. Every extra field is
+	// another way for the answer to come back as a spurious validation error.
+	id, err := c.CreateGuardrail(ctx, GuardrailSpec{Name: "foxy-capability-probe"})
 	switch {
 	case err == nil:
 		if delErr := c.DeleteGuardrail(ctx, id); delErr != nil {

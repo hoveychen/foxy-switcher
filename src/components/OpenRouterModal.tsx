@@ -66,11 +66,17 @@ export function OpenRouterModal({
     .filter(Boolean);
   const parsedLimit = limitUSD.trim() === "" ? 0 : Number(limitUSD);
   const limitInvalid = Number.isNaN(parsedLimit) || parsedLimit < 0;
+  // OpenRouter cannot express a never-resetting budget: a guardrail carrying
+  // limit_usd must also carry reset_interval. Block the combination here rather
+  // than letting the save 400 — the two fields are right next to each other, so
+  // the fix is obvious in place.
+  const resetMissing = parsedLimit > 0 && limitReset === "";
   const derivedKeys = account?.openrouter?.derived_key_count ?? 0;
 
   const canSubmit =
     !busy &&
     !limitInvalid &&
+    !resetMissing &&
     parsedModels.length > 0 &&
     (editing ? true : name.trim() !== "" && managementKey.trim() !== "");
 
@@ -196,11 +202,16 @@ export function OpenRouterModal({
               disabled={busy}
             >
               {LIMIT_RESETS.map((v) => (
-                <option key={v || "lifetime"} value={v}>
+                <option key={v || "lifetime"} value={v} disabled={v === "" && parsedLimit > 0}>
                   {t(`openrouter.reset.${v || "lifetime"}`)}
                 </option>
               ))}
             </select>
+            {resetMissing && (
+              <span className="text-meta or-hint or-hint-error">
+                {t("openrouter.field.reset_required")}
+              </span>
+            )}
           </label>
         </div>
 

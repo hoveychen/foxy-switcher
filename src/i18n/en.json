@@ -564,5 +564,6 @@
   "openrouter.check_hint": "Checks the key is a management key and whether this plan enforces the model allowlist server-side.",
   "openrouter.create": "Add account",
   "openrouter.save": "Save policy",
-  "openrouter.cancel": "Cancel"
+  "openrouter.cancel": "Cancel",
+  "openrouter.field.reset_required": "A spend cap needs a reset interval — OpenRouter has no lifetime budget window."
 }

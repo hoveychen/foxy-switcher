@@ -163,22 +163,36 @@ separate Guardrail. A constrained device key is therefore:
 
 1. `POST /api/v1/guardrails` — `{name, allowed_models, limit_usd, reset_interval}`
 2. `POST /api/v1/keys` — `{name: "foxy-<device-id>", limit, expires_at}`
-3. `POST /api/v1/guardrails/{id}/assignments/keys`
+3. `POST /api/v1/guardrails/{id}/assignments/keys` — `{key_hashes: [hash]}`
 
 Every partial failure leaves live upstream state and is unwound: a failed step 2
 deletes the guardrail; a failed step 3 deletes **both**, because at that point a
 live *unconstrained* key exists and shipping it would record a restriction that
 isn't there.
 
-> **Unverified prerequisite.** Whether guardrails require a team/org plan has
-> not been confirmed against a real account. `402/403/404` on `/guardrails` maps
-> to `ErrGuardrailsUnavailable`, which is **fatal by default** — silently
-> falling back would mint an unrestricted key. Degrading to an advisory
-> allowlist is opt-in and additionally requires a spend cap. Run the capability
-> probe (Accounts → an OpenRouter account → *Test key*, or
-> `POST /api/accounts/{id}/openrouter/check`) against a real management key to
-> settle it. The wire shapes above come from documentation, not a live call;
-> response decoding is lenient accordingly.
+> **Verified 2026-07-31** against the live API with a real provisioning key:
+> **guardrails are available on a personal account** — `POST /guardrails`
+> returned 201. The design's one open prerequisite is settled.
+>
+> Three details only the live run revealed, each of which was wrong in the first
+> implementation (see `openrouter/live_contract_test.go`):
+>
+> - Assignment takes `{"key_hashes":[…]}` — plural, an array. The singular form
+>   400s, and since a failed assignment is fatal, **every** derivation would
+>   have failed.
+> - A guardrail carrying `limit_usd` must also carry `reset_interval`; there is
+>   no lifetime budget window. `/keys` is different — a `limit` with no
+>   `limit_reset` is a valid lifetime cap on that key. The admin API now rejects
+>   the impossible combination at save time.
+> - `allowed_models` entries must be real model slugs; `openrouter/auto` is
+>   rejected. The capability probe therefore sends a name-only guardrail, so its
+>   answer can't be muddied by an unrelated validation error.
+>
+> `ErrGuardrailsUnavailable` (402/403/404) remains as a fallback but has not been
+> observed. It is **fatal by default** — silently degrading would mint an
+> unrestricted key; degrading is opt-in and additionally requires a spend cap.
+> Re-run the probe against any new account via Accounts → *Test key*, or
+> `POST /api/accounts/{id}/openrouter/check`.
 
 ### The allowlist is one source of truth
 
@@ -343,6 +357,6 @@ Each step lands in its own PR. After step 1, every subsequent step is "add anoth
 - **Activity bus across the wire.** Today's `activity.Bus` lives in-process and is consumed by SSE handlers. In split mode, vault is the publisher; the agent and frontend are subscribers. The existing SSE handler at `/api/activity/stream` becomes the canonical wire format; in-process subscribers wrap it. No schema change.
 - **Settings split.** Some settings are frontend-only (theme, sidebar mode). Some belong to the vault (poll interval, default thresholds). One belongs to the *agent* (`restore_native_on_quit` — it gates a local action). The new schema scopes those: vault stores vault settings; agent has its own small `agent-config.json` for restore_on_quit and vault_url.
 - **Web UI shipping.** TBD whether to embed the React build inside the vault binary (`embed.FS`) or ship it as a separate static file directory. Lean toward embed for a single self-contained binary.
-- **OpenRouter guardrail availability.** See the unverified-prerequisite note above: whether guardrails need a team/org plan is still unconfirmed against a live account. If they turn out to be unavailable, the model allowlist degrades to client-side visibility plus the per-key spend cap, and `guardrail_enforced` on the grant reports that so the UI can say so.
+- ~~**OpenRouter guardrail availability.**~~ **Settled 2026-07-31**: guardrails work on a personal account (201 on create). The degraded path is retained for accounts where they turn out not to be, and `guardrail_enforced` on the grant reports which one applied so the UI never implies enforcement that isn't there.
 - **Multi-account OpenRouter pools.** Several OpenRouter accounts may be configured, but selection is deliberately not the LRU selector — it is the lowest-id active, fully-configured account, so a device keeps deriving from the same one. "Several configured, the first wins", not a load-balanced pool. Spreading devices across accounts would only make a device's key hop on unrelated pool changes; if a real need appears, it wants its own design.
 - **Backfill of existing local installs.** Combined mode reads the existing `~/.foxy-switcher/state.db` unchanged. There's no data migration — the schema is the same. Switching an existing user to vault mode means: stand up vault on a remote host, copy `state.db` over, point the agent at the URL.

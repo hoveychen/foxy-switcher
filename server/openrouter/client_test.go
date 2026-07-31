@@ -151,8 +151,10 @@ func TestDeriveDeviceKeyRunsThreeStepsAndAuthenticates(t *testing.T) {
 	if _, ok := seen[1].Body["expires_at"]; ok {
 		t.Fatalf("key body carries expires_at %v for a zero time", seen[1].Body["expires_at"])
 	}
-	if seen[2].Body["key_hash"] != "kh-1" {
-		t.Fatalf("assignment body = %+v, want key_hash", seen[2].Body)
+	// key_hashes, plural and an array — see live_contract_test.go.
+	hashes, _ := seen[2].Body["key_hashes"].([]any)
+	if len(hashes) != 1 || hashes[0] != "kh-1" {
+		t.Fatalf("assignment body = %+v, want key_hashes:[kh-1]", seen[2].Body)
 	}
 }
 
@@ -172,6 +174,9 @@ func TestDeriveDeviceKeySendsExpiryWhenSet(t *testing.T) {
 
 func TestDeriveDeviceKeySkipsGuardrailWhenNoModelsRequested(t *testing.T) {
 	c, f := newFake(t, happyHandler)
+	// No allowlist means no guardrail, and /keys accepts a lifetime cap (a
+	// `limit` with no `limit_reset`) — so this must NOT trip the guardrail-only
+	// reset-interval rule.
 	got, err := c.DeriveDeviceKey(context.Background(), DeriveSpec{
 		KeyName: "foxy-dev-1", LimitUSD: 5,
 	})
@@ -197,7 +202,7 @@ func TestDeriveDeviceKeyDeletesGuardrailWhenKeyCreationFails(t *testing.T) {
 
 	if _, err := c.DeriveDeviceKey(context.Background(), DeriveSpec{
 		KeyName: "foxy-dev-1", GuardrailName: "foxy-dev-1",
-		AllowedModels: []string{"a/b"}, LimitUSD: 5,
+		AllowedModels: []string{"a/b"}, LimitUSD: 5, LimitReset: "monthly",
 	}); err == nil {
 		t.Fatal("DeriveDeviceKey must fail when key creation fails")
 	}
@@ -222,7 +227,7 @@ func TestDeriveDeviceKeyUnwindsWhenAssignmentFails(t *testing.T) {
 
 	if _, err := c.DeriveDeviceKey(context.Background(), DeriveSpec{
 		KeyName: "foxy-dev-1", GuardrailName: "foxy-dev-1",
-		AllowedModels: []string{"a/b"}, LimitUSD: 5,
+		AllowedModels: []string{"a/b"}, LimitUSD: 5, LimitReset: "monthly",
 	}); err == nil {
 		t.Fatal("DeriveDeviceKey must fail when the guardrail can't be attached")
 	}
@@ -303,7 +308,7 @@ func TestGuardrailsUnavailableIsFatalUnlessExplicitlyAllowed(t *testing.T) {
 		c, f := newFake(t, guardrailsUnavailable(status))
 		_, err := c.DeriveDeviceKey(context.Background(), DeriveSpec{
 			KeyName: "foxy-dev-1", GuardrailName: "foxy-dev-1",
-			AllowedModels: []string{"a/b"}, LimitUSD: 5,
+			AllowedModels: []string{"a/b"}, LimitUSD: 5, LimitReset: "monthly",
 		})
 		if !errors.Is(err, ErrGuardrailsUnavailable) {
 			t.Fatalf("status %d: err = %v, want ErrGuardrailsUnavailable", status, err)

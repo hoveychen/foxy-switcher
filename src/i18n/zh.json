@@ -564,5 +564,6 @@
   "openrouter.check_hint": "检查这把密钥是否是管理密钥，以及该套餐是否真的在服务端强制模型白名单。",
   "openrouter.create": "添加账号",
   "openrouter.save": "保存策略",
-  "openrouter.cancel": "取消"
+  "openrouter.cancel": "取消",
+  "openrouter.field.reset_required": "设了额度上限就必须选重置周期——OpenRouter 没有「不重置」的预算窗口。"
 }

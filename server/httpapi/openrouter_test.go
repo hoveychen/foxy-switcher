@@ -296,3 +296,30 @@ func TestAccountListOmitsOpenRouterBlockForOtherProviders(t *testing.T) {
 		}
 	}
 }
+
+// A spend cap with no reset interval is a policy OpenRouter cannot express:
+// /guardrails rejects it outright (verified live). Catching it at save time
+// means the operator learns immediately, instead of every device's derivation
+// failing later with a raw upstream validation error.
+func TestSpendCapWithoutResetIntervalIsRejectedAtSaveTime(t *testing.T) {
+	srv, _ := newOpenRouterServer(t)
+	w := doJSON(t, srv, http.MethodPost, "/api/accounts/openrouter", map[string]any{
+		"name": "pool", "management_key": "sk-or-mgmt",
+		"allowed_models": []string{"a/b"},
+		"limit_usd":      25, "limit_reset": "",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "limit_reset") {
+		t.Fatalf("error should name the field to fix: %s", w.Body.String())
+	}
+
+	// No cap at all is fine without a reset interval.
+	if w := doJSON(t, srv, http.MethodPost, "/api/accounts/openrouter", map[string]any{
+		"name": "pool2", "management_key": "sk-or-mgmt",
+		"allowed_models": []string{"a/b"},
+	}); w.Code != http.StatusOK {
+		t.Fatalf("uncapped account rejected: %d %s", w.Code, w.Body.String())
+	}
+}
