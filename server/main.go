@@ -379,6 +379,12 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	defer rf.Stop()
 	up.Start(ctx)
 	defer up.Stop()
+	// OpenRouter balances. Vault-side because it needs the account credential,
+	// and slower than the usage poller because a balance moves only as fast as
+	// real spend. Costs nothing when no OpenRouter account is configured.
+	creditPoller := vault.NewCreditPoller(st, logger)
+	creditPoller.Start(ctx)
+	defer creditPoller.Stop()
 
 	// Lease sweeper: GC expired rows so leases_account_id_uniq stays
 	// unblocked for the next AcquireLease attempt. 30s matches the
