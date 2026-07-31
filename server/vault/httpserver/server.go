@@ -50,6 +50,25 @@ type Server struct {
 	// without `pnpm build`, which causes those routes to fall back to the
 	// pre-merge redirect behavior (handleRoot bouncing to /admin/devices).
 	AppHandler http.Handler
+	// OpenRouter mints and revokes per-device OpenRouter runtime keys. It is
+	// deliberately NOT part of vault.Service: derived keys have no leases and
+	// remote agents must never be able to drive derivation for a *different*
+	// device, so this stays a vault-internal collaborator. Nil disables the
+	// provider entirely (no derivation, and therefore nothing to revoke).
+	OpenRouter OpenRouterKeyService
+}
+
+// OpenRouterKeyService is the vault-side derivation/revocation surface the
+// admin and agent handlers depend on. Implemented by vault.OpenRouterKeys.
+type OpenRouterKeyService interface {
+	// EnsureDeviceKey returns the device's runtime key for its authorised
+	// OpenRouter account, minting one on first call. Returns
+	// selector.ErrNoAvailable when the device isn't granted OpenRouter or no
+	// usable OpenRouter account is configured.
+	EnsureDeviceKey(ctx context.Context, deviceID string) (vault.OpenRouterGrant, error)
+	// RevokeDeviceKeys kills every runtime key minted for a device, upstream
+	// first, then locally. Idempotent.
+	RevokeDeviceKeys(ctx context.Context, deviceID string) error
 }
 
 // New constructs the handler. svc and st are non-nil. PublicBaseURL is set
@@ -238,18 +257,19 @@ func (s *Server) handlePairPoll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.st.InsertDevice(r.Context(), store.Device{
-			ID:          deviceID,
-			Name:        p.DeviceName,
-			TokenHash:   vaultauth.HashToken(token),
-			Hostname:    p.Hostname,
-			OS:          p.OS,
-			OSVersion:   p.OSVersion,
-			Arch:        p.Arch,
-			Model:       p.Model,
-			AppVersion:  p.AppVersion,
-			ClientType:  p.ClientType,
-			AllowClaude: p.AllowClaude,
-			AllowCodex:  p.AllowCodex,
+			ID:              deviceID,
+			Name:            p.DeviceName,
+			TokenHash:       vaultauth.HashToken(token),
+			Hostname:        p.Hostname,
+			OS:              p.OS,
+			OSVersion:       p.OSVersion,
+			Arch:            p.Arch,
+			Model:           p.Model,
+			AppVersion:      p.AppVersion,
+			ClientType:      p.ClientType,
+			AllowClaude:     p.AllowClaude,
+			AllowCodex:      p.AllowCodex,
+			AllowOpenRouter: p.AllowOpenRouter,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

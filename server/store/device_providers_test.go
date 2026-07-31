@@ -55,11 +55,11 @@ func TestDeviceProviderAllowlistRoundTrip(t *testing.T) {
 	}
 
 	// SetDeviceProviders edits the choice later (enable Codex on the claude-only device).
-	if err := st.SetDeviceProviders(ctx, "dev-claude", true, true); err != nil {
+	if err := st.SetDeviceProviders(ctx, "dev-claude", true, true, false); err != nil {
 		t.Fatalf("SetDeviceProviders: %v", err)
 	}
 	assertAllows(t, st, "dev-claude", ProviderCodex, true)
-	if err := st.SetDeviceProviders(ctx, "ghost", true, true); err != ErrNotFound {
+	if err := st.SetDeviceProviders(ctx, "ghost", true, true, false); err != ErrNotFound {
 		t.Fatalf("SetDeviceProviders unknown = %v, want ErrNotFound", err)
 	}
 }
@@ -83,8 +83,9 @@ func TestDeviceAllowlistMigrationDefaultsClaudeOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find legacy: %v", err)
 	}
-	if !d.AllowClaude || d.AllowCodex {
-		t.Fatalf("legacy device = claude:%v codex:%v, want claude-only", d.AllowClaude, d.AllowCodex)
+	if !d.AllowClaude || d.AllowCodex || d.AllowOpenRouter {
+		t.Fatalf("legacy device = claude:%v codex:%v openrouter:%v, want claude-only",
+			d.AllowClaude, d.AllowCodex, d.AllowOpenRouter)
 	}
 }
 
@@ -101,15 +102,15 @@ func TestApprovePairingCarriesProviderChoice(t *testing.T) {
 		t.Fatalf("insert pairing: %v", err)
 	}
 	// Admin approves with both providers enabled.
-	if err := st.ApprovePairing(ctx, "CODE-1", "dev-x", "tok-x", true, true); err != nil {
+	if err := st.ApprovePairing(ctx, "CODE-1", "dev-x", "tok-x", true, true, true); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	p, err := st.FindPairingByCode(ctx, "CODE-1")
 	if err != nil {
 		t.Fatalf("find pairing: %v", err)
 	}
-	if p.Status != PairingApproved || !p.AllowClaude || !p.AllowCodex {
-		t.Fatalf("approved pairing = %+v, want approved + both providers", p)
+	if p.Status != PairingApproved || !p.AllowClaude || !p.AllowCodex || !p.AllowOpenRouter {
+		t.Fatalf("approved pairing = %+v, want approved + all three providers", p)
 	}
 }
 

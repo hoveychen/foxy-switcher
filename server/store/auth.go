@@ -17,12 +17,12 @@ import (
 //   - pairings      — in-flight device-flow handshake rows.
 //   - web_sessions  — HTTP cookie sessions for the admin Web UI.
 //   - leases        — credinject's claim on accounts (one per account at
-//                     a time, enforced by leases_account_id_uniq below).
+//     a time, enforced by leases_account_id_uniq below).
 //   - lease_events   — append-only audit of who held what, when. A row is
-//                     opened on first acquire and closed (ended_at set) on
-//                     release/expiry. Unlike `leases` (current-state only),
-//                     this keeps history so per-device quota attribution can
-//                     replay which device held an account across a window.
+//     opened on first acquire and closed (ended_at set) on
+//     release/expiry. Unlike `leases` (current-state only),
+//     this keeps history so per-device quota attribution can
+//     replay which device held an account across a window.
 const authSchema = `
 CREATE TABLE IF NOT EXISTS devices (
   id            TEXT    PRIMARY KEY,
@@ -39,10 +39,12 @@ CREATE TABLE IF NOT EXISTS devices (
   client_type   TEXT    NOT NULL DEFAULT '',
   disabled_at   INTEGER NOT NULL DEFAULT 0,
   -- Per-device provider allowlist: which credential pools this device may
-  -- lease/inject. Default claude-only (1/0) so a paired device never picks up
-  -- Codex unless the admin opts it in at approval or in the devices page.
-  allow_claude  INTEGER NOT NULL DEFAULT 1,
-  allow_codex   INTEGER NOT NULL DEFAULT 0
+  -- lease/inject. Default claude-only (1/0/0) so a paired device never picks up
+  -- Codex or OpenRouter unless the admin opts it in at approval or in the
+  -- devices page.
+  allow_claude     INTEGER NOT NULL DEFAULT 1,
+  allow_codex      INTEGER NOT NULL DEFAULT 0,
+  allow_openrouter INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS devices_token_hash ON devices (token_hash);
 
@@ -63,9 +65,10 @@ CREATE TABLE IF NOT EXISTS pairings (
   app_version   TEXT    NOT NULL DEFAULT '',
   client_type   TEXT    NOT NULL DEFAULT '',
   -- Provider allowlist chosen by the admin at approval; copied onto the
-  -- device row when the pairing is promoted. Default claude-only (1/0).
-  allow_claude  INTEGER NOT NULL DEFAULT 1,
-  allow_codex   INTEGER NOT NULL DEFAULT 0
+  -- device row when the pairing is promoted. Default claude-only (1/0/0).
+  allow_claude     INTEGER NOT NULL DEFAULT 1,
+  allow_codex      INTEGER NOT NULL DEFAULT 0,
+  allow_openrouter INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS pairings_user_code ON pairings (user_code);
 CREATE INDEX IF NOT EXISTS pairings_expires_at ON pairings (expires_at);
@@ -140,6 +143,11 @@ var authColumnMigrations = []string{
 	`ALTER TABLE devices ADD COLUMN allow_codex INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE pairings ADD COLUMN allow_claude INTEGER NOT NULL DEFAULT 1`,
 	`ALTER TABLE pairings ADD COLUMN allow_codex INTEGER NOT NULL DEFAULT 0`,
+	// OpenRouter joins the allowlist off-by-default for the same reason Codex
+	// did: a device paired before the provider existed must not silently start
+	// getting a derived third-party key minted for it.
+	`ALTER TABLE devices ADD COLUMN allow_openrouter INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE pairings ADD COLUMN allow_openrouter INTEGER NOT NULL DEFAULT 0`,
 	// Idle-reclaim bookkeeping: the holding agent reports its last real Claude
 	// Code activity on each renew. Legacy rows migrate to 0 ("very old"); since
 	// leases expire within a TTL (~60s) any pre-migration row is gone almost
@@ -209,11 +217,14 @@ type Device struct {
 	// DisabledAt is the suspend timestamp (UnixMilli). 0 = active; non-zero
 	// means an admin suspended the device and BearerAuth 401s its token.
 	DisabledAt int64
-	// AllowClaude / AllowCodex are the per-device provider allowlist: which
-	// credential pools this device may lease/inject. Chosen at approval and
-	// editable in the devices page. Existing devices migrate to claude-only.
-	AllowClaude bool
-	AllowCodex  bool
+	// AllowClaude / AllowCodex / AllowOpenRouter are the per-device provider
+	// allowlist: which credential pools this device may lease/inject. Chosen at
+	// approval and editable in the devices page. Existing devices migrate to
+	// claude-only. AllowOpenRouter gates key derivation rather than leasing —
+	// see ProviderOpenRouter.
+	AllowClaude     bool
+	AllowCodex      bool
+	AllowOpenRouter bool
 }
 
 // boolToInt maps a Go bool to the 0/1 SQLite INTEGER we store provider
@@ -239,27 +250,44 @@ func (s *Store) InsertDevice(ctx context.Context, d Device) error {
 		`INSERT INTO devices
 		   (id, name, token_hash, created_at, last_seen_at,
 		    hostname, os, os_version, arch, model, app_version, client_type,
-		    allow_claude, allow_codex)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    allow_claude, allow_codex, allow_openrouter)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.ID, d.Name, d.TokenHash, d.CreatedAt, d.LastSeenAt,
 		d.Hostname, d.OS, d.OSVersion, d.Arch, d.Model, d.AppVersion, d.ClientType,
-		boolToInt(d.AllowClaude), boolToInt(d.AllowCodex))
+		boolToInt(d.AllowClaude), boolToInt(d.AllowCodex), boolToInt(d.AllowOpenRouter))
 	return err
 }
+
+// deviceColumns is the shared SELECT list for single-device lookups so a new
+// column can't be added to one reader and forgotten in the other.
+const deviceColumns = `id, name, token_hash, created_at, last_seen_at,
+	        hostname, os, os_version, arch, model, app_version, client_type, disabled_at,
+	        allow_claude, allow_codex, allow_openrouter`
 
 // FindDeviceByTokenHash is the per-request auth lookup. Returns
 // ErrNotFound when no match — the Bearer middleware translates that to 401.
 func (s *Store) FindDeviceByTokenHash(ctx context.Context, hash string) (*Device, error) {
+	return s.findDevice(ctx, `token_hash = ?`, hash)
+}
+
+// FindDevice looks a device up by its id. Used by admin handlers that need the
+// row's current state before applying a partial update (e.g. a provider-toggle
+// payload that omits a field must preserve it, not zero it).
+func (s *Store) FindDevice(ctx context.Context, id string) (*Device, error) {
+	if id == "" {
+		return nil, fmt.Errorf("id required")
+	}
+	return s.findDevice(ctx, `id = ?`, id)
+}
+
+func (s *Store) findDevice(ctx context.Context, where string, arg any) (*Device, error) {
 	var d Device
-	var allowClaude, allowCodex int
+	var allowClaude, allowCodex, allowOpenRouter int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, token_hash, created_at, last_seen_at,
-		        hostname, os, os_version, arch, model, app_version, client_type, disabled_at,
-		        allow_claude, allow_codex
-		   FROM devices WHERE token_hash = ?`, hash).
+		`SELECT `+deviceColumns+` FROM devices WHERE `+where, arg).
 		Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt,
 			&d.Hostname, &d.OS, &d.OSVersion, &d.Arch, &d.Model, &d.AppVersion, &d.ClientType, &d.DisabledAt,
-			&allowClaude, &allowCodex)
+			&allowClaude, &allowCodex, &allowOpenRouter)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -268,6 +296,7 @@ func (s *Store) FindDeviceByTokenHash(ctx context.Context, hash string) (*Device
 	}
 	d.AllowClaude = allowClaude != 0
 	d.AllowCodex = allowCodex != 0
+	d.AllowOpenRouter = allowOpenRouter != 0
 	return &d, nil
 }
 
@@ -327,13 +356,13 @@ func (s *Store) SetDeviceDisabled(ctx context.Context, id string, disabled bool)
 // SetDeviceProviders updates a device's provider allowlist (which credential
 // pools it may lease/inject). Used by the devices admin page to change the
 // choice made at approval. Returns ErrNotFound when no row matches.
-func (s *Store) SetDeviceProviders(ctx context.Context, id string, allowClaude, allowCodex bool) error {
+func (s *Store) SetDeviceProviders(ctx context.Context, id string, allowClaude, allowCodex, allowOpenRouter bool) error {
 	if id == "" {
 		return fmt.Errorf("id required")
 	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE devices SET allow_claude = ?, allow_codex = ? WHERE id = ?`,
-		boolToInt(allowClaude), boolToInt(allowCodex), id)
+		`UPDATE devices SET allow_claude = ?, allow_codex = ?, allow_openrouter = ? WHERE id = ?`,
+		boolToInt(allowClaude), boolToInt(allowCodex), boolToInt(allowOpenRouter), id)
 	if err != nil {
 		return err
 	}
@@ -345,9 +374,10 @@ func (s *Store) SetDeviceProviders(ctx context.Context, id string, allowClaude, 
 }
 
 // DeviceAllowsProvider reports whether the given device may use the given
-// provider pool ("claude"/"codex"). Enforced by the vault at lease time so a
-// paired device never picks up a provider the admin didn't grant it. Devices
-// paired before this feature migrate to claude-only.
+// provider pool ("claude"/"codex"/"openrouter"). Enforced by the vault at lease
+// time (Claude/Codex) or at key-derivation time (OpenRouter, which has no
+// leases) so a paired device never picks up a provider the admin didn't grant
+// it. Devices paired before this feature migrate to claude-only.
 //
 // A device id with no row is NOT a paired device — it's combined/local mode,
 // which generates a local device id but never inserts a devices row and is
@@ -363,6 +393,8 @@ func (s *Store) DeviceAllowsProvider(ctx context.Context, deviceID, provider str
 		col = "allow_claude"
 	case ProviderCodex:
 		col = "allow_codex"
+	case ProviderOpenRouter:
+		col = "allow_openrouter"
 	default:
 		return false, nil
 	}
@@ -383,7 +415,7 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, token_hash, created_at, last_seen_at,
 		        hostname, os, os_version, arch, model, app_version, client_type, disabled_at,
-		        allow_claude, allow_codex
+		        allow_claude, allow_codex, allow_openrouter
 		   FROM devices ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -392,14 +424,15 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	var out []Device
 	for rows.Next() {
 		var d Device
-		var allowClaude, allowCodex int
+		var allowClaude, allowCodex, allowOpenRouter int
 		if err := rows.Scan(&d.ID, &d.Name, &d.TokenHash, &d.CreatedAt, &d.LastSeenAt,
 			&d.Hostname, &d.OS, &d.OSVersion, &d.Arch, &d.Model, &d.AppVersion, &d.ClientType, &d.DisabledAt,
-			&allowClaude, &allowCodex); err != nil {
+			&allowClaude, &allowCodex, &allowOpenRouter); err != nil {
 			return nil, err
 		}
 		d.AllowClaude = allowClaude != 0
 		d.AllowCodex = allowCodex != 0
+		d.AllowOpenRouter = allowOpenRouter != 0
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -440,11 +473,12 @@ type Pairing struct {
 	Model       string
 	AppVersion  string
 	ClientType  string
-	// AllowClaude / AllowCodex is the provider allowlist the admin chose at
-	// approval; copied onto the device row when the pairing is promoted.
-	// Defaults to claude-only until an approve call sets them.
-	AllowClaude bool
-	AllowCodex  bool
+	// AllowClaude / AllowCodex / AllowOpenRouter is the provider allowlist the
+	// admin chose at approval; copied onto the device row when the pairing is
+	// promoted. Defaults to claude-only until an approve call sets them.
+	AllowClaude     bool
+	AllowCodex      bool
+	AllowOpenRouter bool
 }
 
 // InsertPairing records a pair-init request. The caller has already
@@ -484,17 +518,17 @@ func (s *Store) FindPairingByCode(ctx context.Context, code string) (*Pairing, e
 
 func (s *Store) findPairing(ctx context.Context, where, val string) (*Pairing, error) {
 	var p Pairing
-	var allowClaude, allowCodex int
+	var allowClaude, allowCodex, allowOpenRouter int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT client_nonce, user_code, device_name, status, device_id, device_token, expires_at, created_at,
 		        hostname, os, os_version, arch, model, app_version, client_type,
-		        allow_claude, allow_codex
+		        allow_claude, allow_codex, allow_openrouter
 		   FROM pairings WHERE `+where+` AND expires_at > ?`,
 		val, time.Now().UnixMilli()).
 		Scan(&p.ClientNonce, &p.UserCode, &p.DeviceName, &p.Status,
 			&p.DeviceID, &p.DeviceToken, &p.ExpiresAt, &p.CreatedAt,
 			&p.Hostname, &p.OS, &p.OSVersion, &p.Arch, &p.Model, &p.AppVersion, &p.ClientType,
-			&allowClaude, &allowCodex)
+			&allowClaude, &allowCodex, &allowOpenRouter)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -503,6 +537,7 @@ func (s *Store) findPairing(ctx context.Context, where, val string) (*Pairing, e
 	}
 	p.AllowClaude = allowClaude != 0
 	p.AllowCodex = allowCodex != 0
+	p.AllowOpenRouter = allowOpenRouter != 0
 	return &p, nil
 }
 
@@ -510,12 +545,14 @@ func (s *Store) findPairing(ctx context.Context, where, val string) (*Pairing, e
 // device id on the row, plus the admin's provider allowlist (copied onto the
 // device when the pairing is promoted). The agent's next pair-poll picks them
 // up. Returns ErrNotFound when the pairing row has expired or doesn't exist.
-func (s *Store) ApprovePairing(ctx context.Context, code, deviceID, deviceToken string, allowClaude, allowCodex bool) error {
+func (s *Store) ApprovePairing(ctx context.Context, code, deviceID, deviceToken string, allowClaude, allowCodex, allowOpenRouter bool) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE pairings
-		    SET status = ?, device_id = ?, device_token = ?, allow_claude = ?, allow_codex = ?
+		    SET status = ?, device_id = ?, device_token = ?,
+		        allow_claude = ?, allow_codex = ?, allow_openrouter = ?
 		  WHERE user_code = ? AND status = ? AND expires_at > ?`,
-		PairingApproved, deviceID, deviceToken, boolToInt(allowClaude), boolToInt(allowCodex),
+		PairingApproved, deviceID, deviceToken,
+		boolToInt(allowClaude), boolToInt(allowCodex), boolToInt(allowOpenRouter),
 		code, PairingPending, time.Now().UnixMilli())
 	if err != nil {
 		return err

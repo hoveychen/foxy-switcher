@@ -159,6 +159,14 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		if a.AccessToken == "" {
 			continue
 		}
+		// OpenRouter exposes no subscription usage windows (it's pay-as-you-go;
+		// spend is capped by guardrails), and it has no access_token on the row at
+		// all — so the AccessToken=="" check above already skips it. Explicit
+		// guard so a future field on the row can't accidentally route an
+		// OpenRouter account into Anthropic's /api/oauth/usage.
+		if a.Provider == store.ProviderOpenRouter {
+			continue
+		}
 		// Skip accounts whose token expired and hasn't been rotated yet —
 		// the usage call would 401, and the token-refresh Scheduler will
 		// pick it up on its own cadence.

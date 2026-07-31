@@ -142,6 +142,13 @@ func (s *Scheduler) tick(ctx context.Context) {
 		if a.RefreshToken == "" {
 			continue
 		}
+		// OpenRouter has no OAuth token to rotate — its derived runtime keys are
+		// minted and revoked by the vault, never refreshed. The RefreshToken==""
+		// check above already skips these rows today; the explicit guard keeps it
+		// that way if an OpenRouter row ever grows a token-shaped field.
+		if a.Provider == store.ProviderOpenRouter {
+			continue
+		}
 		// needs_reauth is terminal: the refresh_token was rejected with
 		// invalid_grant and only the user re-authenticating can revive it.
 		// Retrying every tick is pointless and hammers the token endpoint.
