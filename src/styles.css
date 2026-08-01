@@ -1250,3 +1250,34 @@ textarea.or-input {
 .or-hint-error { color: var(--danger-text); }
 .or-hint-warn  { color: var(--warn-text); }
 .or-hint-ok    { color: var(--ok); }
+
+/* Allowed-model list in the account drawer's OpenRouter section. Model slugs
+   are long and vary wildly in length, so they wrap as pills rather than
+   sitting in the fixed-width .detail-meta grid, which would truncate them. */
+.or-models {
+  padding-top: 8px;
+  border-top: 0.5px solid var(--separator);
+  margin-top: 8px;
+}
+
+.or-model-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.or-models-empty {
+  margin: 6px 0 0;
+}
+
+.or-model-pill {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  /* .pill sets flex-shrink: 0; a long slug must be allowed to sit on its own
+     row instead of forcing the drawer to scroll sideways. */
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}

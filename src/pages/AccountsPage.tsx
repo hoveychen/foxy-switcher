@@ -3,6 +3,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { Account, UsageWindow, apiClient } from "../api";
 import {
   accountIsCooling,
+  accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
   scopedIsThrottled,
@@ -86,6 +87,9 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
   if (a.status === "needs_reauth")
     return { text: t("accounts.row.status.needs_reauth"), tone: "danger" };
   if (a.status !== "active") return { text: t("accounts.row.status.paused"), tone: "muted" };
+  // Ahead of cooling: an empty account is unusable outright, not throttled.
+  if (accountOutOfCredit(a))
+    return { text: t("accounts.row.status.out_of_credit"), tone: "danger" };
   if (accountIsCooling(a)) {
     const reset = accountResetAt(a, new Date(nowMs));
     if (reset > 0) {

@@ -3,12 +3,14 @@ import type {
   Account,
   AccountAttribution,
   DeviceShare,
+  OpenRouterConfig,
   ThresholdInput,
   UsageWindow,
 } from "../api";
 import {
   accountHasOAuthToken,
   accountIsCooling,
+  accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
   scopedIsThrottled,
@@ -63,6 +65,9 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
     return { text: t("drawer.status.needs_reauth"), tone: "danger" };
   if (a.status !== "active") return { text: t("drawer.status.paused"), tone: "muted" };
   if (a.token_expired) return { text: t("drawer.status.token_expired"), tone: "danger" };
+  // Ahead of cooling: an empty account is unusable outright, not throttled.
+  if (accountOutOfCredit(a))
+    return { text: t("drawer.status.out_of_credit"), tone: "danger" };
   if (accountIsCooling(a)) {
     const reset = accountResetAt(a, new Date(nowMs));
     if (reset > 0) {
@@ -331,6 +336,132 @@ function AttributionSection({ accountId, scopedLabel }: { accountId: number; sco
   );
 }
 
+// OpenRouterSection is what the "usage" section becomes for an OpenRouter
+// account. There are no subscription windows to draw — the account is
+// pay-as-you-go — so the two things that actually govern it take their place:
+// how much money is left, and the policy each device's key is minted under.
+//
+// Everything here comes from the accountView.openrouter payload the accounts
+// list already carries; the drawer makes no extra request.
+function OpenRouterSection({ or, nowMs }: { or: OpenRouterConfig; nowMs: number }) {
+  const credit = or.credit;
+  // The bar shows what is LEFT, not what was spent, so its length agrees with
+  // the dollar figure printed next to it — a bar that fills up while the number
+  // beside it shrinks reads as "$22.51 used".
+  const remainingPct =
+    credit && credit.total > 0
+      ? Math.max(0, Math.min(100, (credit.remaining / credit.total) * 100))
+      : 0;
+  // out_of_credit first: it is the selector's own verdict, so the bar can't read
+  // "healthy" on an account the vault has already stopped handing out.
+  const tone: Tone =
+    or.out_of_credit || remainingPct < 10
+      ? "danger"
+      : remainingPct < 25
+        ? "warn"
+        : "ok";
+  // $0.12 of $510 is 0.02% — a sub-pixel fill that renders as an empty grey
+  // track, indistinguishable from a broken bar. Floor any non-zero balance at a
+  // visible sliver so "almost nothing left" still reads as red, not as missing.
+  const barPct = remainingPct > 0 ? Math.max(1.5, remainingPct) : 0;
+
+  return (
+    <div className="drawer-section">
+      <h3 className="drawer-section-title">{t("drawer.section.openrouter")}</h3>
+      <div className="usage-list">
+        <div className="usage-row">
+          <span className="usage-label">{t("drawer.openrouter.credit")}</span>
+          {credit ? (
+            <>
+              <div className="usage-track-wrap">
+                <div className={`usage-track ${tone}`}>
+                  <div className="usage-fill" style={{ width: `${barPct}%` }} />
+                </div>
+              </div>
+              <span className={`usage-pct ${or.out_of_credit ? "or-hint-error" : ""}`}>
+                ${credit.remaining.toFixed(2)}
+              </span>
+              <span className="usage-resets">
+                {tf("drawer.openrouter.of_total", { total: credit.total.toFixed(2) })}
+              </span>
+            </>
+          ) : (
+            <span className="usage-empty">{t("drawer.openrouter.credit_unknown")}</span>
+          )}
+        </div>
+      </div>
+      {/* Reuses the modal's wording: the consequence is the part that matters,
+          and it must read identically wherever the state is surfaced. */}
+      {or.out_of_credit && credit && (
+        <p className="text-meta or-hint or-hint-error">
+          {tf("openrouter.credit.empty", { remaining: credit.remaining.toFixed(2) })}
+        </p>
+      )}
+
+      <dl className="detail-meta">
+        {credit && (
+          <div>
+            <dt>{t("drawer.openrouter.checked_at")}</dt>
+            <dd>
+              {tf("drawer.detail.usage_updated.ago", {
+                time: fmtRemaining(nowMs - credit.checked_at),
+              })}
+            </dd>
+          </div>
+        )}
+        <div>
+          <dt>{t("drawer.openrouter.device_limit")}</dt>
+          <dd>
+            {or.limit_usd
+              ? tf("drawer.openrouter.device_limit_value", {
+                  limit: or.limit_usd.toFixed(2),
+                  reset: t(`openrouter.reset.${or.limit_reset || "lifetime"}`),
+                })
+              : t("accounts.openrouter.no_limit")}
+          </dd>
+        </div>
+        <div>
+          <dt>{t("drawer.openrouter.key_kind")}</dt>
+          <dd>
+            {t(
+              or.is_provisioning
+                ? "drawer.openrouter.key_kind.provisioning"
+                : "drawer.openrouter.key_kind.shared",
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>{t("drawer.openrouter.derived_keys")}</dt>
+          <dd>{or.derived_key_count}</dd>
+        </div>
+        {or.workspace_id && (
+          <div>
+            <dt>{t("openrouter.field.workspace")}</dt>
+            <dd>{or.workspace_id}</dd>
+          </div>
+        )}
+      </dl>
+
+      <div className="or-models">
+        <span className="usage-label">
+          {tf("drawer.openrouter.models", { count: or.allowed_models.length })}
+        </span>
+        {or.allowed_models.length > 0 ? (
+          <ul className="or-model-list">
+            {or.allowed_models.map((m) => (
+              <li key={m} className="pill or-model-pill">
+                {m}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="usage-empty or-models-empty">{t("drawer.openrouter.models_none")}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function AccountDrawer({
   account,
   nowMs,
@@ -470,6 +601,11 @@ export function AccountDrawer({
         </div>
       </div>
 
+      {/* Pay-as-you-go: no subscription windows, no per-device attribution to
+          derive from them. Money and policy take their place. */}
+      {account.provider === "openrouter" && account.openrouter ? (
+        <OpenRouterSection or={account.openrouter} nowMs={nowMs} />
+      ) : (
       <div className="drawer-section">
         <h3 className="drawer-section-title">{t("drawer.section.usage")}</h3>
         <div className="usage-list">
@@ -501,8 +637,9 @@ export function AccountDrawer({
           )}
         </div>
       </div>
+      )}
 
-      {account.provider !== "codex" && (
+      {account.provider === "claude" && (
         <AttributionSection accountId={account.id} scopedLabel={account.seven_day_scoped_label} />
       )}
 

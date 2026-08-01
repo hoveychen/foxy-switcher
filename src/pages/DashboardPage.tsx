@@ -4,6 +4,7 @@ import { FoxAvatar } from "../components/FoxAvatar";
 import {
   accountHasOAuthToken,
   accountIsCooling,
+  accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
   scopedIsThrottled,
@@ -842,6 +843,10 @@ function CompactRow({
   } else if (a.token_expired) {
     statusTone = "danger";
     statusText = t("dashboard.compact.token_expired");
+  } else if (accountOutOfCredit(a)) {
+    // Ahead of cooling: an empty account is unusable outright, not throttled.
+    statusTone = "danger";
+    statusText = t("dashboard.compact.out_of_credit");
   } else if (accountIsCooling(a)) {
     statusTone = "warn";
     const reset = accountResetAt(a, new Date(nowMs));

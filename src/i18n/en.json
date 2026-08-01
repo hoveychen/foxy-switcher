@@ -571,5 +571,21 @@
   "openrouter.credit.empty": "Out of credit (${remaining} left) — devices roll onto the next funded account.",
   "openrouter.credit.unknown": "Credit not checked yet. Press Test key, or wait for the next balance poll.",
   "accounts.openrouter.credit": "Credit",
-  "accounts.openrouter.credit_unknown": "not checked"
+  "accounts.openrouter.credit_unknown": "not checked",
+  "drawer.section.openrouter": "Credit & policy",
+  "drawer.openrouter.credit": "Credit",
+  "drawer.openrouter.of_total": "of ${total}",
+  "drawer.openrouter.credit_unknown": "Balance not checked yet",
+  "drawer.openrouter.checked_at": "Balance checked",
+  "drawer.openrouter.device_limit": "Per-device limit",
+  "drawer.openrouter.device_limit_value": "${limit} · {reset}",
+  "drawer.openrouter.key_kind": "Key kind",
+  "drawer.openrouter.key_kind.provisioning": "Provisioning key (one per device, separately revocable)",
+  "drawer.openrouter.key_kind.shared": "Ordinary key (shared by every device)",
+  "drawer.openrouter.derived_keys": "Derived keys",
+  "drawer.openrouter.models": "Allowed models ({count})",
+  "drawer.openrouter.models_none": "No model restriction",
+  "accounts.row.status.out_of_credit": "Out of credit",
+  "drawer.status.out_of_credit": "Out of credit — not handed to devices",
+  "dashboard.compact.out_of_credit": "Out of credit"
 }
