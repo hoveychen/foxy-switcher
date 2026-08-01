@@ -73,6 +73,43 @@ func TestSelect_RejectsThrottled(t *testing.T) {
 	}
 }
 
+// An OpenRouter account cannot be "selected". /select pins the account for the
+// next pick and kicks the Claude credinject coordinator; neither reaches
+// OpenRouter, whose picker (vault.OpenRouterKeys.pickAccount) deliberately
+// ignores pins and orders by id so a device keeps the same account. Returning
+// 204 therefore reported success for a no-op — the UI showed the switch as
+// done and nothing had happened. Reject it instead.
+func TestSelect_RejectsOpenRouter(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	a := &store.Account{
+		Provider:    store.ProviderOpenRouter,
+		Name:        "foxy",
+		AccountUUID: "openrouter:foxy",
+		Status:      store.StatusActive,
+	}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	srv := New(st, nil, nil, "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/"+itoa(a.ID)+"/select", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d body=%q", w.Code, w.Body.String())
+	}
+
+	// And it must not have written a pin on the way out.
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.PinnedDeviceID != "" {
+		t.Fatalf("expected no pin written, got %q", got.PinnedDeviceID)
+	}
+}
+
 func newTestStore(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()

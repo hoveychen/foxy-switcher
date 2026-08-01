@@ -813,6 +813,19 @@ func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// OpenRouter is configured, not selected. /select writes a pin and kicks the
+	// credinject coordinator; vault.OpenRouterKeys.pickAccount reads neither —
+	// it deliberately ignores pins and orders by id so a device keeps the same
+	// account across restarts. Answering 204 here reported a switch that never
+	// happened. Say no instead, and say why.
+	if a.Provider == store.ProviderOpenRouter {
+		http.Error(w,
+			"OpenRouter accounts can't be selected: every authorised device is served "+
+				"from the lowest-id funded account, so there is nothing to switch. Edit "+
+				"the account's policy, or pause it to take it out of rotation.",
+			http.StatusConflict)
+		return
+	}
 	if !selector.IsEligible(*a, time.Now()) {
 		http.Error(w, "account is not eligible", http.StatusConflict)
 		return
