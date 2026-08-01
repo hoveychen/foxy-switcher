@@ -1155,7 +1155,16 @@ type DashboardTrendBucket struct {
 //
 // Fallback: subscription_type for legacy rows whose tier hasn't been
 // backfilled by the next UsagePoller tick (RateLimitTier=="").
-func planWeight(rateTier, sub string) (w5h, w7d float64) {
+func planWeight(provider, rateTier, sub string) (w5h, w7d float64) {
+	// The weights are Claude Pro-equivalents, so only a Claude account has
+	// one. Load-bearing, not defensive: a Codex account's subscription_type
+	// comes from the ChatGPT plan type, and "team" collides with Claude's
+	// legacy fallback below. Codex never sets rate_limit_tier, so without this
+	// it fell through to 5x and inflated both the pool KPIs and the 24h trend.
+	// Empty provider = legacy row predating the column = Claude.
+	if provider != "" && provider != store.ProviderClaude {
+		return 0, 0
+	}
 	switch rateTier {
 	case "default_claude_pro":
 		return 1, 1
@@ -1307,7 +1316,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	accountWeights := make(map[int64]struct{ w5h, w7d float64 }, len(accs))
 	var cap5h, cap7d float64
 	for _, a := range accs {
-		w5h, w7d := planWeight(a.RateLimitTier, a.SubscriptionType)
+		w5h, w7d := planWeight(a.Provider, a.RateLimitTier, a.SubscriptionType)
 		accountWeights[a.ID] = struct{ w5h, w7d float64 }{w5h, w7d}
 		cap5h += w5h
 		cap7d += w7d

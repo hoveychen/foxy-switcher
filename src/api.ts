@@ -395,9 +395,19 @@ export interface PlanWeight {
 }
 
 export function planWeight(
+  provider: string,
   rateLimitTier: string,
   subscriptionType: string,
 ): PlanWeight {
+  // The weights are Claude Pro-equivalents, so only a Claude account has one.
+  // Load-bearing, not defensive: a Codex account's subscription_type comes from
+  // the ChatGPT plan type, and "team" collides with Claude's legacy fallback
+  // below. Codex never sets rate_limit_tier, so without this a Codex Team
+  // account was weighted as a Claude Max 5x in the pool KPIs. Empty provider =
+  // legacy row predating the column = Claude.
+  if (provider !== "" && provider !== "claude") {
+    return { five_hour: 0, seven_day: 0 };
+  }
   switch (rateLimitTier) {
     case "default_claude_pro":
       return { five_hour: 1, seven_day: 1 };
@@ -442,7 +452,7 @@ export function poolWindowTotals(
   let capacity = 0;
   for (const a of accounts) {
     if (a.status !== "active") continue;
-    const w = planWeight(a.rate_limit_tier, a.subscription_type)[window];
+    const w = planWeight(a.provider, a.rate_limit_tier, a.subscription_type)[window];
     if (w <= 0) continue;
     capacity += w;
     const u = a[window]?.utilization;

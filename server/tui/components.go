@@ -112,7 +112,16 @@ func accountResetAt(a Account, now time.Time) (time.Time, bool) {
 // primary key is rate_limit_tier (the only field that distinguishes personal
 // Max 5x from Max 20x); subscription_type is a fallback for legacy rows that
 // haven't been backfilled by the next UsagePoller tick.
-func planWeight(rateTier, sub string) (w5h, w7d float64) {
+func planWeight(provider, rateTier, sub string) (w5h, w7d float64) {
+	// The weights are Claude Pro-equivalents, so only a Claude account has one.
+	// This guard is load-bearing, not defensive: a Codex account's
+	// subscription_type comes from the ChatGPT plan type, and "team" collides
+	// with Claude's legacy fallback below. Codex never sets rate_limit_tier, so
+	// without this it fell straight through to 5x. Empty provider = legacy row
+	// predating the column = Claude.
+	if provider != "" && provider != "claude" {
+		return 0, 0
+	}
 	switch rateTier {
 	case "default_claude_pro":
 		return 1, 1
@@ -146,7 +155,7 @@ func poolWindowTotals(accounts []Account, window string) (used, capacity, percen
 		if a.Status != "active" {
 			continue
 		}
-		w5h, w7d := planWeight(a.RateLimitTier, a.SubscriptionType)
+		w5h, w7d := planWeight(a.Provider, a.RateLimitTier, a.SubscriptionType)
 		var w float64
 		var u *UsageWindow
 		switch window {
