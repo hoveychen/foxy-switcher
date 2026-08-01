@@ -541,6 +541,12 @@ export function AccountDrawer({
         </div>
 
         <div className="drawer-actions">
+          {/* No "use now" for OpenRouter: it holds no lease, every authorised
+              device is served from the lowest-id funded account at once, and
+              /select now 409s rather than reporting a switch that never
+              happened. The card kebab already made this call (AccountsPage
+              swaps it for "edit policy"); the drawer had been missed. */}
+          {account.provider !== "openrouter" && (
           <button
             type="button"
             className="btn btn-primary"
@@ -561,6 +567,7 @@ export function AccountDrawer({
               t("drawer.actions.use_now")
             )}
           </button>
+          )}
           {/* Refresh is hidden in agent mode — the cloud vault owns
               token rotation; surfacing the button here would be a
               foot-gun (no-op or 405 depending on whitelist). Also
