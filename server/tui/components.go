@@ -189,6 +189,46 @@ func poolWindowTotals(accounts []Account, window string) (used, capacity, percen
 	return
 }
 
+// usageRow is one labelled usage window to render for an account.
+type usageRow struct {
+	Label string
+	Win   *UsageWindow
+}
+
+// usageRows returns the windows that actually exist for this account's
+// provider, already labelled. Mirrors the web UI's per-provider split:
+//
+//   - claude    — 5h, 7d Opus, and the per-model weekly-scoped window.
+//   - codex     — two windows, and they are ChatGPT's, not Anthropic's, so they
+//     carry neutral Primary/Secondary labels and there is no scoped third.
+//   - openrouter — none. It is pay-as-you-go: no subscription windows exist, and
+//     rendering three empty bars said "no data" about data that will never come.
+//
+// Empty provider = legacy row predating the column = Claude.
+func usageRows(a Account) []usageRow {
+	switch a.Provider {
+	case "openrouter":
+		return nil
+	case "codex":
+		return []usageRow{
+			{"Primary", a.FiveHour},
+			{"Secondary", a.SevenDay},
+		}
+	default:
+		return []usageRow{
+			{"5h", a.FiveHour},
+			{"7d Opus", a.SevenDay},
+			{"7d " + a.ScopedModelLabel(), a.SevenDaySonnet},
+		}
+	}
+}
+
+// hasOAuthToken reports whether the token-expiry surfaces mean anything here.
+// ExpiresAt == 0 means "no OAuth token lifetime at all" (OpenRouter holds a
+// long-lived API key), not "expired in 1970" — the same rule
+// store.Account.TokenExpired and the web UI's accountHasOAuthToken use.
+func hasOAuthToken(a Account) bool { return a.ExpiresAt > 0 }
+
 // planBadge renders the plan as a soft accent pill. Empty plan → "".
 func planBadge(plan string) string {
 	if plan == "" {

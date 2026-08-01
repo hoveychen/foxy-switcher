@@ -142,22 +142,37 @@ func (p *dashboardPage) renderHero() string {
 	if a.Plan != "" {
 		meta = append(meta, pill(a.Plan, pillAccent, pillSoft))
 	}
-	if exp := humanRemaining(a.ExpiresAt, time.Now().UnixMilli()); exp != "" {
-		meta = append(meta, dimStyle.Render(exp))
+	// Only a Claude/Codex account carries an OAuth token; ExpiresAt == 0 means
+	// there is no lifetime, not that it expired in 1970.
+	if hasOAuthToken(a) {
+		if exp := humanRemaining(a.ExpiresAt, time.Now().UnixMilli()); exp != "" {
+			meta = append(meta, dimStyle.Render(exp))
+		}
 	}
 
-	bar5h := p.renderUsageRow("5h    ", a.FiveHour)
-	bar7d := p.renderUsageRow("7d    ", a.SevenDay)
-	// Compact per-model scoped row; label with the model's initial (e.g.
-	// "7d-F" for Fable, "7d-S" for Sonnet) to stay within the fixed width.
-	bar7s := p.renderUsageRow(fmt.Sprintf("%-6s", "7d-"+string([]rune(a.ScopedModelLabel())[0])), a.SevenDaySonnet)
+	// Hero keeps its own six-column labels rather than reusing usageRows'
+	// prose ones, which don't fit. The provider split is the same: OpenRouter
+	// has no subscription windows, Codex has two and they aren't Anthropic's.
+	lines := []string{strings.Join(meta, "  ")}
+	switch a.Provider {
+	case "openrouter":
+		// no windows
+	case "codex":
+		lines = append(lines,
+			p.renderUsageRow("prim  ", a.FiveHour),
+			p.renderUsageRow("sec   ", a.SevenDay),
+		)
+	default:
+		lines = append(lines,
+			p.renderUsageRow("5h    ", a.FiveHour),
+			p.renderUsageRow("7d    ", a.SevenDay),
+			// Compact per-model scoped row; label with the model's initial (e.g.
+			// "7d-F" for Fable, "7d-S" for Sonnet) to stay within the fixed width.
+			p.renderUsageRow(fmt.Sprintf("%-6s", "7d-"+string([]rune(a.ScopedModelLabel())[0])), a.SevenDaySonnet),
+		)
+	}
 
-	body := strings.Join([]string{
-		strings.Join(meta, "  "),
-		bar5h,
-		bar7d,
-		bar7s,
-	}, "\n")
+	body := strings.Join(lines, "\n")
 	cardW := p.width - 4
 	if cardW > 76 {
 		cardW = 76
