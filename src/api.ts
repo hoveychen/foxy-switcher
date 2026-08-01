@@ -344,6 +344,16 @@ export function accountHasOAuthToken(a: Account): boolean {
   return a.expires_at > 0;
 }
 
+// accountOutOfCredit: the vault will not hand this account's key to a device.
+// Mirrors vault.OpenRouterKeys.pickAccount, which skips any account whose
+// balance is under store.MinUsableCredit — so an out-of-credit account must not
+// render as "active" while routing quietly steps over it. The flag itself is
+// computed server-side (openRouterView.out_of_credit) off the same
+// OpenRouterCredential.HasCredit the picker calls, so the two cannot drift.
+export function accountOutOfCredit(a: Account): boolean {
+  return a.provider === "openrouter" && !!a.openrouter?.out_of_credit;
+}
+
 // accountResetAt returns the soonest future reset (unix ms) across the
 // account's HARD throttled windows (5h / 7d), or 0 when none is throttled / has
 // a future parseable resets_at. The scoped window is excluded for the same

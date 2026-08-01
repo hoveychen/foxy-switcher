@@ -584,5 +584,8 @@
   "drawer.openrouter.key_kind.shared": "Ordinary key (shared by every device)",
   "drawer.openrouter.derived_keys": "Derived keys",
   "drawer.openrouter.models": "Allowed models ({count})",
-  "drawer.openrouter.models_none": "No model restriction"
+  "drawer.openrouter.models_none": "No model restriction",
+  "accounts.row.status.out_of_credit": "Out of credit",
+  "drawer.status.out_of_credit": "Out of credit — not handed to devices",
+  "dashboard.compact.out_of_credit": "Out of credit"
 }

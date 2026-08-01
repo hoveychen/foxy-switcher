@@ -584,5 +584,8 @@
   "drawer.openrouter.key_kind.shared": "普通 key（所有设备共用）",
   "drawer.openrouter.derived_keys": "已派生密钥",
   "drawer.openrouter.models": "允许的模型（{count}）",
-  "drawer.openrouter.models_none": "未限制模型"
+  "drawer.openrouter.models_none": "未限制模型",
+  "accounts.row.status.out_of_credit": "余额不足",
+  "drawer.status.out_of_credit": "余额不足 —— 不会派发给设备",
+  "dashboard.compact.out_of_credit": "余额不足"
 }

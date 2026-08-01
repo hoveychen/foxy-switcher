@@ -10,6 +10,7 @@ import type {
 import {
   accountHasOAuthToken,
   accountIsCooling,
+  accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
   scopedIsThrottled,
@@ -64,6 +65,9 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
     return { text: t("drawer.status.needs_reauth"), tone: "danger" };
   if (a.status !== "active") return { text: t("drawer.status.paused"), tone: "muted" };
   if (a.token_expired) return { text: t("drawer.status.token_expired"), tone: "danger" };
+  // Ahead of cooling: an empty account is unusable outright, not throttled.
+  if (accountOutOfCredit(a))
+    return { text: t("drawer.status.out_of_credit"), tone: "danger" };
   if (accountIsCooling(a)) {
     const reset = accountResetAt(a, new Date(nowMs));
     if (reset > 0) {
