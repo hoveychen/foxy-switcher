@@ -138,8 +138,13 @@ function matchesQuery(a: Account, q: string): boolean {
 function matchesStatus(a: Account, f: StatusFilter): boolean {
   if (f === "all") return true;
   if (f === "paused") return a.status === "paused";
-  if (f === "active") return a.status === "active" && !accountIsCooling(a);
-  if (f === "cooling") return a.status === "active" && accountIsCooling(a);
+  // Same rule as the dashboard's healthy/cooling split: an out-of-credit
+  // account is active-but-not-served, so it belongs under "cooling", not
+  // "active" — otherwise the filter promises an account the vault won't hand out.
+  if (f === "active")
+    return a.status === "active" && !accountIsCooling(a) && !accountOutOfCredit(a);
+  if (f === "cooling")
+    return a.status === "active" && (accountIsCooling(a) || accountOutOfCredit(a));
   return true;
 }
 

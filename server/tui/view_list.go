@@ -332,22 +332,19 @@ func (m *model) renderInlineDetail(a Account, innerW int) string {
 	sb.WriteString(indent)
 	sb.WriteString(dimStyle.Render(ownerLine(a)))
 	sb.WriteString("\n")
+	for _, r := range usageRows(a) {
+		sb.WriteString(indent)
+		sb.WriteString(fmt.Sprintf("%-10s", r.Label))
+		sb.WriteString(renderUsageWindow(r.Win))
+		sb.WriteString("\n")
+	}
 	sb.WriteString(indent)
-	sb.WriteString("5h        ")
-	sb.WriteString(renderUsageWindow(a.FiveHour))
-	sb.WriteString("\n")
-	sb.WriteString(indent)
-	sb.WriteString("7d Opus   ")
-	sb.WriteString(renderUsageWindow(a.SevenDay))
-	sb.WriteString("\n")
-	sb.WriteString(indent)
-	sb.WriteString(fmt.Sprintf("%-10s", "7d "+a.ScopedModelLabel()))
-	sb.WriteString(renderUsageWindow(a.SevenDaySonnet))
-	sb.WriteString("\n")
-	sb.WriteString(indent)
-	sb.WriteString(dimStyle.Render("token "))
-	sb.WriteString(dimStyle.Render(humanRemaining(a.ExpiresAt, nowMs)))
-	sb.WriteString(dimStyle.Render(" · last used "))
+	if hasOAuthToken(a) {
+		sb.WriteString(dimStyle.Render("token "))
+		sb.WriteString(dimStyle.Render(humanRemaining(a.ExpiresAt, nowMs)))
+		sb.WriteString(dimStyle.Render(" · "))
+	}
+	sb.WriteString(dimStyle.Render("last used "))
 	sb.WriteString(dimStyle.Render(humanMillis(a.LastUsedAt)))
 	_ = innerW
 	return sb.String()
@@ -380,25 +377,34 @@ func (m *model) renderDetailBody(innerW int) string {
 	}
 	sb.WriteString("\n")
 
-	usageBody := strings.Join([]string{
-		"5h        " + renderUsageWindow(a.FiveHour),
-		"7d Opus   " + renderUsageWindow(a.SevenDay),
-		fmt.Sprintf("%-10s", "7d "+a.ScopedModelLabel()) + renderUsageWindow(a.SevenDaySonnet),
-	}, "\n")
-	usageW := innerW
-	if usageW > 44 {
-		usageW = 44
+	// OpenRouter has no subscription windows at all, so the panel is omitted
+	// rather than drawn empty — three "no data" bars read as a broken poller.
+	if rows := usageRows(a); len(rows) > 0 {
+		lines := make([]string, 0, len(rows))
+		for _, r := range rows {
+			lines = append(lines, fmt.Sprintf("%-10s", r.Label)+renderUsageWindow(r.Win))
+		}
+		usageW := innerW
+		if usageW > 44 {
+			usageW = 44
+		}
+		sb.WriteString(panel("Usage", strings.Join(lines, "\n"), usageW))
+		sb.WriteString("\n\n")
 	}
-	sb.WriteString(panel("Usage", usageBody, usageW))
-	sb.WriteString("\n\n")
 
 	dl := []struct {
 		k, v string
 	}{
 		{"Status", statusDot(a, nowMs) + " " + statusLabel(a, nowMs)},
 		{"Last used", humanMillis(a.LastUsedAt)},
-		{"Token", humanRemaining(a.ExpiresAt, nowMs)},
-		{"Updated", usageFetchedLabel(a.UsageFetchedAt, nowMs)},
+	}
+	// Both are Claude-shaped: an API-key account has no token lifetime, and
+	// nothing polls a usage window it doesn't have.
+	if hasOAuthToken(a) {
+		dl = append(dl, struct{ k, v string }{"Token", humanRemaining(a.ExpiresAt, nowMs)})
+	}
+	if len(usageRows(a)) > 0 {
+		dl = append(dl, struct{ k, v string }{"Updated", usageFetchedLabel(a.UsageFetchedAt, nowMs)})
 	}
 	for _, row := range dl {
 		sb.WriteString(dimStyle.Render(fmt.Sprintf("%-11s ", row.k)))

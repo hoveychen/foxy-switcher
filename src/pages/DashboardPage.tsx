@@ -115,7 +115,11 @@ export function DashboardPage({
     (acc, a) => {
       if (a.status !== "active") acc.paused += 1;
       else if (a.token_expired) acc.expired += 1;
-      else if (accountIsCooling(a)) acc.cooling += 1;
+      // An out-of-credit OpenRouter account is not available: the vault's
+      // picker skips it. Counting it as healthy overstated "available
+      // accounts". Grouped with cooling — both are "active but not being
+      // handed out right now", which is what the sub-line means.
+      else if (accountOutOfCredit(a) || accountIsCooling(a)) acc.cooling += 1;
       else acc.healthy += 1;
       return acc;
     },

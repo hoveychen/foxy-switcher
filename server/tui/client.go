@@ -61,8 +61,13 @@ type UsageWindow struct {
 
 // Account mirrors httpapi.accountView. Tokens are deliberately not exposed.
 type Account struct {
-	ID               int64  `json:"id"`
-	Name             string `json:"name"`
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	// Provider is "claude" / "codex" / "openrouter". The TUI had been ignoring
+	// it and rendering every account in Claude's shape — OAuth token expiry and
+	// the three subscription usage windows — which none of the other providers
+	// have. Empty on rows that predate the column; treat that as "claude".
+	Provider         string `json:"provider"`
 	ExpiresAt        int64  `json:"expires_at"`
 	Scopes           string `json:"scopes"`
 	SubscriptionType string `json:"subscription_type"`
