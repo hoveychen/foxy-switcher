@@ -6,7 +6,14 @@ import type {
   ThresholdInput,
   UsageWindow,
 } from "../api";
-import { accountIsCooling, accountResetAt, scopedIsThrottled, apiClient } from "../api";
+import {
+  accountHasOAuthToken,
+  accountIsCooling,
+  accountRefreshDue,
+  accountResetAt,
+  scopedIsThrottled,
+  apiClient,
+} from "../api";
 import { Drawer } from "./Drawer";
 import { FoxAvatar } from "./FoxAvatar";
 import { t, tf, scopedUsageLabel } from "../i18n";
@@ -66,7 +73,7 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
     }
     return { text: t("drawer.status.cooling_no_reset"), tone: "warn" };
   }
-  if (a.expires_at - nowMs < 5 * 60 * 1000) {
+  if (accountRefreshDue(a, nowMs)) {
     return { text: t("drawer.status.refresh_due"), tone: "warn" };
   }
   return { text: t("drawer.status.active"), tone: "ok" };
@@ -427,8 +434,10 @@ export function AccountDrawer({
               token rotation; surfacing the button here would be a
               foot-gun (no-op or 405 depending on whitelist). Also
               disabled when another device holds the lease, so we
-              don't 401 their live CC session. */}
-          {!disableAdminActions && (
+              don't 401 their live CC session. Hidden too for accounts
+              with no OAuth token at all (OpenRouter): there is nothing
+              for a token refresh to rotate. */}
+          {!disableAdminActions && accountHasOAuthToken(account) && (
             <button
               type="button"
               className="btn btn-secondary"
@@ -512,20 +521,28 @@ export function AccountDrawer({
                 : t("drawer.detail.last_used.never")}
             </dd>
           </div>
-          <div>
-            <dt>{t("drawer.detail.token_expires")}</dt>
-            <dd>{fmtRemaining(account.expires_at - nowMs)}</dd>
-          </div>
-          <div>
-            <dt>{t("drawer.detail.usage_updated")}</dt>
-            <dd>
-              {account.usage_fetched_at
-                ? tf("drawer.detail.usage_updated.ago", {
-                    time: fmtRemaining(nowMs - account.usage_fetched_at),
-                  })
-                : t("drawer.detail.usage_updated.pending")}
-            </dd>
-          </div>
+          {/* Both rows are OAuth/usage-poller shaped. An OpenRouter account has
+              neither — no token lifetime, and no Anthropic usage window to
+              poll — so rendering them printed a permanent "expired / pending"
+              on an account that is perfectly healthy. */}
+          {accountHasOAuthToken(account) && (
+            <div>
+              <dt>{t("drawer.detail.token_expires")}</dt>
+              <dd>{fmtRemaining(account.expires_at - nowMs)}</dd>
+            </div>
+          )}
+          {account.provider !== "openrouter" && (
+            <div>
+              <dt>{t("drawer.detail.usage_updated")}</dt>
+              <dd>
+                {account.usage_fetched_at
+                  ? tf("drawer.detail.usage_updated.ago", {
+                      time: fmtRemaining(nowMs - account.usage_fetched_at),
+                    })
+                  : t("drawer.detail.usage_updated.pending")}
+              </dd>
+            </div>
+          )}
           {account.account_uuid && (
             <div>
               <dt>{t("drawer.detail.account_uuid")}</dt>

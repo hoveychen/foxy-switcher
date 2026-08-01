@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Topbar } from "../components/Topbar";
 import { FoxAvatar } from "../components/FoxAvatar";
 import {
+  accountHasOAuthToken,
   accountIsCooling,
+  accountRefreshDue,
   accountResetAt,
   scopedIsThrottled,
   apiClient,
@@ -426,11 +428,15 @@ function HeroCard({
             <span className="text-meta">{account.email}</span>
           )}
         </div>
-        <div className="dash-hero-stat">
-          {tf("dashboard.hero.token_expires", {
-            time: fmtRemaining(account.expires_at - nowMs),
-          })}
-        </div>
+        {/* Only meaningful for OAuth accounts; an API-key account (OpenRouter)
+            has no token lifetime and would read "expires in 已过期". */}
+        {accountHasOAuthToken(account) && (
+          <div className="dash-hero-stat">
+            {tf("dashboard.hero.token_expires", {
+              time: fmtRemaining(account.expires_at - nowMs),
+            })}
+          </div>
+        )}
         <div className="usage-list">
           <HeroUsageBar label={t("drawer.usage.5h")} win={account.five_hour} nowMs={nowMs} />
           <HeroUsageBar label={t("drawer.usage.7d_opus")} win={account.seven_day} nowMs={nowMs} />
@@ -842,7 +848,7 @@ function CompactRow({
     statusText = reset > 0
       ? tf("dashboard.compact.cooling", { time: fmtRemaining(reset - nowMs) })
       : t("dashboard.compact.cooling_no_reset");
-  } else if (a.expires_at - nowMs < 5 * 60 * 1000) {
+  } else if (accountRefreshDue(a, nowMs)) {
     statusTone = "warn";
     statusText = t("dashboard.compact.refresh_due");
   }

@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Account, UsageWindow, apiClient } from "../api";
-import { accountIsCooling, accountResetAt, scopedIsThrottled } from "../api";
+import {
+  accountIsCooling,
+  accountRefreshDue,
+  accountResetAt,
+  scopedIsThrottled,
+} from "../api";
 import { Icon } from "../components/Icon";
 import { Topbar } from "../components/Topbar";
 import { FoxAvatar } from "../components/FoxAvatar";
@@ -91,7 +96,7 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
     }
     return { text: t("accounts.row.status.cooling_no_reset"), tone: "warn" };
   }
-  if (a.expires_at - nowMs < 5 * 60 * 1000) {
+  if (accountRefreshDue(a, nowMs)) {
     return { text: t("accounts.row.status.refresh_due"), tone: "warn" };
   }
   return { text: t("accounts.row.status.active"), tone: "ok" };
