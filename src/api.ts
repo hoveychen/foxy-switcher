@@ -322,6 +322,28 @@ export function scopedIsThrottled(a: Account): boolean {
   );
 }
 
+// accountRefreshDue: the OAuth access token is within five minutes of expiring,
+// so the refresher is about to renew it.
+//
+// expires_at == 0 means "this account has no OAuth token lifetime at all", not
+// "expired in 1970": OpenRouter rows carry a long-lived API key and the vault
+// builds them without an expiry (server/httpapi/openrouter.go). Subtracting now
+// from 0 yields a huge negative number, which is why every OpenRouter account
+// used to read "refresh due" forever. This mirrors store.Account.TokenExpired,
+// which already treats ExpiresAt <= 0 as not-expired — that's why the selector
+// was never confused even while the UI was.
+export function accountRefreshDue(a: Account, nowMs: number): boolean {
+  if (a.expires_at <= 0) return false;
+  return a.expires_at - nowMs < 5 * 60 * 1000;
+}
+
+// accountHasOAuthToken reports whether the OAuth-shaped surfaces — token expiry,
+// manual refresh — mean anything for this account. Same 0-is-absent rule as
+// accountRefreshDue.
+export function accountHasOAuthToken(a: Account): boolean {
+  return a.expires_at > 0;
+}
+
 // accountResetAt returns the soonest future reset (unix ms) across the
 // account's HARD throttled windows (5h / 7d), or 0 when none is throttled / has
 // a future parseable resets_at. The scoped window is excluded for the same
