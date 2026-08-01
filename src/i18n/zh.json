@@ -571,5 +571,18 @@
   "openrouter.credit.empty": "余额不足（剩 ${remaining}）—— 设备会自动转到下一个还有钱的账号。",
   "openrouter.credit.unknown": "还没查过余额。可以点「测试密钥」，或等下一次余额轮询。",
   "accounts.openrouter.credit": "余额",
-  "accounts.openrouter.credit_unknown": "未查询"
+  "accounts.openrouter.credit_unknown": "未查询",
+  "drawer.section.openrouter": "余额与策略",
+  "drawer.openrouter.credit": "余额",
+  "drawer.openrouter.of_total": "共 ${total}",
+  "drawer.openrouter.credit_unknown": "还没查过余额",
+  "drawer.openrouter.checked_at": "余额查询于",
+  "drawer.openrouter.device_limit": "每设备额度",
+  "drawer.openrouter.device_limit_value": "${limit} · {reset}",
+  "drawer.openrouter.key_kind": "密钥类型",
+  "drawer.openrouter.key_kind.provisioning": "provisioning key（每设备各一把，可单独吊销）",
+  "drawer.openrouter.key_kind.shared": "普通 key（所有设备共用）",
+  "drawer.openrouter.derived_keys": "已派生密钥",
+  "drawer.openrouter.models": "允许的模型（{count}）",
+  "drawer.openrouter.models_none": "未限制模型"
 }
