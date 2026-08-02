@@ -16,6 +16,7 @@ import (
 
 	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/selector"
+	"github.com/hoveychen/foxy-switcher/server/store"
 	"github.com/hoveychen/foxy-switcher/server/vault"
 )
 
@@ -429,6 +430,12 @@ func (c *Coordinator) choose(ctx context.Context) (*vault.Account, error) {
 	var pinnedOther bool
 	for i := range accs {
 		a := accs[i]
+		// The vault returns every provider in one account list. Pins are
+		// provider-local: an OpenRouter/Codex row must never break Claude's
+		// sticky choice or redirect its manual selection.
+		if a.Provider != store.ProviderClaude {
+			continue
+		}
 		// Reuse the selector's eligibility predicate so the sticky path
 		// honours every disqualifier (paused, expired token, usage
 		// threshold) — otherwise we'd happily re-inject a dead account
@@ -478,6 +485,9 @@ func (c *Coordinator) chooseManual(ctx context.Context, currentID int64) (*vault
 	var pinned, cur *vault.Account
 	for i := range accs {
 		a := accs[i]
+		if a.Provider != store.ProviderClaude {
+			continue
+		}
 		if !selector.IsEligible(a, now) {
 			continue
 		}
