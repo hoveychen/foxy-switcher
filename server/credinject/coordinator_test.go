@@ -411,6 +411,58 @@ func TestReconcile_StickyAcrossRepeatedTicks(t *testing.T) {
 	}
 }
 
+// TestChooseIgnoresOtherProviderPins covers the multi-provider regression
+// where an active OpenRouter row with last_used_at=0 looked like a legacy
+// global "Use now" pin to Claude's coordinator. That false pin broke sticky
+// selection on every 5s tick and made equally-ranked Claude accounts ping-pong.
+func TestChooseIgnoresOtherProviderPins(t *testing.T) {
+	c, _, st, _ := newCoord(t)
+	ctx := context.Background()
+	currentID := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	alternateID := seedActive(t, st, "beta", "sk-ant-oat01-beta")
+
+	// Make the current account newer so plain LRU would prefer beta. Sticky
+	// selection must nevertheless keep alpha while it remains eligible.
+	if err := st.MarkUsed(ctx, currentID); err != nil {
+		t.Fatalf("MarkUsed(current): %v", err)
+	}
+	c.currentAccountID = currentID
+
+	openrouter := store.Account{
+		Provider:    store.ProviderOpenRouter,
+		Name:        "openrouter",
+		AccountUUID: "openrouter:pool",
+		Status:      store.StatusActive,
+	}
+	if err := st.Upsert(ctx, &openrouter); err != nil {
+		t.Fatalf("Upsert(openrouter): %v", err)
+	}
+	if err := st.MarkForNextPick(ctx, openrouter.ID, ""); err != nil {
+		t.Fatalf("MarkForNextPick(openrouter): %v", err)
+	}
+
+	selected, err := c.choose(ctx)
+	if err != nil {
+		t.Fatalf("choose: %v", err)
+	}
+	if selected.ID != currentID {
+		t.Fatalf("OpenRouter pin broke Claude sticky selection: got %d want current %d (LRU alternate %d)",
+			selected.ID, currentID, alternateID)
+	}
+
+	if err := st.SetAutoSwitch(ctx, store.AutoSwitch{Enabled: false, Policy: "lru"}); err != nil {
+		t.Fatalf("SetAutoSwitch(manual): %v", err)
+	}
+	selected, err = c.choose(ctx)
+	if err != nil {
+		t.Fatalf("choose(manual): %v", err)
+	}
+	if selected.ID != currentID {
+		t.Fatalf("OpenRouter pin redirected Claude manual selection: got %d want %d",
+			selected.ID, currentID)
+	}
+}
+
 // TestReconcile_RespectsManualSelect verifies that stickiness yields when an
 // account has been pinned via store.MarkForNextPick (the path /api/accounts/
 // {id}/select takes).
