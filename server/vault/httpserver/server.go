@@ -318,7 +318,50 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	accs, err = s.filterAllowedProviders(r.Context(), accs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": accs})
+}
+
+// filterAllowedProviders drops rows for providers the calling device's
+// allowlist denies, mirroring PickProviderForDevice's gate: a device that can
+// never lease a provider has no business seeing its accounts. Cookie sessions
+// (admins) and callers with no device identity (combined/local mode) are
+// un-gated, same as everywhere else.
+//
+// Why this exists beyond tidiness: the agent's Claude coordinator treats an
+// eligible account with last_used_at == 0 as the legacy global "Use now" pin.
+// An OpenRouter row satisfies that (no token expiry, no usage windows), so
+// shipping it to a Claude-only device broke sticky selection on every 5s
+// reconcile tick and made equally-ranked Claude accounts ping-pong — the
+// 2026-08-18 incident. choose() now filters by provider agent-side, but old
+// agents in the field don't, and the vault is the only half we can update for
+// them. See TestAgentAccountsGatesOnProviderAllowlist.
+func (s *Server) filterAllowedProviders(ctx context.Context, accs []vault.Account) ([]vault.Account, error) {
+	devID, ok := DeviceFromContext(ctx)
+	if !ok || devID == "" || devID == SessionDeviceID {
+		return accs, nil
+	}
+	allowed := make(map[string]bool, 3)
+	out := accs[:0]
+	for _, a := range accs {
+		ok, seen := allowed[a.Provider]
+		if !seen {
+			var err error
+			ok, err = s.st.DeviceAllowsProvider(ctx, devID, a.Provider)
+			if err != nil {
+				return nil, err
+			}
+			allowed[a.Provider] = ok
+		}
+		if ok {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) handleGetAutoSwitch(w http.ResponseWriter, r *http.Request) {
