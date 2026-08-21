@@ -196,6 +196,41 @@ func tokenExpiryMillis(tokens ...string) int64 {
 	return 0
 }
 
+// reverseSyncAllowed reports whether the credential currently sitting in this
+// device's Codex storage may be written back over the pool's copy of the same
+// account.
+//
+// The device is not automatically the newer side. Both the pool's refresh
+// scheduler and the local Codex CLI rotate the one-time-use refresh_token, so a
+// device that was offline (laptop asleep, agent killed, account not selected
+// for a week) holds a credential the pool has long since rotated past. Pushing
+// that copy up replaces a live refresh_token with a spent one; the next refresh
+// then gets HTTP 401, the account is marked needs_reauth, and because the stale
+// file is still on disk it clobbers the user's re-login within one reconcile
+// tick too — the account can never be revived. That is exactly how account 68
+// ("Harry C") died on 2026-08-20 with an access token 174h past expiry.
+//
+// So we push only when the local credential is demonstrably at least as new as
+// the pool's, and never when it has already expired.
+func reverseSyncAllowed(local *AuthFile, stored *store.Account, now time.Time) bool {
+	if local == nil || stored == nil {
+		return false
+	}
+	localExpiry := tokenExpiryMillis(local.Tokens.AccessToken, local.Tokens.IDToken)
+	if localExpiry == 0 {
+		// No parseable expiry, so the direction is unknowable. Refuse: a
+		// missed write-back only costs one redundant pool-side refresh, while
+		// a wrong-direction push costs the whole account.
+		return false
+	}
+	if localExpiry <= now.UnixMilli() {
+		return false
+	}
+	// Equal expiry means the same access-token generation — the local file may
+	// still carry non-token edits from a newer Codex CLI, so let those through.
+	return localExpiry >= stored.ExpiresAt
+}
+
 func codexPlanLabel(raw string) string {
 	if raw == "" {
 		return "Codex"

@@ -215,6 +215,12 @@ func (m *Manager) syncCurrent(ctx context.Context, accounts []store.Account) err
 		if string(normalized) == a.CredentialJSON {
 			return nil
 		}
+		if !reverseSyncAllowed(auth, &a, time.Now()) {
+			m.logger.Printf("[codex] account %d (%s): refusing reverse sync — local credential is stale (expiry %s); the stored copy wins",
+				a.ID, a.Name,
+				time.UnixMilli(tokenExpiryMillis(auth.Tokens.AccessToken, auth.Tokens.IDToken)).UTC().Format(time.RFC3339))
+			return nil
+		}
 		return m.st.UpdateProviderCredential(ctx, a.ID,
 			auth.Tokens.AccessToken, auth.Tokens.RefreshToken,
 			tokenExpiryMillis(auth.Tokens.AccessToken, auth.Tokens.IDToken), string(normalized))

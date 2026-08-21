@@ -227,6 +227,12 @@ func (m *RemoteManager) reverseSync(ctx context.Context) error {
 		if string(normalized) == a.CredentialJSON {
 			return nil
 		}
+		if !reverseSyncAllowed(auth, &a, time.Now()) {
+			m.logger.Printf("[codex-agent] account %d (%s): refusing reverse sync — local credential is stale (expiry %s); the vault copy wins",
+				a.ID, a.Name,
+				time.UnixMilli(tokenExpiryMillis(auth.Tokens.AccessToken, auth.Tokens.IDToken)).UTC().Format(time.RFC3339))
+			return nil
+		}
 		return m.svc.UpdateProviderCredential(ctx, a.ID,
 			auth.Tokens.AccessToken, auth.Tokens.RefreshToken,
 			tokenExpiryMillis(auth.Tokens.AccessToken, auth.Tokens.IDToken), string(normalized))

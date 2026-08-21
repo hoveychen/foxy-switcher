@@ -33,8 +33,16 @@ func fakeJWT(t *testing.T, accountID, email, name, plan string, exp int64) strin
 
 func authJSON(t *testing.T, accountID, accessSuffix string) []byte {
 	t.Helper()
-	id := fakeJWT(t, accountID, accountID+"@example.com", "Codex User", "pro", time.Now().Add(2*time.Hour).Unix())
-	access := fakeJWT(t, accountID, "", "", "", time.Now().Add(time.Hour).Unix()) + accessSuffix
+	return authJSONExpiring(t, accountID, accessSuffix, time.Now().Add(time.Hour))
+}
+
+// authJSONExpiring builds an auth.json whose access_token expires at
+// accessExp, so tests can model a device holding a credential the pool has
+// already rotated past (accessExp in the past) versus a genuinely fresher one.
+func authJSONExpiring(t *testing.T, accountID, accessSuffix string, accessExp time.Time) []byte {
+	t.Helper()
+	id := fakeJWT(t, accountID, accountID+"@example.com", "Codex User", "pro", accessExp.Add(time.Hour).Unix())
+	access := fakeJWT(t, accountID, "", "", "", accessExp.Unix()) + accessSuffix
 	raw, err := json.Marshal(map[string]any{
 		"auth_mode":      "chatgpt",
 		"OPENAI_API_KEY": nil,
