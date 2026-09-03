@@ -13,6 +13,67 @@ func idleProbe(c *Coordinator) func() time.Duration {
 }
 func activeProbe() func() time.Duration { return func() time.Duration { return 0 } }
 
+// TestBootstrap_IdleAgentWithoutCredentialAcquiresInitialLease prevents a
+// cold-start deadlock:
+// after shutdown restored native credentials and cleared injected.json, an
+// agent whose last transcript is older than the idle threshold still needs one
+// pool credential before Claude Code can create fresh authenticated activity.
+// Only bootstrap gets this exception; ordinary idle reconciles remain parked.
+func TestBootstrap_IdleAgentWithoutCredentialAcquiresInitialLease(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	id := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	c.activityProbe = idleProbe(c)
+
+	c.bootstrap(context.Background())
+
+	if c.CurrentAccountID() != id {
+		t.Fatalf("idle bootstrap must inject initial account: got %d want %d", c.CurrentAccountID(), id)
+	}
+	if !be.hasOAuth {
+		t.Fatal("idle bootstrap must write the keychain")
+	}
+	if c.currentLeaseID == "" {
+		t.Fatal("idle bootstrap must acquire a lease before injecting")
+	}
+}
+
+func TestBootstrap_IdleAgentWithExpiredCredentialAcquiresInitialLease(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	id := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	c.activityProbe = idleProbe(c)
+	be.oauthBlob = []byte(`{"claudeAiOauth":{"accessToken":"expired","refreshToken":"stale","expiresAt":1}}`)
+	be.hasOAuth = true
+
+	c.bootstrap(context.Background())
+
+	if c.CurrentAccountID() != id {
+		t.Fatalf("expired credential must be replaced during bootstrap: got %d want %d", c.CurrentAccountID(), id)
+	}
+	if got := extractAccessToken(be.oauthBlob); got != "sk-ant-oat01-alpha" {
+		t.Fatalf("bootstrap token: got %q want pool account token", got)
+	}
+}
+
+func TestBootstrap_IdleAgentWithUsableCredentialStaysParked(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	c.activityProbe = idleProbe(c)
+	be.oauthBlob = []byte(`{"claudeAiOauth":{"accessToken":"native","refreshToken":"refresh","expiresAt":4102444800000}}`)
+	be.hasOAuth = true
+
+	c.bootstrap(context.Background())
+
+	if c.CurrentAccountID() != 0 {
+		t.Fatalf("usable native credential must stay parked: currentAccountID=%d", c.CurrentAccountID())
+	}
+	if c.currentLeaseID != "" {
+		t.Fatalf("usable native credential must not consume a lease: %q", c.currentLeaseID)
+	}
+	if got := extractAccessToken(be.oauthBlob); got != "native" {
+		t.Fatalf("usable native credential was overwritten: %q", got)
+	}
+}
+
 // TestReconcile_IdleAgentDoesNotAcquire: an agent with no live lease that is
 // idle (Claude Code not used lately) must NOT grab a slot — that's the whole
 // point of freeing leases from unused machines. It injects nothing and holds no

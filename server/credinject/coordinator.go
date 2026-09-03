@@ -354,7 +354,42 @@ func (c *Coordinator) bootstrap(ctx context.Context) {
 	c.mu.Unlock()
 	c.loadState()
 	c.reverseSync(ctx)
-	c.reconcile(ctx)
+	idleFor := c.idleFor()
+	// A cold start with no usable credential must establish one before
+	// activity-based parking can take over. Claude Code cannot complete a
+	// request and update its transcript with a missing or expired credential,
+	// so the old transcript age would otherwise create a deadlock. Preserve the
+	// normal parked behaviour when a usable native credential is already there.
+	if c.bootstrapNeedsCredential(c.clock()) {
+		idleFor = 0
+	}
+	c.reconcileWithIdle(ctx, idleFor)
+}
+
+// bootstrapNeedsCredential reports whether Claude Code lacks a credential it
+// can use without Foxy. A managed API key wins over OAuth, matching Claude
+// Code's own precedence. Backend read errors conservatively return false: an
+// uncertain keychain state must not make an idle agent grab a pool lease.
+func (c *Coordinator) bootstrapNeedsCredential(now time.Time) bool {
+	apiKey, hasAPIKey, err := c.backend.ReadManagedAPIKey()
+	if err != nil {
+		c.logger.Printf("[credinject] bootstrap read managed api key: %v", err)
+		return false
+	}
+	if hasAPIKey && strings.TrimSpace(apiKey) != "" {
+		return false
+	}
+
+	blob, exists, err := c.backend.ReadOAuthBlob()
+	if err != nil {
+		c.logger.Printf("[credinject] bootstrap read OAuth blob: %v", err)
+		return false
+	}
+	if !exists {
+		return true
+	}
+	accessToken, refreshToken, expiresAt, ok := extractRotation(blob)
+	return !ok || accessToken == "" || refreshToken == "" || expiresAt <= now.UnixMilli()
 }
 
 // loadState reads injected.json and warms the in-memory pointers. Missing
@@ -513,7 +548,13 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 	// Measure local Claude Code activity once per tick. idleFor feeds two
 	// decisions: the "am I active?" gate below, and the value reported on
 	// RenewLease so the vault knows whether a held lease is idle-reclaimable.
-	idleFor := c.idleFor()
+	c.reconcileWithIdle(ctx, c.idleFor())
+}
+
+// reconcileWithIdle runs one reconciliation using the supplied activity age.
+// bootstrap passes zero exactly once to break the credential-before-activity
+// dependency; periodic and explicitly-triggered reconciles pass idleFor().
+func (c *Coordinator) reconcileWithIdle(ctx context.Context, idleFor time.Duration) {
 	active := idleFor < c.idleThreshold
 
 	// Idle-and-not-holding: there's nothing to renew and we won't acquire a
