@@ -354,7 +354,13 @@ func (c *Coordinator) bootstrap(ctx context.Context) {
 	c.mu.Unlock()
 	c.loadState()
 	c.reverseSync(ctx)
-	c.reconcile(ctx)
+	// A cold start must establish one usable credential before activity-based
+	// parking can take over. If the native credential restored on the previous
+	// shutdown is stale, Claude Code cannot complete a request and update its
+	// transcript, so using the old transcript age here creates a deadlock. Mark
+	// only this first reconcile as active; normal ticks below still use the real
+	// idle duration, and a reclaimed idle holder remains parked.
+	c.reconcileWithIdle(ctx, 0)
 }
 
 // loadState reads injected.json and warms the in-memory pointers. Missing
@@ -513,7 +519,13 @@ func (c *Coordinator) reconcile(ctx context.Context) {
 	// Measure local Claude Code activity once per tick. idleFor feeds two
 	// decisions: the "am I active?" gate below, and the value reported on
 	// RenewLease so the vault knows whether a held lease is idle-reclaimable.
-	idleFor := c.idleFor()
+	c.reconcileWithIdle(ctx, c.idleFor())
+}
+
+// reconcileWithIdle runs one reconciliation using the supplied activity age.
+// bootstrap passes zero exactly once to break the credential-before-activity
+// dependency; periodic and explicitly-triggered reconciles pass idleFor().
+func (c *Coordinator) reconcileWithIdle(ctx context.Context, idleFor time.Duration) {
 	active := idleFor < c.idleThreshold
 
 	// Idle-and-not-holding: there's nothing to renew and we won't acquire a
