@@ -354,13 +354,42 @@ func (c *Coordinator) bootstrap(ctx context.Context) {
 	c.mu.Unlock()
 	c.loadState()
 	c.reverseSync(ctx)
-	// A cold start must establish one usable credential before activity-based
-	// parking can take over. If the native credential restored on the previous
-	// shutdown is stale, Claude Code cannot complete a request and update its
-	// transcript, so using the old transcript age here creates a deadlock. Mark
-	// only this first reconcile as active; normal ticks below still use the real
-	// idle duration, and a reclaimed idle holder remains parked.
-	c.reconcileWithIdle(ctx, 0)
+	idleFor := c.idleFor()
+	// A cold start with no usable credential must establish one before
+	// activity-based parking can take over. Claude Code cannot complete a
+	// request and update its transcript with a missing or expired credential,
+	// so the old transcript age would otherwise create a deadlock. Preserve the
+	// normal parked behaviour when a usable native credential is already there.
+	if c.bootstrapNeedsCredential(c.clock()) {
+		idleFor = 0
+	}
+	c.reconcileWithIdle(ctx, idleFor)
+}
+
+// bootstrapNeedsCredential reports whether Claude Code lacks a credential it
+// can use without Foxy. A managed API key wins over OAuth, matching Claude
+// Code's own precedence. Backend read errors conservatively return false: an
+// uncertain keychain state must not make an idle agent grab a pool lease.
+func (c *Coordinator) bootstrapNeedsCredential(now time.Time) bool {
+	apiKey, hasAPIKey, err := c.backend.ReadManagedAPIKey()
+	if err != nil {
+		c.logger.Printf("[credinject] bootstrap read managed api key: %v", err)
+		return false
+	}
+	if hasAPIKey && strings.TrimSpace(apiKey) != "" {
+		return false
+	}
+
+	blob, exists, err := c.backend.ReadOAuthBlob()
+	if err != nil {
+		c.logger.Printf("[credinject] bootstrap read OAuth blob: %v", err)
+		return false
+	}
+	if !exists {
+		return true
+	}
+	accessToken, refreshToken, expiresAt, ok := extractRotation(blob)
+	return !ok || accessToken == "" || refreshToken == "" || expiresAt <= now.UnixMilli()
 }
 
 // loadState reads injected.json and warms the in-memory pointers. Missing
