@@ -13,6 +13,29 @@ func idleProbe(c *Coordinator) func() time.Duration {
 }
 func activeProbe() func() time.Duration { return func() time.Duration { return 0 } }
 
+// TestBootstrap_IdleAgentAcquiresInitialLease prevents a cold-start deadlock:
+// after shutdown restored native credentials and cleared injected.json, an
+// agent whose last transcript is older than the idle threshold still needs one
+// pool credential before Claude Code can create fresh authenticated activity.
+// Only bootstrap gets this exception; ordinary idle reconciles remain parked.
+func TestBootstrap_IdleAgentAcquiresInitialLease(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	id := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	c.activityProbe = idleProbe(c)
+
+	c.bootstrap(context.Background())
+
+	if c.CurrentAccountID() != id {
+		t.Fatalf("idle bootstrap must inject initial account: got %d want %d", c.CurrentAccountID(), id)
+	}
+	if !be.hasOAuth {
+		t.Fatal("idle bootstrap must write the keychain")
+	}
+	if c.currentLeaseID == "" {
+		t.Fatal("idle bootstrap must acquire a lease before injecting")
+	}
+}
+
 // TestReconcile_IdleAgentDoesNotAcquire: an agent with no live lease that is
 // idle (Claude Code not used lately) must NOT grab a slot — that's the whole
 // point of freeing leases from unused machines. It injects nothing and holds no
