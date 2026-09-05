@@ -402,6 +402,7 @@
   "drawer.status.refresh_due": "refresh due",
   "drawer.status.active": "active",
   "drawer.status.leased_by_other": "in use by {device} · {remaining} left",
+  "drawer.status.shared_with": "shared with {count} other device(s)",
   "drawer.fmt.expired": "expired",
   "modal.close": "Close",
   "drawer.close": "Close detail",

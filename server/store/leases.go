@@ -312,7 +312,12 @@ type LeaseInfo struct {
 // without an N+1 query per row.
 type AccountWithLease struct {
 	Account
+	// Lease is the representative holder — the longest-held one — kept for the
+	// single-holder surfaces that predate shared leases. Nil when unheld.
 	Lease *LeaseInfo
+	// Leases is every live holder, oldest first. Length > 1 only for shared
+	// providers (Codex), where several devices co-hold one account.
+	Leases []LeaseInfo
 }
 
 // LeaseWithDevice is a live lease row joined with the holding device's
@@ -343,13 +348,18 @@ type LeaseWithAccount struct {
 // names) so the UI never shows a blank badge.
 func (s *Store) ListAccountsWithLeases(ctx context.Context) ([]AccountWithLease, error) {
 	now := time.Now().UnixMilli()
+	// A shared (Codex) account can have several live leases, so this join fans
+	// out into one row per holder. The scan below collapses them back into a
+	// single AccountWithLease carrying every holder — ordering by acquired_at
+	// within an account both groups the duplicates and makes the first holder
+	// (the longest-held one) the representative Lease.
 	q := `SELECT ` + qualifiedAccountColumns + `,
 	             leases.device_id, leases.acquired_at, leases.expires_at,
 	             COALESCE(NULLIF(devices.name, ''), devices.hostname, '') AS device_name
 	        FROM accounts
 	        LEFT JOIN leases  ON leases.account_id = accounts.id AND leases.expires_at > ?
 	        LEFT JOIN devices ON devices.id        = leases.device_id
-	       ORDER BY accounts.id`
+	       ORDER BY accounts.id, leases.acquired_at ASC, leases.id ASC`
 	rows, err := s.db.QueryContext(ctx, q, now)
 	if err != nil {
 		return nil, err
@@ -387,7 +397,19 @@ func (s *Store) ListAccountsWithLeases(ctx context.Context) ([]AccountWithLease,
 				ExpiresAt:  expiresAt.Int64,
 			}
 		}
-		out = append(out, AccountWithLease{Account: a, Lease: lease})
+		// Same account as the previous row → another holder of a shared
+		// account, not a new account.
+		if n := len(out); n > 0 && out[n-1].ID == a.ID {
+			if lease != nil {
+				out[n-1].Leases = append(out[n-1].Leases, *lease)
+			}
+			continue
+		}
+		row := AccountWithLease{Account: a, Lease: lease}
+		if lease != nil {
+			row.Leases = []LeaseInfo{*lease}
+		}
+		out = append(out, row)
 	}
 	return out, rows.Err()
 }

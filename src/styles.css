@@ -619,6 +619,14 @@ input {
   text-overflow: ellipsis;
 }
 
+/* "+N" suffix inside a lease badge: how many devices beyond the one named
+   are co-holding a shared (Codex) account. Deliberately quieter than the
+   device name — it's a count, not the headline. */
+.lease-overflow {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
 .dash-others-in-use {
   display: flex;
   flex-direction: column;
