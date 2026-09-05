@@ -94,7 +94,7 @@ func TestActiveLeaseCounts(t *testing.T) {
 		t.Fatalf("acquire quiet: %v", err)
 	}
 
-	counts, err := st.ActiveLeaseCounts(ctx)
+	counts, err := st.ActiveLeaseCounts(ctx, "")
 	if err != nil {
 		t.Fatalf("ActiveLeaseCounts: %v", err)
 	}
@@ -106,6 +106,18 @@ func TestActiveLeaseCounts(t *testing.T) {
 	}
 	if counts[free.ID] != 0 {
 		t.Fatalf("free count = %d, want 0 (absent from the map)", counts[free.ID])
+	}
+
+	// Excluding a device drops only that device's own holds.
+	own, err := st.ActiveLeaseCounts(ctx, "d1")
+	if err != nil {
+		t.Fatalf("ActiveLeaseCounts(exclude d1): %v", err)
+	}
+	if own[busy.ID] != 2 {
+		t.Fatalf("busy count excluding d1 = %d, want 2", own[busy.ID])
+	}
+	if own[quiet.ID] != 1 {
+		t.Fatalf("quiet count excluding d1 = %d, want 1", own[quiet.ID])
 	}
 }
 

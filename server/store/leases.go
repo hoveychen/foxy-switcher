@@ -481,10 +481,19 @@ accounts.account_uuid, accounts.rate_limit_tier, accounts.credential_json, accou
 // (a nil/missing key reads as 0). Feeds the selector's load balancing for
 // shared providers, where several devices may hold the same account and the
 // picker should prefer the least-crowded one.
-func (s *Store) ActiveLeaseCounts(ctx context.Context) (map[int64]int, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT account_id, COUNT(*) FROM leases WHERE expires_at > ? GROUP BY account_id`,
-		time.Now().UnixMilli())
+//
+// excludeDeviceID drops that device's own leases from the tally — the picking
+// device must not count as load against the account it is already on, or every
+// reconcile tick would bounce it onto a different account. "" counts everyone.
+func (s *Store) ActiveLeaseCounts(ctx context.Context, excludeDeviceID string) (map[int64]int, error) {
+	q := `SELECT account_id, COUNT(*) FROM leases WHERE expires_at > ?`
+	args := []any{time.Now().UnixMilli()}
+	if excludeDeviceID != "" {
+		q += ` AND device_id != ?`
+		args = append(args, excludeDeviceID)
+	}
+	q += ` GROUP BY account_id`
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
