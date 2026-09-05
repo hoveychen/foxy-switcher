@@ -62,6 +62,32 @@ func PickWithFilter(ctx context.Context, st *store.Store, now time.Time, deviceI
 
 // PickProviderWithFilter is PickWithFilter scoped to one provider pool.
 func PickProviderWithFilter(ctx context.Context, st *store.Store, provider string, now time.Time, deviceID string, extraSkip func(store.Account) bool) (*store.Account, error) {
+	return PickProviderWithOptions(ctx, st, provider, now,
+		PickOptions{DeviceID: deviceID, ExtraSkip: extraSkip})
+}
+
+// PickOptions carries the optional knobs of PickProviderWithOptions. The zero
+// value reproduces plain LRU/runway ranking over the whole provider pool.
+type PickOptions struct {
+	// DeviceID identifies the picking device so an account pinned for it
+	// (store.MarkForNextPick with that device) jumps to the front of the order.
+	DeviceID string
+	// ExtraSkip drops an account from the candidate set on top of IsEligible.
+	ExtraSkip func(store.Account) bool
+	// LeaseCounts is how many OTHER devices currently hold each account
+	// (store.ActiveLeaseCounts with the caller excluded). Only meaningful for
+	// shared providers, where one account can have several holders: the least
+	// crowded eligible account is preferred so devices spread over the pool
+	// instead of stacking on whichever one has the most runway. nil (the Claude
+	// path, where a foreign lease already disqualifies the account outright)
+	// leaves the ordering untouched.
+	LeaseCounts map[int64]int
+}
+
+// PickProviderWithOptions is the full-fidelity picker every other Pick* wrapper
+// funnels into.
+func PickProviderWithOptions(ctx context.Context, st *store.Store, provider string, now time.Time, opts PickOptions) (*store.Account, error) {
+	deviceID, extraSkip := opts.DeviceID, opts.ExtraSkip
 	accs, err := st.ListProvider(ctx, provider)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
@@ -90,9 +116,16 @@ func PickProviderWithFilter(ctx context.Context, st *store.Store, provider strin
 	pinnedForMe := func(a store.Account) bool {
 		return deviceID != "" && a.PinnedDeviceID == deviceID
 	}
+	load := func(a store.Account) int { return opts.LeaseCounts[a.ID] }
 	sort.Slice(candidates, func(i, j int) bool {
 		if pi, pj := pinnedForMe(candidates[i]), pinnedForMe(candidates[j]); pi != pj {
 			return pi
+		}
+		// Shared providers only (LeaseCounts nil ⇒ every load is 0): spread
+		// devices across accounts before optimising for runway, so N devices on
+		// M Codex accounts don't all land on the same one.
+		if li, lj := load(candidates[i]), load(candidates[j]); li != lj {
+			return li < lj
 		}
 		// Scoped-OK accounts outrank scoped-exceeded (degraded) ones: a
 		// degraded account still serves non-scoped models but is only a

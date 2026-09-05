@@ -68,6 +68,11 @@ func (s *InProc) PickForDevice(ctx context.Context, now time.Time, deviceID stri
 	return s.PickProviderForDevice(ctx, now, deviceID, store.ProviderClaude)
 }
 
+// PickProviderForDevice picks from one provider pool for one device. Providers
+// split into two lease regimes here: exclusive ones (Claude) filter out
+// accounts another device holds and fall back to idle-reclaim when that empties
+// the pool, while shared ones (Codex) let devices co-hold an account and merely
+// balance across the pool by holder count.
 func (s *InProc) PickProviderForDevice(ctx context.Context, now time.Time, deviceID, provider string) (*Account, error) {
 	// Per-device provider allowlist: a paired device may only lease the
 	// providers the admin granted it (at approval or in the devices page).
@@ -83,6 +88,20 @@ func (s *InProc) PickProviderForDevice(ctx context.Context, now time.Time, devic
 			return nil, selector.ErrNoAvailable
 		}
 	}
+	// Shared providers (Codex) let several devices hold one account, so a
+	// foreign lease is not a disqualifier — it's just load. Rank by how many
+	// OTHER devices are on each account (least crowded first) and skip the
+	// idle-reclaim second pass entirely: there is nothing to reclaim when the
+	// account can simply be co-held.
+	if store.ProviderSharesAccounts(provider) {
+		counts, err := s.st.ActiveLeaseCounts(ctx, deviceID)
+		if err != nil {
+			return nil, err
+		}
+		return selector.PickProviderWithOptions(ctx, s.st, provider, now,
+			selector.PickOptions{DeviceID: deviceID, LeaseCounts: counts})
+	}
+
 	acc, err := selector.PickProviderWithFilter(ctx, s.st, provider, now, deviceID, func(a Account) bool {
 		if deviceID == "" {
 			return s.st.IsAccountLeased(a.ID)

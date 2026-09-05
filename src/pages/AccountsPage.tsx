@@ -3,6 +3,8 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { Account, UsageWindow, apiClient } from "../api";
 import {
   accountIsCooling,
+  accountIsShared,
+  accountLeaseHolders,
   accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
@@ -108,15 +110,39 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
 
 function isSelectable(a: Account): boolean {
   // Foreign-held lease (vault sees another device using this account)
-  // makes manual select pointless: AcquireLease would hit the
-  // leases_account_id_uniq index and 409. Skip in the UI so users see
-  // the badge instead of a confusing error toast.
-  if (a.lease && !a.lease.mine) return false;
+  // makes manual select pointless on an EXCLUSIVE account: AcquireLease
+  // would hit leases_exclusive_account_uniq and 409. Skip in the UI so
+  // users see the badge instead of a confusing error toast. Shared
+  // (Codex) accounts have no such lock — co-holding is the point.
+  if (a.lease && !a.lease.mine && !accountIsShared(a)) return false;
   return a.status === "active" && !accountIsCooling(a);
 }
 
 function foreignLease(a: Account) {
   return a.lease && !a.lease.mine ? a.lease : null;
+}
+
+// extraHolders: how many devices hold this account BEYOND the one named on
+// the badge, so a shared Codex account reads "in use by Alpha +2" instead of
+// silently hiding its other tenants.
+function extraHolders(a: Account): number {
+  return Math.max(0, accountLeaseHolders(a).length - 1);
+}
+
+// holderTooltip lists every holding device for the badge's title attribute.
+function holderTooltip(a: Account): string | undefined {
+  const holders = accountLeaseHolders(a);
+  if (holders.length < 2) return undefined;
+  return holders.map((l) => l.device_name || l.device_id || "—").join(", ");
+}
+
+// HolderOverflow appends "+N" inside a lease badge when a shared account has
+// more holders than the one the badge names. Renders nothing for the ordinary
+// single-holder case, so exclusive (Claude) badges look exactly as before.
+function HolderOverflow({ account }: { account: Account }) {
+  const extra = extraHolders(account);
+  if (extra <= 0) return null;
+  return <span className="lease-overflow"> +{extra}</span>;
 }
 
 function utilizationTone(pct: number): Tone {
@@ -325,28 +351,31 @@ function AccountCard({
             )}
             {vaultMode
               ? vaultBadgeLease && (
-                  <span className="pill leased-pill">
+                  <span className="pill leased-pill" title={holderTooltip(a)}>
                     {tf("accounts.badge.in_use_by", {
                       device:
                         vaultBadgeLease.device_name ||
                         vaultBadgeLease.device_id ||
                         "—",
                     })}
+                    <HolderOverflow account={a} />
                   </span>
                 )
               : (
                   <>
                     {isInUse && (
-                      <span className="pill active-pill">
+                      <span className="pill active-pill" title={holderTooltip(a)}>
                         {t("accounts.row.in_use")}
+                        <HolderOverflow account={a} />
                       </span>
                     )}
                     {fLease && !isInUse && (
-                      <span className="pill leased-pill">
+                      <span className="pill leased-pill" title={holderTooltip(a)}>
                         {tf("accounts.badge.in_use_by", {
                           device:
                             fLease.device_name || fLease.device_id || "—",
                         })}
+                        <HolderOverflow account={a} />
                       </span>
                     )}
                   </>

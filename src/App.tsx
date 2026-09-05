@@ -9,6 +9,7 @@ import {
   DaemonMode,
   Settings,
   ThresholdInput,
+  accountLeaseHolders,
   apiClient,
   getDaemonMode,
   isTauriHost,
@@ -438,7 +439,10 @@ export default function App() {
       // (the other device still holds the lease), so only confirm
       // when transitioning active → paused.
       const goingToPause = a.status === "active";
-      const fLease = a.lease && !a.lease.mine ? a.lease : null;
+      // Scan every holder, not just the representative lease: on a shared
+      // Codex account this device may be one of the holders, which would
+      // otherwise mask the other devices behind a "mine" lease.
+      const fLease = accountLeaseHolders(a).find((l) => !l.mine) ?? null;
       if (goingToPause && fLease) {
         const ok = await confirmAction(
           tf("app.foreign_lease.pause.prompt", {
@@ -462,7 +466,9 @@ export default function App() {
       // Surface a sharper warning for foreign-leased accounts: deleting
       // them yanks the row out from under the other device mid-session.
       const target = accounts.find((a) => a.id === id);
-      const fLease = target?.lease && !target.lease.mine ? target.lease : null;
+      const fLease = target
+        ? (accountLeaseHolders(target).find((l) => !l.mine) ?? null)
+        : null;
       const ok = fLease
         ? await confirmAction(
             tf("app.foreign_lease.delete.prompt", {

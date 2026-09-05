@@ -402,6 +402,7 @@
   "drawer.status.refresh_due": "需要刷新",
   "drawer.status.active": "活跃",
   "drawer.status.leased_by_other": "被 {device} 占用 · {remaining}",
+  "drawer.status.shared_with": "{count} 台其他设备共用中",
   "drawer.fmt.expired": "已过期",
   "modal.close": "关闭",
   "drawer.close": "关闭详情",

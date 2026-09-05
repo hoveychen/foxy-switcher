@@ -29,14 +29,16 @@ type Lease struct {
 
 // AcquireLease records (or replaces) the lease for accountID. Semantics:
 //
-//   - If no live lease exists for the account, insert with the supplied id.
-//   - If the existing lease belongs to deviceID, update it in place
-//     (renew TTL, return the same row's id). The supplied newID is ignored
-//     in that case.
-//   - If a different device holds it, return ErrLeaseLocked.
+//   - If this device already holds a live lease on the account, update it in
+//     place (renew TTL, return the same row's id). The supplied newID is
+//     ignored in that case.
+//   - Otherwise insert with the supplied id, EXCEPT on an exclusive-provider
+//     account another device already holds, which returns ErrLeaseLocked.
 //
-// The whole thing runs inside a transaction so two agents racing to
-// acquire the same account can't both succeed.
+// Exclusivity is per provider (see ProviderSharesAccounts): Claude accounts
+// are single-holder, Codex accounts may be held by any number of devices at
+// once. The whole thing runs inside a transaction so two agents racing to
+// acquire the same exclusive account can't both succeed.
 func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64, deviceID string, ttl time.Duration) (Lease, error) {
 	if newID == "" || accountID == 0 || deviceID == "" || ttl <= 0 {
 		return Lease{}, fmt.Errorf("AcquireLease: id, account_id, device_id, ttl required")
@@ -64,10 +66,22 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 		return Lease{}, err
 	}
 
+	// Shared providers (Codex) allow several devices on one account, so the
+	// existing-lease lookup is scoped to this device: another device's row is
+	// not a conflict, it's a co-tenant.
+	shared, err := accountSharesTx(ctx, tx, accountID)
+	if err != nil {
+		return Lease{}, err
+	}
+	lookup := `SELECT id, device_id, acquired_at FROM leases WHERE account_id = ?`
+	args := []any{accountID}
+	if shared {
+		lookup += ` AND device_id = ?`
+		args = append(args, deviceID)
+	}
 	var existingID, existingDeviceID string
 	var existingAcquiredAt int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT id, device_id, acquired_at FROM leases WHERE account_id = ?`, accountID).
+	err = tx.QueryRowContext(ctx, lookup, args...).
 		Scan(&existingID, &existingDeviceID, &existingAcquiredAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -75,9 +89,9 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 		// last_active_at = now: a fresh acquire is by definition active, so the
 		// account can't be immediately reclaimed from the new holder.
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO leases (id, account_id, device_id, acquired_at, expires_at, last_active_at)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			newID, accountID, deviceID, now.UnixMilli(), expiresAt, now.UnixMilli()); err != nil {
+			`INSERT INTO leases (id, account_id, device_id, acquired_at, expires_at, last_active_at, shared)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			newID, accountID, deviceID, now.UnixMilli(), expiresAt, now.UnixMilli(), boolToInt(shared)); err != nil {
 			return Lease{}, err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -104,8 +118,8 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 	// re-acquires (rather than renews) its own account is going through the
 	// active-selection path, so treat it as freshly active.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE leases SET expires_at = ?, last_active_at = ? WHERE id = ?`,
-		expiresAt, now.UnixMilli(), existingID); err != nil {
+		`UPDATE leases SET expires_at = ?, last_active_at = ?, shared = ? WHERE id = ?`,
+		expiresAt, now.UnixMilli(), boolToInt(shared), existingID); err != nil {
 		return Lease{}, err
 	}
 	// Backfill an attribution segment for a lease that has none — e.g. one
@@ -124,6 +138,30 @@ func (s *Store) AcquireLease(ctx context.Context, newID string, accountID int64,
 	}
 	return Lease{ID: existingID, AccountID: accountID, DeviceID: deviceID,
 		AcquiredAt: now.UnixMilli(), ExpiresAt: expiresAt, LastActiveAt: now.UnixMilli()}, nil
+}
+
+// ProviderSharesAccounts reports whether one account of this provider may be
+// held by several devices at the same time. Codex (ChatGPT) plans are not
+// single-session, so pinning one account to one device only shrinks the usable
+// pool; Claude stays exclusive because two agents injecting the same OAuth
+// credential fight over the same rate-limit window and session state.
+func ProviderSharesAccounts(provider string) bool {
+	return provider == ProviderCodex
+}
+
+// accountSharesTx resolves ProviderSharesAccounts for accountID from inside a
+// transaction. An unknown account (no row) is treated as exclusive — the
+// conservative default, matching the pre-sharing behaviour.
+func accountSharesTx(ctx context.Context, tx *sql.Tx, accountID int64) (bool, error) {
+	var provider string
+	err := tx.QueryRowContext(ctx, `SELECT provider FROM accounts WHERE id = ?`, accountID).Scan(&provider)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return ProviderSharesAccounts(provider), nil
 }
 
 // RenewLease bumps a known lease's TTL. Returns ErrNotFound when the
@@ -274,7 +312,12 @@ type LeaseInfo struct {
 // without an N+1 query per row.
 type AccountWithLease struct {
 	Account
+	// Lease is the representative holder — the longest-held one — kept for the
+	// single-holder surfaces that predate shared leases. Nil when unheld.
 	Lease *LeaseInfo
+	// Leases is every live holder, oldest first. Length > 1 only for shared
+	// providers (Codex), where several devices co-hold one account.
+	Leases []LeaseInfo
 }
 
 // LeaseWithDevice is a live lease row joined with the holding device's
@@ -305,13 +348,18 @@ type LeaseWithAccount struct {
 // names) so the UI never shows a blank badge.
 func (s *Store) ListAccountsWithLeases(ctx context.Context) ([]AccountWithLease, error) {
 	now := time.Now().UnixMilli()
+	// A shared (Codex) account can have several live leases, so this join fans
+	// out into one row per holder. The scan below collapses them back into a
+	// single AccountWithLease carrying every holder — ordering by acquired_at
+	// within an account both groups the duplicates and makes the first holder
+	// (the longest-held one) the representative Lease.
 	q := `SELECT ` + qualifiedAccountColumns + `,
 	             leases.device_id, leases.acquired_at, leases.expires_at,
 	             COALESCE(NULLIF(devices.name, ''), devices.hostname, '') AS device_name
 	        FROM accounts
 	        LEFT JOIN leases  ON leases.account_id = accounts.id AND leases.expires_at > ?
 	        LEFT JOIN devices ON devices.id        = leases.device_id
-	       ORDER BY accounts.id`
+	       ORDER BY accounts.id, leases.acquired_at ASC, leases.id ASC`
 	rows, err := s.db.QueryContext(ctx, q, now)
 	if err != nil {
 		return nil, err
@@ -349,7 +397,19 @@ func (s *Store) ListAccountsWithLeases(ctx context.Context) ([]AccountWithLease,
 				ExpiresAt:  expiresAt.Int64,
 			}
 		}
-		out = append(out, AccountWithLease{Account: a, Lease: lease})
+		// Same account as the previous row → another holder of a shared
+		// account, not a new account.
+		if n := len(out); n > 0 && out[n-1].ID == a.ID {
+			if lease != nil {
+				out[n-1].Leases = append(out[n-1].Leases, *lease)
+			}
+			continue
+		}
+		row := AccountWithLease{Account: a, Lease: lease}
+		if lease != nil {
+			row.Leases = []LeaseInfo{*lease}
+		}
+		out = append(out, row)
 	}
 	return out, rows.Err()
 }
@@ -437,6 +497,40 @@ accounts.seven_day_scoped_label,
 accounts.usage_fetched_at,
 accounts.five_hour_threshold, accounts.seven_day_threshold, accounts.seven_day_sonnet_threshold,
 accounts.account_uuid, accounts.rate_limit_tier, accounts.credential_json, accounts.pinned_device_id`
+
+// ActiveLeaseCounts returns how many devices currently hold a live lease on
+// each account, keyed by account id. Accounts with no live lease are absent
+// (a nil/missing key reads as 0). Feeds the selector's load balancing for
+// shared providers, where several devices may hold the same account and the
+// picker should prefer the least-crowded one.
+//
+// excludeDeviceID drops that device's own leases from the tally — the picking
+// device must not count as load against the account it is already on, or every
+// reconcile tick would bounce it onto a different account. "" counts everyone.
+func (s *Store) ActiveLeaseCounts(ctx context.Context, excludeDeviceID string) (map[int64]int, error) {
+	q := `SELECT account_id, COUNT(*) FROM leases WHERE expires_at > ?`
+	args := []any{time.Now().UnixMilli()}
+	if excludeDeviceID != "" {
+		q += ` AND device_id != ?`
+		args = append(args, excludeDeviceID)
+	}
+	q += ` GROUP BY account_id`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]int)
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
 
 // IsAccountLeased reports whether accountID has a live lease. Used by
 // refresh.Scheduler.IsAccountInUse and by selector.Pick to skip in-use

@@ -4,6 +4,7 @@ import { FoxAvatar } from "../components/FoxAvatar";
 import {
   accountHasOAuthToken,
   accountIsCooling,
+  accountLeaseHolders,
   accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
@@ -516,16 +517,22 @@ function VaultInUseCard({ accounts }: { accounts: Account[] }) {
     <section className="dash-others-in-use">
       <div className="dash-hero-eyebrow">{t("dashboard.vault.in_use_title")}</div>
       <div className="dash-others-list">
-        {accounts.map((a) => {
-          const lease = a.lease!;
-          return (
-            <div key={a.id} className="pill leased-pill" title={a.email || ""}>
+        {accounts.flatMap((a) =>
+          // One pill per HOLDER, not per account: a shared Codex account can
+          // be held by several devices at once and this card's whole job is
+          // showing who is using what.
+          accountLeaseHolders(a).map((lease) => (
+            <div
+              key={`${a.id}:${lease.device_id}`}
+              className="pill leased-pill"
+              title={a.email || ""}
+            >
               <strong>{a.name}</strong>
               <span> · </span>
               <span>{lease.device_name || lease.device_id || "—"}</span>
             </div>
-          );
-        })}
+          )),
+        )}
       </div>
     </section>
   );
@@ -537,22 +544,30 @@ function VaultInUseCard({ accounts }: { accounts: Account[] }) {
 // caller's own injected account. Drives multi-device awareness without
 // duplicating the hero layout for each device.
 function OthersInUse({ accounts }: { accounts: Account[] }) {
-  const others = accounts.filter((a) => a.lease && !a.lease.mine);
+  // Flattened to (account, foreign holder) pairs: a shared Codex account this
+  // device co-holds still has other devices on it, and each of them belongs on
+  // the strip. The caller's own hold is filtered out — HeroCard covers that.
+  const others = accounts.flatMap((a) =>
+    accountLeaseHolders(a)
+      .filter((lease) => !lease.mine)
+      .map((lease) => ({ account: a, lease })),
+  );
   if (others.length === 0) return null;
   return (
     <section className="dash-others-in-use">
       <div className="dash-hero-eyebrow">{t("dashboard.others_in_use")}</div>
       <div className="dash-others-list">
-        {others.map((a) => {
-          const lease = a.lease!;
-          return (
-            <div key={a.id} className="pill leased-pill" title={a.email || ""}>
-              <strong>{a.name}</strong>
-              <span> · </span>
-              <span>{lease.device_name || lease.device_id || "—"}</span>
-            </div>
-          );
-        })}
+        {others.map(({ account: a, lease }) => (
+          <div
+            key={`${a.id}:${lease.device_id}`}
+            className="pill leased-pill"
+            title={a.email || ""}
+          >
+            <strong>{a.name}</strong>
+            <span> · </span>
+            <span>{lease.device_name || lease.device_id || "—"}</span>
+          </div>
+        ))}
       </div>
     </section>
   );

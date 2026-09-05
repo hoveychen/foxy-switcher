@@ -263,7 +263,13 @@ type accountView struct {
 	// holder". Nil when no live lease exists. Populated by
 	// handleListAccounts via store.ListAccountsWithLeases.
 	Lease *accountLeaseView `json:"lease,omitempty"`
-	InUse bool              `json:"in_use"`
+	// Leases is every live holder of the account, oldest first. Shared
+	// providers (Codex) can have more than one; exclusive ones (Claude) never
+	// do, so this is a one-element echo of Lease there. Lease itself stays the
+	// representative holder — the caller's own lease when it holds the account,
+	// otherwise the longest-held one — so single-holder UI keeps working.
+	Leases []accountLeaseView `json:"leases,omitempty"`
+	InUse  bool               `json:"in_use"`
 	// OpenRouter carries the derivation template for provider="openrouter"
 	// rows and is nil for every other provider. It never includes the
 	// management key — only whether one is on file.
@@ -363,13 +369,21 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		v.OpenRouter = orCfg
-		if av.Lease != nil {
-			v.Lease = &accountLeaseView{
-				DeviceID:   av.Lease.DeviceID,
-				DeviceName: av.Lease.DeviceName,
-				Mine:       leaseMine(r.Context(), av.Lease.DeviceID),
-				AcquiredAt: av.Lease.AcquiredAt,
-				ExpiresAt:  av.Lease.ExpiresAt,
+		for _, l := range av.Leases {
+			v.Leases = append(v.Leases, accountLeaseView{
+				DeviceID:   l.DeviceID,
+				DeviceName: l.DeviceName,
+				Mine:       leaseMine(r.Context(), l.DeviceID),
+				AcquiredAt: l.AcquiredAt,
+				ExpiresAt:  l.ExpiresAt,
+			})
+		}
+		// Representative holder: the caller's own lease wins so a device
+		// co-holding a shared Codex account doesn't see its own account
+		// flagged as foreign (which gates the pause/delete warnings).
+		for i := range v.Leases {
+			if v.Lease == nil || (v.Leases[i].Mine && !v.Lease.Mine) {
+				v.Lease = &v.Leases[i]
 			}
 		}
 		out[i] = v

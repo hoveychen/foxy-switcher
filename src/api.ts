@@ -201,6 +201,12 @@ export interface Account {
   //   when name is empty.
   // - acquired_at / expires_at are unix millis.
   lease?: AccountLease;
+  // Every live holder, oldest first. Codex accounts are shared — several
+  // devices may hold one at the same time — so this can have more than one
+  // entry; Claude accounts stay exclusive and never do. `lease` above is the
+  // representative holder (this device's own lease when it holds the account),
+  // so single-holder UI can keep reading it.
+  leases?: AccountLease[];
   // Derivation template for provider="openrouter" rows; absent for every other
   // provider. Never carries the management key — only whether one is on file.
   openrouter?: OpenRouterConfig;
@@ -342,6 +348,23 @@ export function accountRefreshDue(a: Account, nowMs: number): boolean {
 // accountRefreshDue.
 export function accountHasOAuthToken(a: Account): boolean {
   return a.expires_at > 0;
+}
+
+// accountIsShared: several devices may hold this account at the same time.
+// Mirrors store.ProviderSharesAccounts — Codex (ChatGPT) plans are not
+// single-session, so the vault hands one account to as many devices as ask for
+// it, whereas a Claude account stays exclusive. A foreign lease on a shared
+// account is therefore informational, not a lock: selecting it still works.
+export function accountIsShared(a: Account): boolean {
+  return a.provider === "codex";
+}
+
+// accountLeaseHolders: every device currently holding the account, oldest
+// first. Falls back to the representative `lease` for servers that predate the
+// `leases` array.
+export function accountLeaseHolders(a: Account): AccountLease[] {
+  if (a.leases && a.leases.length > 0) return a.leases;
+  return a.lease ? [a.lease] : [];
 }
 
 // accountOutOfCredit: the vault will not hand this account's key to a device.
