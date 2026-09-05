@@ -16,8 +16,10 @@ import (
 //   - devices       — paired agents' opaque tokens.
 //   - pairings      — in-flight device-flow handshake rows.
 //   - web_sessions  — HTTP cookie sessions for the admin Web UI.
-//   - leases        — credinject's claim on accounts (one per account at
-//     a time, enforced by leases_account_id_uniq below).
+//   - leases        — credinject's claim on accounts. Exclusive providers
+//     (Claude) allow one live lease per account, enforced by
+//     the partial unique index leases_exclusive_account_uniq;
+//     shared providers (Codex) allow one per (account, device).
 //   - lease_events   — append-only audit of who held what, when. A row is
 //     opened on first acquire and closed (ended_at set) on
 //     release/expiry. Unlike `leases` (current-state only),
@@ -94,9 +96,16 @@ CREATE TABLE IF NOT EXISTS leases (
   -- one. Defaults to 0 (legacy rows / treated as "very old" → reclaimable);
   -- AcquireLease stamps it to acquire-time since a fresh acquire is by
   -- definition active.
-  last_active_at INTEGER NOT NULL DEFAULT 0
+  last_active_at INTEGER NOT NULL DEFAULT 0,
+  -- shared = 1 marks a lease on an account whose provider allows several
+  -- devices to hold it at once (Codex: a ChatGPT plan is not single-session,
+  -- so exclusivity would only shrink the usable pool). Exclusive providers
+  -- (Claude) keep shared = 0 and are guarded by the partial unique index
+  -- created in authColumnMigrations. The flag lives on the lease rather than
+  -- being joined from accounts.provider because a SQLite index predicate
+  -- cannot reach another table.
+  shared INTEGER NOT NULL DEFAULT 0
 );
-CREATE UNIQUE INDEX IF NOT EXISTS leases_account_id_uniq ON leases (account_id);
 CREATE INDEX IF NOT EXISTS leases_device_id ON leases (device_id);
 CREATE INDEX IF NOT EXISTS leases_expires_at ON leases (expires_at);
 
@@ -153,6 +162,18 @@ var authColumnMigrations = []string{
 	// leases expire within a TTL (~60s) any pre-migration row is gone almost
 	// immediately, so no backfill from acquired_at is needed.
 	`ALTER TABLE leases ADD COLUMN last_active_at INTEGER NOT NULL DEFAULT 0`,
+	// Shared (multi-device) leases. The old full unique index on account_id
+	// hard-coded "one device per account"; it is replaced by a PARTIAL unique
+	// index that only constrains exclusive (shared = 0) leases, plus a
+	// per-(account, device) uniqueness guard that applies to both kinds so one
+	// device can never accumulate duplicate rows on the same account. Both
+	// statements live here rather than in authSchema because the partial
+	// index's predicate needs the `shared` column, which the ALTER above only
+	// adds to pre-existing databases after authSchema has run.
+	`ALTER TABLE leases ADD COLUMN shared INTEGER NOT NULL DEFAULT 0`,
+	`DROP INDEX IF EXISTS leases_account_id_uniq`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS leases_exclusive_account_uniq ON leases (account_id) WHERE shared = 0`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS leases_account_device_uniq ON leases (account_id, device_id)`,
 }
 
 const passwordHashKey = "auth.password_hash"
