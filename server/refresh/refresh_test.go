@@ -304,6 +304,51 @@ func TestUsagePollerLabelsBusinessProLite(t *testing.T) {
 	}
 }
 
+func TestUsagePollerRepairsStaleCodexPlanLabel(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"plan_type": "self_serve_business_prolite",
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{"used_percent": 11.0, "reset_at": time.Now().Add(6 * 24 * time.Hour).Unix()},
+			},
+		})
+	}))
+	defer srv.Close()
+	prevURL := openai.UsageURL
+	openai.UsageURL = srv.URL
+	defer func() { openai.UsageURL = prevURL }()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	a := &store.Account{
+		Provider: store.ProviderCodex, Name: "business", AccessToken: "live-access",
+		RefreshToken: "live-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+		Status: "active", AccountUUID: "business-acct",
+		Plan:             "Codex Self_serve_business_prolite",
+		SubscriptionType: "self_serve_business_prolite",
+	}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	p := NewUsagePoller(st, nil)
+	if !p.pollCodex(ctx, *a) {
+		t.Fatal("pollCodex returned false")
+	}
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Plan != "Codex Business Premium" {
+		t.Fatalf("stale Codex plan label not repaired; Plan = %q (want %q)", got.Plan, "Codex Business Premium")
+	}
+}
+
 func TestUsagePollerPollsPausedAccount(t *testing.T) {
 	ctx := context.Background()
 
