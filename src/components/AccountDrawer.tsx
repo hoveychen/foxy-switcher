@@ -15,6 +15,7 @@ import {
   accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
+  codexUsageLabel,
   scopedIsThrottled,
   apiClient,
 } from "../api";
@@ -643,7 +644,7 @@ export function AccountDrawer({
         <h3 className="drawer-section-title">{t("drawer.section.usage")}</h3>
         <div className="usage-list">
           <UsageBar
-            label={t(account.provider === "codex" ? "accounts.usage.primary" : "drawer.usage.5h")}
+            label={t(account.provider === "codex" ? codexUsageLabel(account.five_hour, "primary") : "drawer.usage.5h")}
             win={account.five_hour}
             nowMs={nowMs}
             threshold={account.five_hour_threshold}
@@ -651,7 +652,7 @@ export function AccountDrawer({
             readOnly={disableAdminActions}
           />
           <UsageBar
-            label={t(account.provider === "codex" ? "accounts.usage.secondary" : "drawer.usage.7d_opus")}
+            label={t(account.provider === "codex" ? codexUsageLabel(account.seven_day, "secondary") : "drawer.usage.7d_opus")}
             win={account.seven_day}
             nowMs={nowMs}
             threshold={account.seven_day_threshold}

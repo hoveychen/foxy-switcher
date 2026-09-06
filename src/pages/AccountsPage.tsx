@@ -8,6 +8,7 @@ import {
   accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
+  codexUsageLabel,
   scopedIsThrottled,
 } from "../api";
 import { Icon } from "../components/Icon";
@@ -422,11 +423,11 @@ function AccountCard({
         ) : (
           <>
             <UsageMiniBar
-              label={t(a.provider === "codex" ? "accounts.usage.primary" : "drawer.usage.5h")}
+              label={t(a.provider === "codex" ? codexUsageLabel(a.five_hour, "primary") : "drawer.usage.5h")}
               win={a.five_hour}
             />
             <UsageMiniBar
-              label={t(a.provider === "codex" ? "accounts.usage.secondary" : "drawer.usage.7d_opus")}
+              label={t(a.provider === "codex" ? codexUsageLabel(a.seven_day, "secondary") : "drawer.usage.7d_opus")}
               win={a.seven_day}
             />
             {a.provider !== "codex" && (
