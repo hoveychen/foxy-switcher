@@ -84,6 +84,63 @@ func TestParseAuthFileBuildsCodexAccountAndPreservesUnknownFields(t *testing.T) 
 	}
 }
 
+func TestParseAuthFileLabelsBusinessProLite(t *testing.T) {
+	raw := authJSON(t, "business-acct", "")
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	tokens := doc["tokens"].(map[string]any)
+	tokens["id_token"] = fakeJWT(t, "business-acct", "boss@example.com", "Boss", "self_serve_business_prolite", time.Now().Add(time.Hour).Unix())
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	auth, err := ParseAuthFile(raw)
+	if err != nil {
+		t.Fatalf("ParseAuthFile: %v", err)
+	}
+	account, err := auth.Account()
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if account.Plan != "Codex Business Premium" || account.SubscriptionType != "self_serve_business_prolite" {
+		t.Fatalf("business plan mismatch: %+v", account)
+	}
+}
+
+func TestPlanLabelCoversCodexPlanTypes(t *testing.T) {
+	tests := map[string]string{
+		"":                                "Codex",
+		"free":                            "Codex Free",
+		"go":                              "Codex Go",
+		"plus":                            "Codex Plus",
+		"pro":                             "Codex Pro",
+		"prolite":                         "Codex Pro Lite",
+		"team":                            "Codex Team",
+		"self_serve_business_prolite":     "Codex Business Premium",
+		"self_serve_business_usage_based": "Codex Business Usage-Based",
+		"business":                        "Codex Business",
+		"ent26":                           "Codex Enterprise",
+		"enterprise_cbp_automation":       "Codex Enterprise Automation",
+		"enterprise_cbp_usage_based":      "Codex Enterprise Usage-Based",
+		"enterprise":                      "Codex Enterprise",
+		"edu":                             "Codex Edu",
+		"edu_plus":                        "Codex Edu Plus",
+		"edu_pro":                         "Codex Edu Pro",
+		"unknown":                         "Codex",
+		"future_business_ultra":           "Codex Future Business Ultra",
+	}
+	for raw, want := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if got := PlanLabel(raw); got != want {
+				t.Fatalf("PlanLabel(%q) = %q, want %q", raw, got, want)
+			}
+		})
+	}
+}
+
 func TestRefreshAndFetchUsageFollowCodexProtocol(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

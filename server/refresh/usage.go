@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -311,7 +310,7 @@ func (p *UsagePoller) pollCodex(ctx context.Context, a store.Account) bool {
 	}
 	if u.PlanType != "" && u.PlanType != a.SubscriptionType {
 		_ = p.st.SetProfile(ctx, a.ID, a.AccountUUID, a.Email, a.FullName,
-			a.OrganizationName, "Codex "+strings.ToUpper(u.PlanType[:1])+u.PlanType[1:], u.PlanType, "")
+			a.OrganizationName, openai.PlanLabel(u.PlanType), u.PlanType, "")
 	}
 	if err := p.st.AppendUsageHistory(ctx, a.ID, time.Now().UnixMilli(), primaryUtil, secondaryUtil, 0); err != nil {
 		p.logger.Printf("[usage] Codex account %d history: %v", a.ID, err)
