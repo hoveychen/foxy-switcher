@@ -87,12 +87,29 @@ type Usage struct {
 	PlanType  string
 	Primary   *UsageWindow
 	Secondary *UsageWindow
+	Buckets   []UsageBucket
+}
+
+// UsageBucket is one independently-metered Codex quota. The canonical Codex
+// quota uses limit_id "codex"; the backend may append arbitrary model/feature
+// quotas through additional_rate_limits without requiring a Foxy release.
+type UsageBucket struct {
+	LimitID         string       `json:"limit_id"`
+	LimitName       string       `json:"limit_name,omitempty"`
+	NormalModelSlug string       `json:"normal_model_slug,omitempty"`
+	Primary         *UsageWindow `json:"primary,omitempty"`
+	Secondary       *UsageWindow `json:"secondary,omitempty"`
 }
 
 type UsageWindow struct {
-	UsedPercent   float64
-	ResetAt       time.Time
-	WindowSeconds int64
+	UsedPercent   float64   `json:"used_percent"`
+	ResetAt       time.Time `json:"reset_at"`
+	WindowSeconds int64     `json:"window_seconds,omitempty"`
+}
+
+type rateLimitJSON struct {
+	Primary   *usageWindowJSON `json:"primary_window"`
+	Secondary *usageWindowJSON `json:"secondary_window"`
 }
 
 func FetchUsage(ctx context.Context, accessToken, accountID string) (*Usage, error) {
@@ -116,20 +133,51 @@ func FetchUsage(ctx context.Context, accessToken, accountID string) (*Usage, err
 		return nil, fmt.Errorf("Codex usage failed: HTTP %d", resp.StatusCode)
 	}
 	var payload struct {
-		PlanType  string `json:"plan_type"`
-		RateLimit struct {
-			Primary   *usageWindowJSON `json:"primary_window"`
-			Secondary *usageWindowJSON `json:"secondary_window"`
-		} `json:"rate_limit"`
+		PlanType             string        `json:"plan_type"`
+		RateLimit            rateLimitJSON `json:"rate_limit"`
+		AdditionalRateLimits []struct {
+			LimitName       string         `json:"limit_name"`
+			MeteredFeature  string         `json:"metered_feature"`
+			NormalModelSlug string         `json:"normal_model_slug"`
+			RateLimit       *rateLimitJSON `json:"rate_limit"`
+		} `json:"additional_rate_limits"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, err
 	}
-	return &Usage{
+	usage := &Usage{
 		PlanType:  payload.PlanType,
 		Primary:   payload.RateLimit.Primary.value(),
 		Secondary: payload.RateLimit.Secondary.value(),
-	}, nil
+	}
+	if usage.Primary != nil || usage.Secondary != nil {
+		usage.Buckets = append(usage.Buckets, UsageBucket{
+			LimitID: "codex", Primary: usage.Primary, Secondary: usage.Secondary,
+		})
+	}
+	for i, additional := range payload.AdditionalRateLimits {
+		if additional.RateLimit == nil {
+			continue
+		}
+		primary := additional.RateLimit.Primary.value()
+		secondary := additional.RateLimit.Secondary.value()
+		if primary == nil && secondary == nil {
+			continue
+		}
+		limitID := additional.MeteredFeature
+		if limitID == "" {
+			limitID = additional.LimitName
+		}
+		if limitID == "" {
+			limitID = fmt.Sprintf("additional-%d", i+1)
+		}
+		usage.Buckets = append(usage.Buckets, UsageBucket{
+			LimitID: limitID, LimitName: additional.LimitName,
+			NormalModelSlug: additional.NormalModelSlug,
+			Primary:         primary, Secondary: secondary,
+		})
+	}
+	return usage, nil
 }
 
 type usageWindowJSON struct {
