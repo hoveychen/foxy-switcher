@@ -84,6 +84,32 @@ func TestParseAuthFileBuildsCodexAccountAndPreservesUnknownFields(t *testing.T) 
 	}
 }
 
+func TestParseAuthFileLabelsBusinessProLite(t *testing.T) {
+	raw := authJSON(t, "business-acct", "")
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	tokens := doc["tokens"].(map[string]any)
+	tokens["id_token"] = fakeJWT(t, "business-acct", "boss@example.com", "Boss", "self_serve_business_prolite", time.Now().Add(time.Hour).Unix())
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	auth, err := ParseAuthFile(raw)
+	if err != nil {
+		t.Fatalf("ParseAuthFile: %v", err)
+	}
+	account, err := auth.Account()
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if account.Plan != "Codex Business Premium" || account.SubscriptionType != "self_serve_business_prolite" {
+		t.Fatalf("business plan mismatch: %+v", account)
+	}
+}
+
 func TestRefreshAndFetchUsageFollowCodexProtocol(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

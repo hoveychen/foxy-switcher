@@ -143,7 +143,7 @@ func (a *AuthFile) Account() (*store.Account, error) {
 	if name == "" {
 		name = "Codex account"
 	}
-	plan := codexPlanLabel(claims.Auth.ChatGPTPlanType)
+	plan := PlanLabel(claims.Auth.ChatGPTPlanType)
 	return &store.Account{
 		Provider:         store.ProviderCodex,
 		Name:             name,
@@ -231,9 +231,16 @@ func reverseSyncAllowed(local *AuthFile, stored *store.Account, now time.Time) b
 	return localExpiry >= stored.ExpiresAt
 }
 
-func codexPlanLabel(raw string) string {
+// PlanLabel turns ChatGPT's internal plan enum into the user-facing Codex
+// label stored on an account. Keep explicit mappings for internal enum names
+// whose wording is not suitable for display, while preserving the historical
+// fallback for ordinary values such as "plus" and "pro".
+func PlanLabel(raw string) string {
 	if raw == "" {
 		return "Codex"
+	}
+	if raw == "self_serve_business_prolite" {
+		return "Codex Business Premium"
 	}
 	return "Codex " + strings.ToUpper(raw[:1]) + raw[1:]
 }
