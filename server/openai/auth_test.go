@@ -161,8 +161,8 @@ func TestRefreshAndFetchUsageFollowCodexProtocol(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"plan_type": "plus",
 				"rate_limit": map[string]any{
-					"primary_window":   map[string]any{"used_percent": 42.0, "reset_at": int64(1900000000)},
-					"secondary_window": map[string]any{"used_percent": 7.0, "reset_at": int64(1900003600)},
+					"primary_window":   map[string]any{"used_percent": 42.0, "reset_at": int64(1900000000), "limit_window_seconds": int64(18000)},
+					"secondary_window": map[string]any{"used_percent": 7.0, "reset_at": int64(1900003600), "limit_window_seconds": int64(604800)},
 				},
 			})
 		default:
@@ -185,7 +185,8 @@ func TestRefreshAndFetchUsageFollowCodexProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchUsage: %v", err)
 	}
-	if usage.Primary == nil || usage.Primary.UsedPercent != 42 || usage.Secondary == nil || usage.Secondary.UsedPercent != 7 {
+	if usage.Primary == nil || usage.Primary.UsedPercent != 42 || usage.Primary.WindowSeconds != 18000 ||
+		usage.Secondary == nil || usage.Secondary.UsedPercent != 7 || usage.Secondary.WindowSeconds != 604800 {
 		t.Fatalf("usage mismatch: %+v", usage)
 	}
 }
