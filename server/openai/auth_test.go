@@ -110,6 +110,37 @@ func TestParseAuthFileLabelsBusinessProLite(t *testing.T) {
 	}
 }
 
+func TestPlanLabelCoversCodexPlanTypes(t *testing.T) {
+	tests := map[string]string{
+		"":                                "Codex",
+		"free":                            "Codex Free",
+		"go":                              "Codex Go",
+		"plus":                            "Codex Plus",
+		"pro":                             "Codex Pro",
+		"prolite":                         "Codex Pro Lite",
+		"team":                            "Codex Team",
+		"self_serve_business_prolite":     "Codex Business Premium",
+		"self_serve_business_usage_based": "Codex Business Usage-Based",
+		"business":                        "Codex Business",
+		"ent26":                           "Codex Enterprise",
+		"enterprise_cbp_automation":       "Codex Enterprise Automation",
+		"enterprise_cbp_usage_based":      "Codex Enterprise Usage-Based",
+		"enterprise":                      "Codex Enterprise",
+		"edu":                             "Codex Edu",
+		"edu_plus":                        "Codex Edu Plus",
+		"edu_pro":                         "Codex Edu Pro",
+		"unknown":                         "Codex",
+		"future_business_ultra":           "Codex Future Business Ultra",
+	}
+	for raw, want := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if got := PlanLabel(raw); got != want {
+				t.Fatalf("PlanLabel(%q) = %q, want %q", raw, got, want)
+			}
+		})
+	}
+}
+
 func TestRefreshAndFetchUsageFollowCodexProtocol(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

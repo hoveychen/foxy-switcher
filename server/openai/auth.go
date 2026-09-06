@@ -236,13 +236,40 @@ func reverseSyncAllowed(local *AuthFile, stored *store.Account, now time.Time) b
 // whose wording is not suitable for display, while preserving the historical
 // fallback for ordinary values such as "plus" and "pro".
 func PlanLabel(raw string) string {
-	if raw == "" {
+	labels := map[string]string{
+		"":                                "Codex",
+		"free":                            "Codex Free",
+		"go":                              "Codex Go",
+		"plus":                            "Codex Plus",
+		"pro":                             "Codex Pro",
+		"prolite":                         "Codex Pro Lite",
+		"team":                            "Codex Team",
+		"self_serve_business_prolite":     "Codex Business Premium",
+		"self_serve_business_usage_based": "Codex Business Usage-Based",
+		"business":                        "Codex Business",
+		"ent26":                           "Codex Enterprise",
+		"enterprise_cbp_automation":       "Codex Enterprise Automation",
+		"enterprise_cbp_usage_based":      "Codex Enterprise Usage-Based",
+		"enterprise":                      "Codex Enterprise",
+		"edu":                             "Codex Edu",
+		"edu_plus":                        "Codex Edu Plus",
+		"edu_pro":                         "Codex Edu Pro",
+		"unknown":                         "Codex",
+	}
+	if label, ok := labels[raw]; ok {
+		return label
+	}
+
+	// New server-side plan types should remain readable until Foxy learns
+	// their exact product names instead of exposing an internal snake_case ID.
+	words := strings.FieldsFunc(raw, func(r rune) bool { return r == '_' || r == '-' })
+	for i, word := range words {
+		words[i] = strings.ToUpper(word[:1]) + word[1:]
+	}
+	if len(words) == 0 {
 		return "Codex"
 	}
-	if raw == "self_serve_business_prolite" {
-		return "Codex Business Premium"
-	}
-	return "Codex " + strings.ToUpper(raw[:1]) + raw[1:]
+	return "Codex " + strings.Join(words, " ")
 }
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
