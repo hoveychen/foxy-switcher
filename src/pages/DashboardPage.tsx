@@ -8,7 +8,7 @@ import {
   accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
-  codexUsageLabel,
+  codexUsageBars,
   scopedIsThrottled,
   apiClient,
   poolWindowTotals,
@@ -445,22 +445,20 @@ function HeroCard({
           </div>
         )}
         <div className="usage-list">
-          <HeroUsageBar
-            label={t(account.provider === "codex" ? codexUsageLabel(account.five_hour, "primary") : "drawer.usage.5h")}
-            win={account.five_hour}
-            nowMs={nowMs}
-          />
-          <HeroUsageBar
-            label={t(account.provider === "codex" ? codexUsageLabel(account.seven_day, "secondary") : "drawer.usage.7d_opus")}
-            win={account.seven_day}
-            nowMs={nowMs}
-          />
-          {account.provider !== "codex" && (
-            <HeroUsageBar
-              label={scopedUsageLabel(account.seven_day_scoped_label, scopedIsThrottled(account))}
-              win={account.seven_day_sonnet}
-              nowMs={nowMs}
-            />
+          {account.provider === "codex" ? (
+            codexUsageBars(account, t).map((bar) => (
+              <HeroUsageBar key={bar.key} label={bar.label} win={bar.win} nowMs={nowMs} />
+            ))
+          ) : (
+            <>
+              <HeroUsageBar label={t("drawer.usage.5h")} win={account.five_hour} nowMs={nowMs} />
+              <HeroUsageBar label={t("drawer.usage.7d_opus")} win={account.seven_day} nowMs={nowMs} />
+              <HeroUsageBar
+                label={scopedUsageLabel(account.seven_day_scoped_label, scopedIsThrottled(account))}
+                win={account.seven_day_sonnet}
+                nowMs={nowMs}
+              />
+            </>
           )}
         </div>
       </div>

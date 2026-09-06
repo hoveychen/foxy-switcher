@@ -8,7 +8,7 @@ import {
   accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
-  codexUsageLabel,
+  codexUsageBars,
   scopedIsThrottled,
 } from "../api";
 import { Icon } from "../components/Icon";
@@ -422,19 +422,19 @@ function AccountCard({
           </>
         ) : (
           <>
-            <UsageMiniBar
-              label={t(a.provider === "codex" ? codexUsageLabel(a.five_hour, "primary") : "drawer.usage.5h")}
-              win={a.five_hour}
-            />
-            <UsageMiniBar
-              label={t(a.provider === "codex" ? codexUsageLabel(a.seven_day, "secondary") : "drawer.usage.7d_opus")}
-              win={a.seven_day}
-            />
-            {a.provider !== "codex" && (
-              <UsageMiniBar
-                label={scopedUsageLabel(a.seven_day_scoped_label, scopedIsThrottled(a))}
-                win={a.seven_day_sonnet}
-              />
+            {a.provider === "codex" ? (
+              codexUsageBars(a, t).map((bar) => (
+                <UsageMiniBar key={bar.key} label={bar.label} win={bar.win} />
+              ))
+            ) : (
+              <>
+                <UsageMiniBar label={t("drawer.usage.5h")} win={a.five_hour} />
+                <UsageMiniBar label={t("drawer.usage.7d_opus")} win={a.seven_day} />
+                <UsageMiniBar
+                  label={scopedUsageLabel(a.seven_day_scoped_label, scopedIsThrottled(a))}
+                  win={a.seven_day_sonnet}
+                />
+              </>
             )}
           </>
         )}
