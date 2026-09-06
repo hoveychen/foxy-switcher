@@ -159,8 +159,9 @@ func cors(next http.Handler) http.Handler {
 // --- /api/accounts ---------------------------------------------------------
 
 type usageWindowView struct {
-	Utilization float64 `json:"utilization"` // 0–100 percent
-	ResetsAt    string  `json:"resets_at"`   // RFC3339; "" when API didn't return this window
+	Utilization   float64 `json:"utilization"` // 0–100 percent
+	ResetsAt      string  `json:"resets_at"`   // RFC3339; "" when API didn't return this window
+	WindowSeconds int64   `json:"window_seconds,omitempty"`
 }
 
 // usageLimitView mirrors one entry of Anthropic's usage-API limits[] array,
@@ -326,10 +327,10 @@ func toView(a store.Account) accountView {
 		SevenDaySonnetThreshold: a.SevenDaySonnetThreshold,
 	}
 	if a.FiveHourResetsAt != "" {
-		view.FiveHour = &usageWindowView{Utilization: a.FiveHourUtil, ResetsAt: a.FiveHourResetsAt}
+		view.FiveHour = &usageWindowView{Utilization: a.FiveHourUtil, ResetsAt: a.FiveHourResetsAt, WindowSeconds: a.FiveHourWindowSeconds}
 	}
 	if a.SevenDayResetsAt != "" {
-		view.SevenDay = &usageWindowView{Utilization: a.SevenDayUtil, ResetsAt: a.SevenDayResetsAt}
+		view.SevenDay = &usageWindowView{Utilization: a.SevenDayUtil, ResetsAt: a.SevenDayResetsAt, WindowSeconds: a.SevenDayWindowSeconds}
 	}
 	if a.SevenDaySonnetResetsAt != "" {
 		view.SevenDaySonnet = &usageWindowView{Utilization: a.SevenDaySonnetUtil, ResetsAt: a.SevenDaySonnetResetsAt}
@@ -796,15 +797,20 @@ func (s *Server) handleRefreshNow(w http.ResponseWriter, r *http.Request) {
 func applyCodexUsage(ctx context.Context, st *store.Store, id int64, u *openai.Usage) error {
 	var primaryUtil, secondaryUtil float64
 	var primaryReset, secondaryReset string
+	var primaryWindowSeconds, secondaryWindowSeconds int64
 	if u.Primary != nil {
 		primaryUtil = u.Primary.UsedPercent
 		primaryReset = u.Primary.ResetAt.Format(time.RFC3339)
+		primaryWindowSeconds = u.Primary.WindowSeconds
 	}
 	if u.Secondary != nil {
 		secondaryUtil = u.Secondary.UsedPercent
 		secondaryReset = u.Secondary.ResetAt.Format(time.RFC3339)
+		secondaryWindowSeconds = u.Secondary.WindowSeconds
 	}
-	return st.SetUsage(ctx, id, primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "", "")
+	return st.SetUsageWithWindowSeconds(ctx, id,
+		primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "", "",
+		primaryWindowSeconds, secondaryWindowSeconds)
 }
 
 // handleSelect promotes one account to the front of the LRU queue so the

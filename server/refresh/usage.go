@@ -295,16 +295,20 @@ func (p *UsagePoller) pollCodex(ctx context.Context, a store.Account) bool {
 	}
 	var primaryUtil, secondaryUtil float64
 	var primaryReset, secondaryReset string
+	var primaryWindowSeconds, secondaryWindowSeconds int64
 	if u.Primary != nil {
 		primaryUtil = u.Primary.UsedPercent
 		primaryReset = u.Primary.ResetAt.Format(time.RFC3339)
+		primaryWindowSeconds = u.Primary.WindowSeconds
 	}
 	if u.Secondary != nil {
 		secondaryUtil = u.Secondary.UsedPercent
 		secondaryReset = u.Secondary.ResetAt.Format(time.RFC3339)
+		secondaryWindowSeconds = u.Secondary.WindowSeconds
 	}
-	if err := p.st.SetUsage(ctx, a.ID,
-		primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "", ""); err != nil {
+	if err := p.st.SetUsageWithWindowSeconds(ctx, a.ID,
+		primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "", "",
+		primaryWindowSeconds, secondaryWindowSeconds); err != nil {
 		p.logger.Printf("[usage] Codex account %d store: %v", a.ID, err)
 		return false
 	}
