@@ -180,6 +180,31 @@ func TestSetUsageScopedLabelRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSetUsageWindowSecondsRoundTrip(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	a := &Account{Name: "codex-user", Email: "codex@example.com", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := st.SetUsageWithWindowSeconds(ctx, a.ID,
+		70, "2026-09-12T08:00:00Z",
+		15, "2026-09-06T12:00:00Z",
+		0, "", "",
+		604800, 18000,
+	); err != nil {
+		t.Fatalf("SetUsageWithWindowSeconds: %v", err)
+	}
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.FiveHourWindowSeconds != 604800 || got.SevenDayWindowSeconds != 18000 {
+		t.Fatalf("window seconds = %d / %d, want 604800 / 18000", got.FiveHourWindowSeconds, got.SevenDayWindowSeconds)
+	}
+}
+
 func TestUpsertDistinctEmailsCoexist(t *testing.T) {
 	st := openTempStore(t)
 	ctx := context.Background()

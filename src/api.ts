@@ -141,6 +141,29 @@ async function api<T>(
 export interface UsageWindow {
   utilization: number; // 0–100 percent
   resets_at: string; // RFC3339
+  window_seconds?: number; // provider-reported total window duration; 0/absent on legacy data
+}
+
+// codexUsageLabel returns the i18n key for a provider-reported Codex window.
+// Keep the same ±5% tolerance as the official Codex client: upstream window
+// durations can drift slightly, but reset countdowns must never be mistaken
+// for total duration. Legacy servers fall back to primary/secondary.
+export function codexUsageLabel(
+  win: UsageWindow | undefined,
+  fallback: "primary" | "secondary",
+): string {
+  const seconds = win?.window_seconds ?? 0;
+  const durations: Array<[number, string]> = [
+    [5 * 60 * 60, "drawer.usage.5h"],
+    [24 * 60 * 60, "accounts.usage.daily"],
+    [7 * 24 * 60 * 60, "accounts.usage.weekly"],
+    [30 * 24 * 60 * 60, "accounts.usage.monthly"],
+    [365 * 24 * 60 * 60, "accounts.usage.annual"],
+  ];
+  for (const [expected, key] of durations) {
+    if (seconds >= expected * 0.95 && seconds <= expected * 1.05) return key;
+  }
+  return `accounts.usage.${fallback}`;
 }
 
 export interface Account {

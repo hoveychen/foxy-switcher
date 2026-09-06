@@ -265,7 +265,7 @@ func TestUsagePollerLabelsBusinessProLite(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"plan_type": "self_serve_business_prolite",
 			"rate_limit": map[string]any{
-				"primary_window": map[string]any{"used_percent": 11.0, "reset_at": time.Now().Add(6 * 24 * time.Hour).Unix()},
+				"primary_window": map[string]any{"used_percent": 11.0, "reset_at": time.Now().Add(6 * 24 * time.Hour).Unix(), "limit_window_seconds": int64(604800)},
 			},
 		})
 	}))
@@ -301,6 +301,9 @@ func TestUsagePollerLabelsBusinessProLite(t *testing.T) {
 	}
 	if got.FiveHourUtil != 11 {
 		t.Fatalf("usage not stored; FiveHourUtil = %v (want 11)", got.FiveHourUtil)
+	}
+	if got.FiveHourWindowSeconds != 604800 {
+		t.Fatalf("window duration not stored; FiveHourWindowSeconds = %d (want 604800)", got.FiveHourWindowSeconds)
 	}
 }
 

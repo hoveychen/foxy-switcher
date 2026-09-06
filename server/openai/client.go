@@ -90,8 +90,9 @@ type Usage struct {
 }
 
 type UsageWindow struct {
-	UsedPercent float64
-	ResetAt     time.Time
+	UsedPercent   float64
+	ResetAt       time.Time
+	WindowSeconds int64
 }
 
 func FetchUsage(ctx context.Context, accessToken, accountID string) (*Usage, error) {
@@ -132,13 +133,18 @@ func FetchUsage(ctx context.Context, accessToken, accountID string) (*Usage, err
 }
 
 type usageWindowJSON struct {
-	UsedPercent float64 `json:"used_percent"`
-	ResetAt     int64   `json:"reset_at"`
+	UsedPercent   float64 `json:"used_percent"`
+	ResetAt       int64   `json:"reset_at"`
+	WindowSeconds int64   `json:"limit_window_seconds"`
 }
 
 func (w *usageWindowJSON) value() *UsageWindow {
 	if w == nil {
 		return nil
 	}
-	return &UsageWindow{UsedPercent: w.UsedPercent, ResetAt: time.Unix(w.ResetAt, 0).UTC()}
+	return &UsageWindow{
+		UsedPercent:   w.UsedPercent,
+		ResetAt:       time.Unix(w.ResetAt, 0).UTC(),
+		WindowSeconds: w.WindowSeconds,
+	}
 }
