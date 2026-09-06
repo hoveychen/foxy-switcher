@@ -81,10 +81,12 @@ type Account struct {
 	// Usage fields refreshed periodically from /api/oauth/usage.
 	// Utilization is 0–100 (percent). ResetsAt is RFC3339; empty when the
 	// API didn't return that window.
-	FiveHourUtil     float64
-	FiveHourResetsAt string
-	SevenDayUtil     float64
-	SevenDayResetsAt string
+	FiveHourUtil          float64
+	FiveHourResetsAt      string
+	FiveHourWindowSeconds int64
+	SevenDayUtil          float64
+	SevenDayResetsAt      string
+	SevenDayWindowSeconds int64
 	// LEGACY NAME — READ THIS BEFORE USING SevenDaySonnet*:
 	// The `sonnet` name is kept only to avoid a wire/DB/settings-key migration.
 	// This slot no longer means "Sonnet": it holds the per-model *weekly-scoped*
@@ -154,8 +156,10 @@ CREATE TABLE IF NOT EXISTS accounts (
   plan                       TEXT    NOT NULL DEFAULT '',
   five_hour_util             REAL    NOT NULL DEFAULT 0,
   five_hour_resets_at        TEXT    NOT NULL DEFAULT '',
+  five_hour_window_seconds   INTEGER NOT NULL DEFAULT 0,
   seven_day_util             REAL    NOT NULL DEFAULT 0,
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
+  seven_day_window_seconds   INTEGER NOT NULL DEFAULT 0,
   -- The seven_day_sonnet_* columns are a LEGACY NAME: they store the per-model
   -- weekly-scoped window (Fable/…), not a Sonnet-specific one. The scoped
   -- model's display name is in seven_day_scoped_label. Name kept to avoid a
@@ -238,8 +242,10 @@ var columnMigrations = []string{
 	`ALTER TABLE accounts ADD COLUMN plan TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN five_hour_util REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN five_hour_resets_at TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN five_hour_window_seconds INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_util REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_resets_at TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN seven_day_window_seconds INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_sonnet_util REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE accounts ADD COLUMN seven_day_sonnet_resets_at TEXT NOT NULL DEFAULT ''`,
 	// Model display name for the seven_day_sonnet slot's now per-model scoped
@@ -415,8 +421,10 @@ CREATE TABLE accounts_new (
   plan                       TEXT    NOT NULL DEFAULT '',
   five_hour_util             REAL    NOT NULL DEFAULT 0,
   five_hour_resets_at        TEXT    NOT NULL DEFAULT '',
+  five_hour_window_seconds   INTEGER NOT NULL DEFAULT 0,
   seven_day_util             REAL    NOT NULL DEFAULT 0,
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
+  seven_day_window_seconds   INTEGER NOT NULL DEFAULT 0,
   seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
   seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
   seven_day_scoped_label     TEXT    NOT NULL DEFAULT '',
@@ -434,8 +442,8 @@ INSERT INTO accounts_new SELECT
   subscription_type, organization_uuid, status, cooldown_until,
   last_used_at, last_429_at, created_at, updated_at,
   email, full_name, organization_name, plan,
-  five_hour_util, five_hour_resets_at,
-  seven_day_util, seven_day_resets_at,
+  five_hour_util, five_hour_resets_at, five_hour_window_seconds,
+  seven_day_util, seven_day_resets_at, seven_day_window_seconds,
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   seven_day_scoped_label,
   usage_fetched_at,
@@ -492,8 +500,10 @@ CREATE TABLE accounts_new (
   plan                       TEXT    NOT NULL DEFAULT '',
   five_hour_util             REAL    NOT NULL DEFAULT 0,
   five_hour_resets_at        TEXT    NOT NULL DEFAULT '',
+  five_hour_window_seconds   INTEGER NOT NULL DEFAULT 0,
   seven_day_util             REAL    NOT NULL DEFAULT 0,
   seven_day_resets_at        TEXT    NOT NULL DEFAULT '',
+  seven_day_window_seconds   INTEGER NOT NULL DEFAULT 0,
   seven_day_sonnet_util      REAL    NOT NULL DEFAULT 0,
   seven_day_sonnet_resets_at TEXT    NOT NULL DEFAULT '',
   seven_day_scoped_label     TEXT    NOT NULL DEFAULT '',
@@ -511,8 +521,8 @@ INSERT INTO accounts_new SELECT
   subscription_type, organization_uuid, status,
   last_used_at, created_at, updated_at,
   email, full_name, organization_name, plan,
-  five_hour_util, five_hour_resets_at,
-  seven_day_util, seven_day_resets_at,
+  five_hour_util, five_hour_resets_at, five_hour_window_seconds,
+  seven_day_util, seven_day_resets_at, seven_day_window_seconds,
   seven_day_sonnet_util, seven_day_sonnet_resets_at,
   seven_day_scoped_label,
   usage_fetched_at,
@@ -809,18 +819,35 @@ func (s *Store) SetUsage(ctx context.Context, id int64,
 	sevenDaySonnetUtil float64, sevenDaySonnetResetsAt string,
 	sevenDayScopedLabel string,
 ) error {
+	return s.SetUsageWithWindowSeconds(ctx, id,
+		fiveHourUtil, fiveHourResetsAt,
+		sevenDayUtil, sevenDayResetsAt,
+		sevenDaySonnetUtil, sevenDaySonnetResetsAt,
+		sevenDayScopedLabel, 0, 0)
+}
+
+// SetUsageWithWindowSeconds preserves provider-reported window durations for
+// Codex. The first two storage slots retain their historical names for wire
+// compatibility, but callers must not assume they are always 5h and 7d.
+func (s *Store) SetUsageWithWindowSeconds(ctx context.Context, id int64,
+	fiveHourUtil float64, fiveHourResetsAt string,
+	sevenDayUtil float64, sevenDayResetsAt string,
+	sevenDaySonnetUtil float64, sevenDaySonnetResetsAt string,
+	sevenDayScopedLabel string,
+	fiveHourWindowSeconds, sevenDayWindowSeconds int64,
+) error {
 	const q = `
 UPDATE accounts
-   SET five_hour_util = ?, five_hour_resets_at = ?,
-       seven_day_util = ?, seven_day_resets_at = ?,
+   SET five_hour_util = ?, five_hour_resets_at = ?, five_hour_window_seconds = ?,
+       seven_day_util = ?, seven_day_resets_at = ?, seven_day_window_seconds = ?,
        seven_day_sonnet_util = ?, seven_day_sonnet_resets_at = ?,
        seven_day_scoped_label = ?,
        usage_fetched_at = ?, updated_at = ?
  WHERE id = ?`
 	now := time.Now().UnixMilli()
 	_, err := s.db.ExecContext(ctx, q,
-		fiveHourUtil, fiveHourResetsAt,
-		sevenDayUtil, sevenDayResetsAt,
+		fiveHourUtil, fiveHourResetsAt, fiveHourWindowSeconds,
+		sevenDayUtil, sevenDayResetsAt, sevenDayWindowSeconds,
 		sevenDaySonnetUtil, sevenDaySonnetResetsAt,
 		sevenDayScopedLabel,
 		now, now, id)
@@ -987,8 +1014,8 @@ id, provider, name, access_token, refresh_token, expires_at, scopes,
 subscription_type, organization_uuid, status,
 last_used_at, created_at, updated_at,
 email, full_name, organization_name, plan,
-five_hour_util, five_hour_resets_at,
-seven_day_util, seven_day_resets_at,
+five_hour_util, five_hour_resets_at, five_hour_window_seconds,
+seven_day_util, seven_day_resets_at, seven_day_window_seconds,
 seven_day_sonnet_util, seven_day_sonnet_resets_at,
 seven_day_scoped_label,
 usage_fetched_at,
@@ -1044,8 +1071,8 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.OrganizationUUID, &a.Status, &a.LastUsedAt,
 			&a.CreatedAt, &a.UpdatedAt,
 			&a.Email, &a.FullName, &a.OrganizationName, &a.Plan,
-			&a.FiveHourUtil, &a.FiveHourResetsAt,
-			&a.SevenDayUtil, &a.SevenDayResetsAt,
+			&a.FiveHourUtil, &a.FiveHourResetsAt, &a.FiveHourWindowSeconds,
+			&a.SevenDayUtil, &a.SevenDayResetsAt, &a.SevenDayWindowSeconds,
 			&a.SevenDaySonnetUtil, &a.SevenDaySonnetResetsAt,
 			&a.SevenDayScopedLabel,
 			&a.UsageFetchedAt,
