@@ -308,9 +308,12 @@ func (p *UsagePoller) pollCodex(ctx context.Context, a store.Account) bool {
 		p.logger.Printf("[usage] Codex account %d store: %v", a.ID, err)
 		return false
 	}
-	if u.PlanType != "" && u.PlanType != a.SubscriptionType {
-		_ = p.st.SetProfile(ctx, a.ID, a.AccountUUID, a.Email, a.FullName,
-			a.OrganizationName, openai.PlanLabel(u.PlanType), u.PlanType, "")
+	if u.PlanType != "" {
+		plan := openai.PlanLabel(u.PlanType)
+		if u.PlanType != a.SubscriptionType || plan != a.Plan {
+			_ = p.st.SetProfile(ctx, a.ID, a.AccountUUID, a.Email, a.FullName,
+				a.OrganizationName, plan, u.PlanType, "")
+		}
 	}
 	if err := p.st.AppendUsageHistory(ctx, a.ID, time.Now().UnixMilli(), primaryUtil, secondaryUtil, 0); err != nil {
 		p.logger.Printf("[usage] Codex account %d history: %v", a.ID, err)
