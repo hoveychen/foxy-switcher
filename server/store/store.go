@@ -77,6 +77,10 @@ type Account struct {
 	// accounts keep their complete auth.json here so id_token and refresh
 	// metadata survive switching; Claude rows leave it empty.
 	CredentialJSON string
+	// CodexUsageJSON preserves the provider's dynamic rate-limit bucket array.
+	// The legacy five_hour/seven_day fields remain the canonical bucket's
+	// compatibility projection for older clients and selector thresholds.
+	CodexUsageJSON string
 
 	// Usage fields refreshed periodically from /api/oauth/usage.
 	// Utilization is 0–100 (percent). ResetsAt is RFC3339; empty when the
@@ -174,6 +178,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   account_uuid               TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
   credential_json            TEXT    NOT NULL DEFAULT '',
+  codex_usage_json           TEXT    NOT NULL DEFAULT '',
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 `
@@ -266,6 +271,7 @@ var columnMigrations = []string{
 	// Older rows backfill on the next UsagePoller tick.
 	`ALTER TABLE accounts ADD COLUMN rate_limit_tier TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN credential_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE accounts ADD COLUMN codex_usage_json TEXT NOT NULL DEFAULT ''`,
 	// pinned_device_id scopes a "Use now" pin to the requesting device so
 	// other devices' reconcile ticks don't race to grab the account.
 	`ALTER TABLE accounts ADD COLUMN pinned_device_id TEXT NOT NULL DEFAULT ''`,
@@ -435,6 +441,7 @@ CREATE TABLE accounts_new (
   account_uuid               TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
   credential_json            TEXT    NOT NULL DEFAULT '',
+  codex_usage_json           TEXT    NOT NULL DEFAULT '',
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
@@ -448,7 +455,7 @@ INSERT INTO accounts_new SELECT
   seven_day_scoped_label,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier, credential_json, pinned_device_id FROM accounts;
+  account_uuid, rate_limit_tier, credential_json, codex_usage_json, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -514,6 +521,7 @@ CREATE TABLE accounts_new (
   account_uuid               TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
   credential_json            TEXT    NOT NULL DEFAULT '',
+  codex_usage_json           TEXT    NOT NULL DEFAULT '',
   pinned_device_id           TEXT    NOT NULL DEFAULT ''
 );
 INSERT INTO accounts_new SELECT
@@ -527,7 +535,7 @@ INSERT INTO accounts_new SELECT
   seven_day_scoped_label,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier, credential_json, pinned_device_id FROM accounts;
+  account_uuid, rate_limit_tier, credential_json, codex_usage_json, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -854,6 +862,30 @@ UPDATE accounts
 	return err
 }
 
+// SetCodexUsage atomically updates the canonical compatibility windows and the
+// complete provider-native bucket array. Keeping both writes in one statement
+// prevents old and new clients from observing different poll generations.
+func (s *Store) SetCodexUsage(ctx context.Context, id int64,
+	primaryUtil float64, primaryResetsAt string, primaryWindowSeconds int64,
+	secondaryUtil float64, secondaryResetsAt string, secondaryWindowSeconds int64,
+	codexUsageJSON string,
+) error {
+	const q = `
+UPDATE accounts
+   SET five_hour_util = ?, five_hour_resets_at = ?, five_hour_window_seconds = ?,
+       seven_day_util = ?, seven_day_resets_at = ?, seven_day_window_seconds = ?,
+       seven_day_sonnet_util = 0, seven_day_sonnet_resets_at = '',
+       seven_day_scoped_label = '', codex_usage_json = ?,
+       usage_fetched_at = ?, updated_at = ?
+ WHERE id = ?`
+	now := time.Now().UnixMilli()
+	_, err := s.db.ExecContext(ctx, q,
+		primaryUtil, primaryResetsAt, primaryWindowSeconds,
+		secondaryUtil, secondaryResetsAt, secondaryWindowSeconds,
+		codexUsageJSON, now, now, id)
+	return err
+}
+
 // MarkUsed bumps last_used_at to now. Called by credinject after a successful
 // inject so the selector's LRU tiebreaker reflects real pool usage. Also
 // consumes any device pin on the row — the pin is a one-shot "switch to this
@@ -1020,7 +1052,7 @@ seven_day_sonnet_util, seven_day_sonnet_resets_at,
 seven_day_scoped_label,
 usage_fetched_at,
 five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-account_uuid, rate_limit_tier, credential_json, pinned_device_id`
+account_uuid, rate_limit_tier, credential_json, codex_usage_json, pinned_device_id`
 
 // List returns every row ordered by id (stable insertion order).
 func (s *Store) List(ctx context.Context) ([]Account, error) {
@@ -1077,7 +1109,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.SevenDayScopedLabel,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
-			&a.AccountUUID, &a.RateLimitTier, &a.CredentialJSON, &a.PinnedDeviceID,
+			&a.AccountUUID, &a.RateLimitTier, &a.CredentialJSON, &a.CodexUsageJSON, &a.PinnedDeviceID,
 		); err != nil {
 			return nil, err
 		}

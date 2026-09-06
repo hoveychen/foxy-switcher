@@ -2,6 +2,7 @@ package refresh
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -306,9 +307,15 @@ func (p *UsagePoller) pollCodex(ctx context.Context, a store.Account) bool {
 		secondaryReset = u.Secondary.ResetAt.Format(time.RFC3339)
 		secondaryWindowSeconds = u.Secondary.WindowSeconds
 	}
-	if err := p.st.SetUsageWithWindowSeconds(ctx, a.ID,
-		primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "", "",
-		primaryWindowSeconds, secondaryWindowSeconds); err != nil {
+	bucketsJSON, err := json.Marshal(u.Buckets)
+	if err != nil {
+		p.logger.Printf("[usage] Codex account %d encode buckets: %v", a.ID, err)
+		return false
+	}
+	if err := p.st.SetCodexUsage(ctx, a.ID,
+		primaryUtil, primaryReset, primaryWindowSeconds,
+		secondaryUtil, secondaryReset, secondaryWindowSeconds,
+		string(bucketsJSON)); err != nil {
 		p.logger.Printf("[usage] Codex account %d store: %v", a.ID, err)
 		return false
 	}

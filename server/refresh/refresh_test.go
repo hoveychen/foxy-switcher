@@ -305,6 +305,10 @@ func TestUsagePollerLabelsBusinessProLite(t *testing.T) {
 	if got.FiveHourWindowSeconds != 604800 {
 		t.Fatalf("window duration not stored; FiveHourWindowSeconds = %d (want 604800)", got.FiveHourWindowSeconds)
 	}
+	var buckets []openai.UsageBucket
+	if err := json.Unmarshal([]byte(got.CodexUsageJSON), &buckets); err != nil || len(buckets) != 1 || buckets[0].LimitID != "codex" {
+		t.Fatalf("dynamic Codex usage not stored: buckets=%+v err=%v", buckets, err)
+	}
 }
 
 func TestUsagePollerRepairsStaleCodexPlanLabel(t *testing.T) {
