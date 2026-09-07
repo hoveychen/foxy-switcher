@@ -69,6 +69,32 @@ func ParseAuthFile(data []byte) (*AuthFile, error) {
 	return &auth, nil
 }
 
+// UserID returns the id_token's chatgpt_user_id, or "" when the token
+// predates that claim. Tokens.AccountID is deliberately not a fallback: it
+// identifies the workspace, so using it here would make two colleagues look
+// like the same person again.
+func (a *AuthFile) UserID() string {
+	claims, err := parseJWTClaims(a.Tokens.IDToken)
+	if err != nil {
+		return ""
+	}
+	return claims.Auth.ChatGPTUserID
+}
+
+// Matches reports whether acc is the stored row for this credential. The
+// per-person chatgpt_user_id decides it whenever both sides have one;
+// account_uuid is only consulted for rows written before provider_user_id
+// existed, where it is the best signal available.
+func (a *AuthFile) Matches(acc *store.Account) bool {
+	if acc.Provider != store.ProviderCodex {
+		return false
+	}
+	if uid := a.UserID(); uid != "" && acc.ProviderUserID != "" {
+		return acc.ProviderUserID == uid
+	}
+	return acc.AccountUUID != "" && acc.AccountUUID == a.Tokens.AccountID
+}
+
 func (a *AuthFile) Marshal() ([]byte, error) {
 	raw := make(map[string]json.RawMessage, len(a.raw)+3)
 	for k, v := range a.raw {
@@ -152,6 +178,7 @@ func (a *AuthFile) Account() (*store.Account, error) {
 		ExpiresAt:        tokenExpiryMillis(a.Tokens.AccessToken, a.Tokens.IDToken),
 		SubscriptionType: claims.Auth.ChatGPTPlanType,
 		AccountUUID:      accountID,
+		ProviderUserID:   claims.Auth.ChatGPTUserID,
 		Email:            claims.Email,
 		FullName:         claims.Name,
 		Plan:             plan,
@@ -167,6 +194,11 @@ type jwtClaims struct {
 	Auth  struct {
 		ChatGPTAccountID string `json:"chatgpt_account_id"`
 		ChatGPTPlanType  string `json:"chatgpt_plan_type"`
+		// ChatGPTUserID identifies the *person*. ChatGPTAccountID does not:
+		// every member of a Business/Team workspace carries the same one, so
+		// it can only be used as a workspace-scoped id (and as the
+		// chatgpt-account-id header the usage endpoint wants).
+		ChatGPTUserID string `json:"chatgpt_user_id"`
 	} `json:"https://api.openai.com/auth"`
 }
 

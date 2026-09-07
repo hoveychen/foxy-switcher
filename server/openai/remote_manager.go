@@ -217,7 +217,7 @@ func (m *RemoteManager) reverseSync(ctx context.Context) error {
 	}
 	for i := range accounts {
 		a := accounts[i]
-		if a.Provider != store.ProviderCodex || a.AccountUUID != auth.Tokens.AccountID {
+		if !auth.Matches(&a) {
 			continue
 		}
 		normalized, err := auth.Marshal()

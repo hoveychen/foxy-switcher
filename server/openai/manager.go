@@ -161,7 +161,7 @@ func (m *Manager) managedAccountID(accounts []store.Account) int64 {
 		return 0
 	}
 	for i := range accounts {
-		if accounts[i].Provider == store.ProviderCodex && accounts[i].AccountUUID == auth.Tokens.AccountID {
+		if auth.Matches(&accounts[i]) {
 			return accounts[i].ID
 		}
 	}
@@ -184,7 +184,7 @@ func (m *Manager) ManagedAccountID(ctx context.Context) int64 {
 		return 0
 	}
 	for i := range accounts {
-		if accounts[i].AccountUUID == auth.Tokens.AccountID {
+		if auth.Matches(&accounts[i]) {
 			return accounts[i].ID
 		}
 	}
@@ -205,7 +205,7 @@ func (m *Manager) syncCurrent(ctx context.Context, accounts []store.Account) err
 	}
 	for i := range accounts {
 		a := accounts[i]
-		if a.AccountUUID != auth.Tokens.AccountID {
+		if !auth.Matches(&a) {
 			continue
 		}
 		normalized, err := auth.Marshal()
