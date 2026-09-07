@@ -219,7 +219,12 @@ type accountView struct {
 	// rows that map to the same Anthropic user). Empty for older rows that
 	// haven't been backfilled yet by the next UsagePoller tick.
 	AccountUUID string `json:"account_uuid"`
-	Status      string `json:"status"`
+	// ProviderUserID is the per-person id for providers whose AccountUUID is
+	// coarser. For Codex, AccountUUID is the ChatGPT workspace id — shared by
+	// every colleague — so this is the field that actually tells two rows
+	// apart. Empty for Claude / OpenRouter.
+	ProviderUserID string `json:"provider_user_id"`
+	Status         string `json:"status"`
 	// TokenExpired is a derived flag (ExpiresAt <= now). Persisted state is
 	// just ExpiresAt; this exists so UIs don't all need the same clock-math
 	// to render the "can't be used" state. The selector treats this as a
@@ -318,6 +323,7 @@ func toView(a store.Account) accountView {
 		RateLimitTier:    a.RateLimitTier,
 		OrganizationUUID: a.OrganizationUUID,
 		AccountUUID:      a.AccountUUID,
+		ProviderUserID:   a.ProviderUserID,
 		Status:           a.Status,
 		TokenExpired:     a.TokenExpired(time.Now()),
 		LastUsedAt:       a.LastUsedAt,

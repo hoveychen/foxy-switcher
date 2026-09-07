@@ -397,6 +397,8 @@
   "drawer.detail.usage_updated.pending": "Pending",
   "drawer.detail.usage_updated.ago": "{time} ago",
   "drawer.detail.account_uuid": "Account UUID",
+  "drawer.detail.workspace_uuid": "Workspace ID",
+  "drawer.detail.provider_user_id": "User ID",
   "drawer.status.paused": "paused",
   "drawer.status.needs_reauth": "re-login required",
   "drawer.status.org_disabled": "org OAuth disabled",

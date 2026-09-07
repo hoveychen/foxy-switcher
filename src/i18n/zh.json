@@ -397,6 +397,8 @@
   "drawer.detail.usage_updated.pending": "等待中",
   "drawer.detail.usage_updated.ago": "{time} 前",
   "drawer.detail.account_uuid": "账号 UUID",
+  "drawer.detail.workspace_uuid": "工作区 ID",
+  "drawer.detail.provider_user_id": "用户 ID",
   "drawer.status.paused": "已暂停",
   "drawer.status.needs_reauth": "需重新登录",
   "drawer.status.org_disabled": "组织已禁用 OAuth",
