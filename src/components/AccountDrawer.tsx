@@ -742,8 +742,23 @@ export function AccountDrawer({
           )}
           {account.account_uuid && (
             <div>
-              <dt>{t("drawer.detail.account_uuid")}</dt>
+              {/* For Codex this id is the ChatGPT workspace, shared by every
+                  colleague — labelling it "Account UUID" made two distinct
+                  members look like the same row. */}
+              <dt>
+                {t(
+                  account.provider === "codex"
+                    ? "drawer.detail.workspace_uuid"
+                    : "drawer.detail.account_uuid",
+                )}
+              </dt>
               <dd className="detail-uuid">{account.account_uuid}</dd>
+            </div>
+          )}
+          {account.provider_user_id && (
+            <div>
+              <dt>{t("drawer.detail.provider_user_id")}</dt>
+              <dd className="detail-uuid">{account.provider_user_id}</dd>
             </div>
           )}
         </dl>

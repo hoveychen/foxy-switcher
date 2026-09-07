@@ -267,6 +267,10 @@ export interface Account {
   // desktop stay in lock-step on what counts as "expired").
   token_expired: boolean;
   account_uuid: string;
+  // Per-person id for providers whose account_uuid is coarser. Codex's
+  // account_uuid is the ChatGPT workspace id, identical for every member of a
+  // Business/Team workspace; this is what distinguishes them. "" for Claude.
+  provider_user_id: string;
   organization_uuid: string;
   subscription_type: string;
   // Authoritative quota label from /api/oauth/profile.organization.rate_limit_tier:

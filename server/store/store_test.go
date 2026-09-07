@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -288,6 +290,122 @@ func TestUpsertSameUUIDDifferentEmailMerges(t *testing.T) {
 	got := list[0]
 	if got.AccessToken != "at-2" || got.RefreshToken != "rt-2" || got.Email != "alice@new.com" {
 		t.Fatalf("merge did not refresh tokens/email: %+v", got)
+	}
+}
+
+// TestUpsertCodexSameWorkspaceDifferentUsersCoexist covers the bug where two
+// members of the same ChatGPT Business/Team workspace collapsed onto one row:
+// Codex's account_uuid carries `chatgpt_account_id`, which identifies the
+// *workspace*, not the person, so the uuid-keyed merge above (correct for
+// Anthropic) silently overwrote the first member's tokens. The per-person id
+// is `chatgpt_user_id`, stored as ProviderUserID, and it takes precedence
+// over account_uuid whenever both rows have one.
+func TestUpsertCodexSameWorkspaceDifferentUsersCoexist(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	first := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@corp.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-alice",
+		AccessToken: "at-1", RefreshToken: "rt-1", ExpiresAt: 1,
+	}
+	if err := st.Upsert(ctx, first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	second := &Account{
+		Provider: ProviderCodex, Name: "bob", Email: "bob@corp.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-bob",
+		AccessToken: "at-2", RefreshToken: "rt-2", ExpiresAt: 2,
+	}
+	if err := st.Upsert(ctx, second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	if first.ID == 0 || second.ID == 0 || first.ID == second.ID {
+		t.Fatalf("expected distinct ids for two workspace members, got first=%d second=%d", first.ID, second.ID)
+	}
+	list, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 rows for 2 workspace members, got %d (%+v)", len(list), list)
+	}
+}
+
+// TestUpsertCodexSameUserRefreshesInPlace is the dedup half of the rule above:
+// the same person re-logging in (same chatgpt_user_id) must refresh the
+// existing row even when the surfaced email changed.
+func TestUpsertCodexSameUserRefreshesInPlace(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	first := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@old.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-alice",
+		AccessToken: "at-1", RefreshToken: "rt-1", ExpiresAt: 1,
+	}
+	if err := st.Upsert(ctx, first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	second := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@new.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-alice",
+		AccessToken: "at-2", RefreshToken: "rt-2", ExpiresAt: 2,
+	}
+	if err := st.Upsert(ctx, second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("expected same id for one user, got first=%d second=%d", first.ID, second.ID)
+	}
+	list, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 row, got %d (%+v)", len(list), list)
+	}
+	if list[0].AccessToken != "at-2" || list[0].Email != "alice@new.com" {
+		t.Fatalf("same-user re-login did not refresh row: %+v", list[0])
+	}
+}
+
+// TestUpsertCodexLegacyRowAdoptsUserID is the transition path: a row written
+// before ProviderUserID existed has an empty one, so the same person's next
+// login must match it on account_uuid and stamp the user id in, rather than
+// forking a duplicate row.
+func TestUpsertCodexLegacyRowAdoptsUserID(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	legacy := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@corp.com",
+		AccountUUID: "ws-1",
+		AccessToken: "at-1", RefreshToken: "rt-1", ExpiresAt: 1,
+	}
+	if err := st.Upsert(ctx, legacy); err != nil {
+		t.Fatalf("upsert legacy: %v", err)
+	}
+	relogin := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@corp.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-alice",
+		AccessToken: "at-2", RefreshToken: "rt-2", ExpiresAt: 2,
+	}
+	if err := st.Upsert(ctx, relogin); err != nil {
+		t.Fatalf("upsert relogin: %v", err)
+	}
+	if legacy.ID != relogin.ID {
+		t.Fatalf("expected legacy row to be adopted, got legacy=%d relogin=%d", legacy.ID, relogin.ID)
+	}
+	list, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 row, got %d (%+v)", len(list), list)
+	}
+	if list[0].ProviderUserID != "user-alice" {
+		t.Fatalf("legacy row did not adopt user id: %+v", list[0])
 	}
 }
 
@@ -824,4 +942,91 @@ func TestProviderDefaultsAndDedupAreProviderScoped(t *testing.T) {
 	if err != nil || len(codexRows) != 1 || codexRows[0].ID != codex.ID {
 		t.Fatalf("ListProvider codex = %+v, %v", codexRows, err)
 	}
+}
+
+// TestMigrateCodexProviderUserIDBackfill covers the rows that already exist in
+// a running install: they were written before provider_user_id existed, so the
+// column is empty and the next login of a *different* workspace member would
+// still match them on account_uuid. Open() must recover each row's person id
+// from the credential blob it already stores.
+func TestMigrateCodexProviderUserIDBackfill(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ctx := context.Background()
+	legacy := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@corp.com",
+		AccountUUID: "ws-1", AccessToken: "at-1", RefreshToken: "rt-1", ExpiresAt: 1,
+		CredentialJSON: codexCredentialJSON(t, "ws-1", "user-alice", "alice@corp.com"),
+	}
+	if err := st.Upsert(ctx, legacy); err != nil {
+		t.Fatalf("upsert legacy: %v", err)
+	}
+	// Simulate the pre-migration state: the row exists but carries no person id.
+	if _, err := st.db.ExecContext(ctx, `UPDATE accounts SET provider_user_id = '' WHERE id = ?`, legacy.ID); err != nil {
+		t.Fatalf("clear provider_user_id: %v", err)
+	}
+	st.Close()
+
+	st2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer st2.Close()
+	list, err := st2.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].ProviderUserID != "user-alice" {
+		t.Fatalf("backfill did not stamp the person id: %+v", list)
+	}
+
+	// And with the id in place, a colleague's login no longer adopts the row.
+	bob := &Account{
+		Provider: ProviderCodex, Name: "bob", Email: "bob@corp.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-bob",
+		AccessToken: "at-2", RefreshToken: "rt-2", ExpiresAt: 2,
+	}
+	if err := st2.Upsert(ctx, bob); err != nil {
+		t.Fatalf("upsert bob: %v", err)
+	}
+	if bob.ID == legacy.ID {
+		t.Fatalf("bob adopted alice's backfilled row (id %d)", bob.ID)
+	}
+}
+
+// codexCredentialJSON builds an auth.json blob shaped like the Codex CLI's,
+// with an unsigned id_token whose payload carries the claims Foxy reads.
+func codexCredentialJSON(t *testing.T, accountID, userID, email string) string {
+	t.Helper()
+	payload := map[string]any{
+		"email": email,
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+			"chatgpt_user_id":    userID,
+			"chatgpt_plan_type":  "business",
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	idToken := "h." + base64.RawURLEncoding.EncodeToString(raw) + ".s"
+	blob, err := json.Marshal(map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]any{
+			"id_token":      idToken,
+			"access_token":  "at",
+			"refresh_token": "rt",
+			"account_id":    accountID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal auth file: %v", err)
+	}
+	return string(blob)
 }
