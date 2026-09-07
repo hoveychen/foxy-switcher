@@ -236,6 +236,9 @@ type accountView struct {
 	// Usage snapshot, refreshed by the usage scheduler.
 	FiveHour *usageWindowView `json:"five_hour,omitempty"`
 	SevenDay *usageWindowView `json:"seven_day,omitempty"`
+	// CodexRateLimits is the lossless dynamic bucket array. The two fields above
+	// remain the canonical bucket's compatibility projection for old clients.
+	CodexRateLimits []openai.UsageBucket `json:"codex_rate_limits,omitempty"`
 	// SevenDaySonnet is a legacy name (JSON key kept for frontend/TUI wire
 	// compat): it carries the per-model weekly-scoped window (Fable/…), labelled
 	// by SevenDayScopedLabel. See store.Account.SevenDaySonnetUtil.
@@ -346,6 +349,9 @@ func toView(a store.Account) accountView {
 				Scope:    &usageLimitScope{Model: usageLimitModel{DisplayName: a.SevenDayScopedLabel}},
 			}}
 		}
+	}
+	if a.Provider == store.ProviderCodex && a.CodexUsageJSON != "" {
+		_ = json.Unmarshal([]byte(a.CodexUsageJSON), &view.CodexRateLimits)
 	}
 	return view
 }
@@ -808,9 +814,14 @@ func applyCodexUsage(ctx context.Context, st *store.Store, id int64, u *openai.U
 		secondaryReset = u.Secondary.ResetAt.Format(time.RFC3339)
 		secondaryWindowSeconds = u.Secondary.WindowSeconds
 	}
-	return st.SetUsageWithWindowSeconds(ctx, id,
-		primaryUtil, primaryReset, secondaryUtil, secondaryReset, 0, "", "",
-		primaryWindowSeconds, secondaryWindowSeconds)
+	bucketsJSON, err := json.Marshal(u.Buckets)
+	if err != nil {
+		return err
+	}
+	return st.SetCodexUsage(ctx, id,
+		primaryUtil, primaryReset, primaryWindowSeconds,
+		secondaryUtil, secondaryReset, secondaryWindowSeconds,
+		string(bucketsJSON))
 }
 
 // handleSelect promotes one account to the front of the LRU queue so the

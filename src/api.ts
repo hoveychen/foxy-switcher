@@ -144,6 +144,27 @@ export interface UsageWindow {
   window_seconds?: number; // provider-reported total window duration; 0/absent on legacy data
 }
 
+export interface CodexRateLimitWindow {
+  used_percent: number;
+  reset_at: string;
+  window_seconds?: number;
+}
+
+export interface CodexRateLimitBucket {
+  limit_id: string;
+  limit_name?: string;
+  normal_model_slug?: string;
+  primary?: CodexRateLimitWindow;
+  secondary?: CodexRateLimitWindow;
+}
+
+export interface CodexUsageBar {
+  key: string;
+  label: string;
+  win: UsageWindow | undefined;
+  threshold_slot?: "five_hour" | "seven_day";
+}
+
 // codexUsageLabel returns the i18n key for a provider-reported Codex window.
 // Keep the same ±5% tolerance as the official Codex client: upstream window
 // durations can drift slightly, but reset countdowns must never be mistaken
@@ -164,6 +185,75 @@ export function codexUsageLabel(
     if (seconds >= expected * 0.95 && seconds <= expected * 1.05) return key;
   }
   return `accounts.usage.${fallback}`;
+}
+
+function codexWindowDuration(seconds: number | undefined): string {
+  if (!seconds || seconds <= 0) return "";
+  const units: Array<[number, string]> = [
+    [365 * 24 * 60 * 60, "y"],
+    [7 * 24 * 60 * 60, "w"],
+    [24 * 60 * 60, "d"],
+    [60 * 60, "h"],
+    [60, "m"],
+  ];
+  for (const [unitSeconds, suffix] of units) {
+    const value = seconds / unitSeconds;
+    if (value >= 1 && Math.abs(value - Math.round(value)) <= 0.05) {
+      return `${Math.round(value)}${suffix}`;
+    }
+  }
+  return `${seconds}s`;
+}
+
+// Flatten every provider-reported Codex quota into renderable bars. New
+// servers preserve the human-facing limit_name/model slug; old servers still
+// get the historical primary/secondary pair through the compatibility fields.
+export function codexUsageBars(
+  account: Account,
+  translate: (key: string) => string,
+): CodexUsageBar[] {
+  if (account.codex_rate_limits?.length) {
+    return account.codex_rate_limits.flatMap((bucket, index) => {
+      const bucketID = bucket.limit_id || `bucket-${index}`;
+      const bucketName =
+        bucket.limit_name?.trim() ||
+        bucket.normal_model_slug?.trim() ||
+        bucket.limit_id?.trim() ||
+        "Codex";
+      return (["primary", "secondary"] as const).flatMap((slot) => {
+        const raw = bucket[slot];
+        if (!raw) return [];
+        const duration = codexWindowDuration(raw.window_seconds);
+        const isCanonical = bucket.limit_id === "codex" || index === 0;
+        return [{
+          key: `${bucketID}:${slot}`,
+          label: duration ? `${bucketName} · ${duration}` : bucketName,
+          win: {
+            utilization: raw.used_percent,
+            resets_at: raw.reset_at,
+            window_seconds: raw.window_seconds,
+          },
+          threshold_slot: isCanonical
+            ? slot === "primary" ? "five_hour" : "seven_day"
+            : undefined,
+        }];
+      });
+    });
+  }
+  return [
+    {
+      key: "codex:primary",
+      label: translate(codexUsageLabel(account.five_hour, "primary")),
+      win: account.five_hour,
+      threshold_slot: "five_hour",
+    },
+    {
+      key: "codex:secondary",
+      label: translate(codexUsageLabel(account.seven_day, "secondary")),
+      win: account.seven_day,
+      threshold_slot: "seven_day",
+    },
+  ];
 }
 
 export interface Account {
@@ -196,6 +286,9 @@ export interface Account {
   plan: string;
   five_hour?: UsageWindow;
   seven_day?: UsageWindow;
+  // Lossless provider-reported Codex quotas. Absent when talking to a legacy
+  // server, in which case codexUsageBars() falls back to the two fields above.
+  codex_rate_limits?: CodexRateLimitBucket[];
   // LEGACY NAME: `seven_day_sonnet` (field + wire key) no longer means Sonnet.
   // It carries the per-model weekly-scoped window (Fable/…); the model's name is
   // in seven_day_scoped_label. Kept to avoid a wire-contract migration — always

@@ -164,6 +164,21 @@ func TestRefreshAndFetchUsageFollowCodexProtocol(t *testing.T) {
 					"primary_window":   map[string]any{"used_percent": 42.0, "reset_at": int64(1900000000), "limit_window_seconds": int64(18000)},
 					"secondary_window": map[string]any{"used_percent": 7.0, "reset_at": int64(1900003600), "limit_window_seconds": int64(604800)},
 				},
+				"additional_rate_limits": []map[string]any{
+					{
+						"limit_name": "Codex Other", "metered_feature": "codex_other", "normal_model_slug": "gpt-6-mini",
+						"rate_limit": map[string]any{
+							"primary_window": map[string]any{"used_percent": 70.0, "reset_at": int64(1900007200), "limit_window_seconds": int64(900)},
+						},
+					},
+					{
+						"limit_name": "Fast Lane", "metered_feature": "fast_lane",
+						"rate_limit": map[string]any{
+							"primary_window":   map[string]any{"used_percent": 12.0, "reset_at": int64(1900010800), "limit_window_seconds": int64(3600)},
+							"secondary_window": map[string]any{"used_percent": 3.0, "reset_at": int64(1900014400), "limit_window_seconds": int64(86400)},
+						},
+					},
+				},
 			})
 		default:
 			http.NotFound(w, r)
@@ -188,6 +203,17 @@ func TestRefreshAndFetchUsageFollowCodexProtocol(t *testing.T) {
 	if usage.Primary == nil || usage.Primary.UsedPercent != 42 || usage.Primary.WindowSeconds != 18000 ||
 		usage.Secondary == nil || usage.Secondary.UsedPercent != 7 || usage.Secondary.WindowSeconds != 604800 {
 		t.Fatalf("usage mismatch: %+v", usage)
+	}
+	if len(usage.Buckets) != 3 {
+		t.Fatalf("usage buckets = %d, want 3: %+v", len(usage.Buckets), usage.Buckets)
+	}
+	if usage.Buckets[0].LimitID != "codex" || usage.Buckets[1].LimitID != "codex_other" ||
+		usage.Buckets[1].NormalModelSlug != "gpt-6-mini" || usage.Buckets[2].LimitID != "fast_lane" {
+		t.Fatalf("usage bucket identity mismatch: %+v", usage.Buckets)
+	}
+	if usage.Buckets[1].Primary == nil || usage.Buckets[1].Primary.UsedPercent != 70 ||
+		usage.Buckets[2].Secondary == nil || usage.Buckets[2].Secondary.WindowSeconds != 86400 {
+		t.Fatalf("additional usage windows mismatch: %+v", usage.Buckets)
 	}
 }
 

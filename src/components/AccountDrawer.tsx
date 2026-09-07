@@ -15,7 +15,7 @@ import {
   accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
-  codexUsageLabel,
+  codexUsageBars,
   scopedIsThrottled,
   apiClient,
 } from "../api";
@@ -136,8 +136,8 @@ function UsageBar({
   label: string;
   win: UsageWindow | undefined;
   nowMs: number;
-  threshold: number;
-  onCommitThreshold: (pct: number) => void;
+  threshold?: number;
+  onCommitThreshold?: (pct: number) => void;
   // Agent mode: render the threshold marker but disable dragging — the
   // value comes from the vault and admins set it on the vault web UI.
   readOnly?: boolean;
@@ -149,9 +149,9 @@ function UsageBar({
   const pctFromClientX = useCallback(
     (clientX: number) => {
       const el = wrapRef.current;
-      if (!el) return threshold;
+      if (!el) return threshold ?? 0;
       const rect = el.getBoundingClientRect();
-      if (rect.width <= 0) return threshold;
+      if (rect.width <= 0) return threshold ?? 0;
       const v = ((clientX - rect.left) / rect.width) * 100;
       if (v < 0) return 0;
       if (v > 100) return 100;
@@ -161,6 +161,7 @@ function UsageBar({
   );
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (threshold === undefined || !onCommitThreshold) return;
     e.preventDefault();
     e.stopPropagation();
     draggingRef.current = true;
@@ -172,7 +173,7 @@ function UsageBar({
     setDraft(pctFromClientX(e.clientX));
   };
   const finishDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return;
+    if (!draggingRef.current || threshold === undefined || !onCommitThreshold) return;
     draggingRef.current = false;
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
@@ -204,20 +205,22 @@ function UsageBar({
         <div className={`usage-track ${tone}`}>
           <div className="usage-fill" style={{ width: `${pct}%` }} />
         </div>
-        <div
-          className={`usage-threshold ${draft !== null ? "dragging" : ""} ${readOnly ? "readonly" : ""}`}
-          style={{ left: `${markerPct}%` }}
-          title={tf("drawer.usage.threshold_title", { pct: Math.round(markerPct) })}
-          onPointerDown={readOnly ? undefined : onPointerDown}
-          onPointerMove={readOnly ? undefined : onPointerMove}
-          onPointerUp={readOnly ? undefined : finishDrag}
-          onPointerCancel={readOnly ? undefined : finishDrag}
-          role="slider"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(markerPct)}
-          aria-label={tf("drawer.usage.threshold_aria", { label })}
-        />
+        {markerPct !== undefined && (
+          <div
+            className={`usage-threshold ${draft !== null ? "dragging" : ""} ${readOnly ? "readonly" : ""}`}
+            style={{ left: `${markerPct}%` }}
+            title={tf("drawer.usage.threshold_title", { pct: Math.round(markerPct) })}
+            onPointerDown={readOnly ? undefined : onPointerDown}
+            onPointerMove={readOnly ? undefined : onPointerMove}
+            onPointerUp={readOnly ? undefined : finishDrag}
+            onPointerCancel={readOnly ? undefined : finishDrag}
+            role="slider"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(markerPct)}
+            aria-label={tf("drawer.usage.threshold_aria", { label })}
+          />
+        )}
       </div>
       <span className="usage-pct">{pct.toFixed(0)}%</span>
       <span className="usage-resets">{fmtResetsAt(win.resets_at, nowMs)}</span>
@@ -643,31 +646,54 @@ export function AccountDrawer({
       <div className="drawer-section">
         <h3 className="drawer-section-title">{t("drawer.section.usage")}</h3>
         <div className="usage-list">
-          <UsageBar
-            label={t(account.provider === "codex" ? codexUsageLabel(account.five_hour, "primary") : "drawer.usage.5h")}
-            win={account.five_hour}
-            nowMs={nowMs}
-            threshold={account.five_hour_threshold}
-            onCommitThreshold={(pct) => commit("five_hour", pct)}
-            readOnly={disableAdminActions}
-          />
-          <UsageBar
-            label={t(account.provider === "codex" ? codexUsageLabel(account.seven_day, "secondary") : "drawer.usage.7d_opus")}
-            win={account.seven_day}
-            nowMs={nowMs}
-            threshold={account.seven_day_threshold}
-            onCommitThreshold={(pct) => commit("seven_day", pct)}
-            readOnly={disableAdminActions}
-          />
-          {account.provider !== "codex" && (
-            <UsageBar
-              label={scopedUsageLabel(account.seven_day_scoped_label, scopedIsThrottled(account))}
-              win={account.seven_day_sonnet}
-              nowMs={nowMs}
-              threshold={account.seven_day_sonnet_threshold}
-              onCommitThreshold={(pct) => commit("seven_day_sonnet", pct)}
-              readOnly={disableAdminActions}
-            />
+          {account.provider === "codex" ? (
+            codexUsageBars(account, t).map((bar) => {
+              const threshold = bar.threshold_slot === "five_hour"
+                ? account.five_hour_threshold
+                : bar.threshold_slot === "seven_day"
+                  ? account.seven_day_threshold
+                  : undefined;
+              return (
+                <UsageBar
+                  key={bar.key}
+                  label={bar.label}
+                  win={bar.win}
+                  nowMs={nowMs}
+                  threshold={threshold}
+                  onCommitThreshold={bar.threshold_slot
+                    ? (pct) => commit(bar.threshold_slot!, pct)
+                    : undefined}
+                  readOnly={disableAdminActions || threshold === undefined}
+                />
+              );
+            })
+          ) : (
+            <>
+              <UsageBar
+                label={t("drawer.usage.5h")}
+                win={account.five_hour}
+                nowMs={nowMs}
+                threshold={account.five_hour_threshold}
+                onCommitThreshold={(pct) => commit("five_hour", pct)}
+                readOnly={disableAdminActions}
+              />
+              <UsageBar
+                label={t("drawer.usage.7d_opus")}
+                win={account.seven_day}
+                nowMs={nowMs}
+                threshold={account.seven_day_threshold}
+                onCommitThreshold={(pct) => commit("seven_day", pct)}
+                readOnly={disableAdminActions}
+              />
+              <UsageBar
+                label={scopedUsageLabel(account.seven_day_scoped_label, scopedIsThrottled(account))}
+                win={account.seven_day_sonnet}
+                nowMs={nowMs}
+                threshold={account.seven_day_sonnet_threshold}
+                onCommitThreshold={(pct) => commit("seven_day_sonnet", pct)}
+                readOnly={disableAdminActions}
+              />
+            </>
           )}
         </div>
       </div>

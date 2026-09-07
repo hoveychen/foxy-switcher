@@ -383,7 +383,7 @@ func (s *Store) ListAccountsWithLeases(ctx context.Context) ([]AccountWithLease,
 			&a.SevenDayScopedLabel,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
-			&a.AccountUUID, &a.RateLimitTier, &a.CredentialJSON, &a.PinnedDeviceID,
+			&a.AccountUUID, &a.RateLimitTier, &a.CredentialJSON, &a.CodexUsageJSON, &a.PinnedDeviceID,
 			&deviceID, &acquiredAt, &expiresAt, &deviceName,
 		); err != nil {
 			return nil, err
@@ -496,7 +496,7 @@ accounts.seven_day_sonnet_util, accounts.seven_day_sonnet_resets_at,
 accounts.seven_day_scoped_label,
 accounts.usage_fetched_at,
 accounts.five_hour_threshold, accounts.seven_day_threshold, accounts.seven_day_sonnet_threshold,
-accounts.account_uuid, accounts.rate_limit_tier, accounts.credential_json, accounts.pinned_device_id`
+accounts.account_uuid, accounts.rate_limit_tier, accounts.credential_json, accounts.codex_usage_json, accounts.pinned_device_id`
 
 // ActiveLeaseCounts returns how many devices currently hold a live lease on
 // each account, keyed by account id. Accounts with no live lease are absent

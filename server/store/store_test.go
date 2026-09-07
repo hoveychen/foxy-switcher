@@ -205,6 +205,29 @@ func TestSetUsageWindowSecondsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSetCodexUsageRoundTrip(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+	a := &Account{Name: "codex-user", Email: "dynamic@example.com", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1}
+	if err := st.Upsert(ctx, a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	const buckets = `[{"limit_id":"codex"},{"limit_id":"codex_other"},{"limit_id":"fast_lane"}]`
+	if err := st.SetCodexUsage(ctx, a.ID,
+		70, "2026-09-12T08:00:00Z", 604800,
+		15, "2026-09-06T12:00:00Z", 18000,
+		buckets); err != nil {
+		t.Fatalf("SetCodexUsage: %v", err)
+	}
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.CodexUsageJSON != buckets || got.FiveHourWindowSeconds != 604800 || got.SevenDayWindowSeconds != 18000 {
+		t.Fatalf("Codex usage round-trip mismatch: %+v", got)
+	}
+}
+
 func TestUpsertDistinctEmailsCoexist(t *testing.T) {
 	st := openTempStore(t)
 	ctx := context.Background()
