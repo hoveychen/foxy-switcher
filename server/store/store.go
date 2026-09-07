@@ -60,7 +60,16 @@ type Account struct {
 	// Email / FullName can change (alias swap, SSO rebind, primary-email
 	// migration on Anthropic's side); uuid does not. Older rows that predate
 	// this column carry "" until the next UsagePoller tick fills them in.
-	AccountUUID      string
+	AccountUUID string
+	// ProviderUserID is the per-person id for providers whose AccountUUID
+	// identifies something coarser. Codex stores `chatgpt_user_id` here,
+	// because its AccountUUID carries `chatgpt_account_id` — the ChatGPT
+	// *workspace* id, which every member of a Business/Team workspace shares
+	// (verified against two id_tokens from one workspace). Upsert prefers
+	// this over AccountUUID whenever both rows have one, so two colleagues
+	// no longer collapse onto a single row. Empty for Claude/OpenRouter and
+	// for Codex rows written before this column existed.
+	ProviderUserID   string
 	Email            string
 	FullName         string
 	OrganizationName string
@@ -176,6 +185,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
+  provider_user_id           TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
   credential_json            TEXT    NOT NULL DEFAULT '',
   codex_usage_json           TEXT    NOT NULL DEFAULT '',
@@ -183,22 +193,26 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 `
 
-// indexSchema's account_uuid_uniq is the canonical dedup key — email can
-// shift over time (alias swap, SSO rebind), but Anthropic's account.uuid is
-// stable, so two re-logins of the same user collapse onto one row. The
-// pre-existing email_uniq is kept as a soft guardrail for rows that don't
-// yet have an account_uuid (older installs before the next UsagePoller tick
-// fills it in).
+// indexSchema's accounts_provider_identity_uniq is the canonical dedup key —
+// email can shift over time (alias swap, SSO rebind), but Anthropic's
+// account.uuid is stable, so two re-logins of the same user collapse onto one
+// row. provider_user_id joins the key because Codex's account_uuid is the
+// ChatGPT *workspace* id, shared by every member of a Business/Team
+// workspace; without it the index rejected the second colleague's row. It is
+// '' for Claude/OpenRouter, so their uniqueness is unchanged. The pre-existing
+// email_uniq is kept as a soft guardrail for rows that don't yet have an
+// account_uuid (older installs before the next UsagePoller tick fills it in).
 const indexSchema = `
 DROP INDEX IF EXISTS accounts_status_lru;
 DROP INDEX IF EXISTS accounts_email_uniq;
 DROP INDEX IF EXISTS accounts_uuid_uniq;
+DROP INDEX IF EXISTS accounts_provider_uuid_uniq;
 CREATE INDEX IF NOT EXISTS accounts_provider_status_lru
   ON accounts (provider, status, last_used_at);
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_provider_email_uniq
   ON accounts (provider, email) WHERE email != '';
-CREATE UNIQUE INDEX IF NOT EXISTS accounts_provider_uuid_uniq
-  ON accounts (provider, account_uuid) WHERE account_uuid != '';
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_provider_identity_uniq
+  ON accounts (provider, account_uuid, provider_user_id) WHERE account_uuid != '';
 `
 
 // kvSchema holds simple daemon-wide key/value settings (auto-switch toggle,
@@ -263,6 +277,11 @@ var columnMigrations = []string{
 	// account_uuid is the stable per-user id from /api/oauth/profile. Older
 	// rows backfill this on the next UsagePoller tick (see refresh.UsagePoller).
 	`ALTER TABLE accounts ADD COLUMN account_uuid TEXT NOT NULL DEFAULT ''`,
+	// provider_user_id is the per-person id for providers whose account_uuid is
+	// coarser than a person. Codex puts `chatgpt_user_id` here; its account_uuid
+	// is the workspace-wide `chatgpt_account_id`. Existing Codex rows backfill
+	// from credential_json in migrateCodexProviderUserID.
+	`ALTER TABLE accounts ADD COLUMN provider_user_id TEXT NOT NULL DEFAULT ''`,
 	// rate_limit_tier is the authoritative quota label from
 	// /api/oauth/profile.organization.rate_limit_tier — values like
 	// "default_claude_pro", "default_claude_max_5x", "default_claude_max_20x".
@@ -439,6 +458,7 @@ CREATE TABLE accounts_new (
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
+  provider_user_id           TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
   credential_json            TEXT    NOT NULL DEFAULT '',
   codex_usage_json           TEXT    NOT NULL DEFAULT '',
@@ -455,7 +475,7 @@ INSERT INTO accounts_new SELECT
   seven_day_scoped_label,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier, credential_json, codex_usage_json, pinned_device_id FROM accounts;
+  account_uuid, provider_user_id, rate_limit_tier, credential_json, codex_usage_json, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -519,6 +539,7 @@ CREATE TABLE accounts_new (
   seven_day_threshold        REAL    NOT NULL DEFAULT 95,
   seven_day_sonnet_threshold REAL    NOT NULL DEFAULT 95,
   account_uuid               TEXT    NOT NULL DEFAULT '',
+  provider_user_id           TEXT    NOT NULL DEFAULT '',
   rate_limit_tier            TEXT    NOT NULL DEFAULT '',
   credential_json            TEXT    NOT NULL DEFAULT '',
   codex_usage_json           TEXT    NOT NULL DEFAULT '',
@@ -535,7 +556,7 @@ INSERT INTO accounts_new SELECT
   seven_day_scoped_label,
   usage_fetched_at,
   five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-  account_uuid, rate_limit_tier, credential_json, codex_usage_json, pinned_device_id FROM accounts;
+  account_uuid, provider_user_id, rate_limit_tier, credential_json, codex_usage_json, pinned_device_id FROM accounts;
 DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 COMMIT;
@@ -560,16 +581,24 @@ func (s *Store) DB() *sql.DB { return s.db }
 // of the resulting row is set on a.ID.
 //
 // Dedup precedence:
-//  1. account_uuid (the stable id from /api/oauth/profile). This is the
-//     canonical key — Anthropic's primary email can shift over time (alias
-//     swap, SSO rebind, account migration), but uuid does not.
-//  2. email — only when the existing row has no account_uuid yet (legacy
-//     rows from before this column existed). This is the transition path:
+//  1. provider_user_id — the per-person id, when the provider surfaces one.
+//     Codex does (chatgpt_user_id) and needs it: its account_uuid is the
+//     workspace-wide chatgpt_account_id, so keying on uuid alone made the
+//     second member of a Business/Team workspace overwrite the first.
+//  2. account_uuid (the stable id from /api/oauth/profile). This is the
+//     canonical key for Claude — Anthropic's primary email can shift over
+//     time (alias swap, SSO rebind, account migration), but uuid does not.
+//     Also the adoption path for Codex rows written before provider_user_id
+//     existed: an incoming user id matches such a row only when the emails
+//     agree (or one side has none), so a colleague's login can't silently
+//     claim someone else's legacy row.
+//  3. email — only when the existing row has no account_uuid yet (legacy
+//     rows from before that column existed). This is the transition path:
 //     once UsagePoller's profile-backfill writes account_uuid into older
-//     rows, future Upserts hit case 1 cleanly.
+//     rows, future Upserts hit case 2 cleanly.
 //
-// Both keys are skipped when their value is empty, so accounts that haven't
-// surfaced either field coexist as distinct rows.
+// Every key is skipped when its value is empty, so accounts that haven't
+// surfaced any of them coexist as distinct rows.
 func (s *Store) Upsert(ctx context.Context, a *Account) error {
 	if a.Provider == "" {
 		a.Provider = ProviderClaude
@@ -589,17 +618,25 @@ func (s *Store) Upsert(ctx context.Context, a *Account) error {
 	}
 	defer tx.Rollback()
 
+	// The ORDER BY keeps case 1 ahead of the weaker keys: when an incoming
+	// login matches one row on provider_user_id and an older row on
+	// account_uuid alone, the per-person match must win regardless of row age.
 	var existingID int64
 	err = tx.QueryRowContext(ctx, `
 SELECT id FROM accounts
- WHERE provider = ?
-   AND ((? != '' AND account_uuid = ?)
-    OR (? != '' AND account_uuid = '' AND email = ?))
- ORDER BY id
+ WHERE provider = :provider
+   AND ((:uid != '' AND provider_user_id = :uid)
+    OR (:uid = '' AND :uuid != '' AND account_uuid = :uuid)
+    OR (:uid != '' AND :uuid != '' AND provider_user_id = ''
+        AND account_uuid = :uuid
+        AND (:email = '' OR email = '' OR email = :email))
+    OR (:email != '' AND account_uuid = '' AND email = :email))
+ ORDER BY CASE WHEN :uid != '' AND provider_user_id = :uid THEN 0 ELSE 1 END, id
  LIMIT 1`,
-		a.Provider,
-		a.AccountUUID, a.AccountUUID,
-		a.Email, a.Email,
+		sql.Named("provider", a.Provider),
+		sql.Named("uid", a.ProviderUserID),
+		sql.Named("uuid", a.AccountUUID),
+		sql.Named("email", a.Email),
 	).Scan(&existingID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -614,7 +651,7 @@ UPDATE accounts SET
   access_token = ?, refresh_token = ?, expires_at = ?,
   scopes = ?, subscription_type = ?, organization_uuid = ?,
   email = ?, full_name = ?, organization_name = ?, plan = ?,
-  account_uuid = ?, rate_limit_tier = ?, credential_json = ?,
+  account_uuid = ?, provider_user_id = ?, rate_limit_tier = ?, credential_json = ?,
   status = 'active',
   updated_at = ?
 WHERE id = ?`,
@@ -622,7 +659,7 @@ WHERE id = ?`,
 			a.AccessToken, a.RefreshToken, a.ExpiresAt,
 			a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 			a.Email, a.FullName, a.OrganizationName, a.Plan,
-			a.AccountUUID, a.RateLimitTier, a.CredentialJSON,
+			a.AccountUUID, a.ProviderUserID, a.RateLimitTier, a.CredentialJSON,
 			a.UpdatedAt, existingID,
 		); err != nil {
 			return err
@@ -655,15 +692,15 @@ INSERT INTO accounts
   (provider, name, access_token, refresh_token, expires_at, scopes, subscription_type,
    organization_uuid, status, last_used_at,
    created_at, updated_at,
-   email, full_name, organization_name, plan, account_uuid, rate_limit_tier, credential_json,
+   email, full_name, organization_name, plan, account_uuid, provider_user_id, rate_limit_tier, credential_json,
    five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Provider, a.Name, a.AccessToken, a.RefreshToken, a.ExpiresAt,
 		a.Scopes, a.SubscriptionType, a.OrganizationUUID,
 		ifEmpty(a.Status, "active"), a.LastUsedAt,
 		a.CreatedAt, a.UpdatedAt,
 		a.Email, a.FullName, a.OrganizationName, a.Plan,
-		a.AccountUUID, a.RateLimitTier, a.CredentialJSON,
+		a.AccountUUID, a.ProviderUserID, a.RateLimitTier, a.CredentialJSON,
 		clampPercent(a.FiveHourThreshold), clampPercent(a.SevenDayThreshold), clampPercent(a.SevenDaySonnetThreshold),
 	)
 	if err != nil {
@@ -1052,7 +1089,7 @@ seven_day_sonnet_util, seven_day_sonnet_resets_at,
 seven_day_scoped_label,
 usage_fetched_at,
 five_hour_threshold, seven_day_threshold, seven_day_sonnet_threshold,
-account_uuid, rate_limit_tier, credential_json, codex_usage_json, pinned_device_id`
+account_uuid, provider_user_id, rate_limit_tier, credential_json, codex_usage_json, pinned_device_id`
 
 // List returns every row ordered by id (stable insertion order).
 func (s *Store) List(ctx context.Context) ([]Account, error) {
@@ -1109,7 +1146,7 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 			&a.SevenDayScopedLabel,
 			&a.UsageFetchedAt,
 			&a.FiveHourThreshold, &a.SevenDayThreshold, &a.SevenDaySonnetThreshold,
-			&a.AccountUUID, &a.RateLimitTier, &a.CredentialJSON, &a.CodexUsageJSON, &a.PinnedDeviceID,
+			&a.AccountUUID, &a.ProviderUserID, &a.RateLimitTier, &a.CredentialJSON, &a.CodexUsageJSON, &a.PinnedDeviceID,
 		); err != nil {
 			return nil, err
 		}

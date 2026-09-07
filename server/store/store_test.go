@@ -291,6 +291,122 @@ func TestUpsertSameUUIDDifferentEmailMerges(t *testing.T) {
 	}
 }
 
+// TestUpsertCodexSameWorkspaceDifferentUsersCoexist covers the bug where two
+// members of the same ChatGPT Business/Team workspace collapsed onto one row:
+// Codex's account_uuid carries `chatgpt_account_id`, which identifies the
+// *workspace*, not the person, so the uuid-keyed merge above (correct for
+// Anthropic) silently overwrote the first member's tokens. The per-person id
+// is `chatgpt_user_id`, stored as ProviderUserID, and it takes precedence
+// over account_uuid whenever both rows have one.
+func TestUpsertCodexSameWorkspaceDifferentUsersCoexist(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	first := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@corp.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-alice",
+		AccessToken: "at-1", RefreshToken: "rt-1", ExpiresAt: 1,
+	}
+	if err := st.Upsert(ctx, first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	second := &Account{
+		Provider: ProviderCodex, Name: "bob", Email: "bob@corp.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-bob",
+		AccessToken: "at-2", RefreshToken: "rt-2", ExpiresAt: 2,
+	}
+	if err := st.Upsert(ctx, second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	if first.ID == 0 || second.ID == 0 || first.ID == second.ID {
+		t.Fatalf("expected distinct ids for two workspace members, got first=%d second=%d", first.ID, second.ID)
+	}
+	list, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 rows for 2 workspace members, got %d (%+v)", len(list), list)
+	}
+}
+
+// TestUpsertCodexSameUserRefreshesInPlace is the dedup half of the rule above:
+// the same person re-logging in (same chatgpt_user_id) must refresh the
+// existing row even when the surfaced email changed.
+func TestUpsertCodexSameUserRefreshesInPlace(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	first := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@old.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-alice",
+		AccessToken: "at-1", RefreshToken: "rt-1", ExpiresAt: 1,
+	}
+	if err := st.Upsert(ctx, first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	second := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@new.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-alice",
+		AccessToken: "at-2", RefreshToken: "rt-2", ExpiresAt: 2,
+	}
+	if err := st.Upsert(ctx, second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("expected same id for one user, got first=%d second=%d", first.ID, second.ID)
+	}
+	list, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 row, got %d (%+v)", len(list), list)
+	}
+	if list[0].AccessToken != "at-2" || list[0].Email != "alice@new.com" {
+		t.Fatalf("same-user re-login did not refresh row: %+v", list[0])
+	}
+}
+
+// TestUpsertCodexLegacyRowAdoptsUserID is the transition path: a row written
+// before ProviderUserID existed has an empty one, so the same person's next
+// login must match it on account_uuid and stamp the user id in, rather than
+// forking a duplicate row.
+func TestUpsertCodexLegacyRowAdoptsUserID(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+
+	legacy := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@corp.com",
+		AccountUUID: "ws-1",
+		AccessToken: "at-1", RefreshToken: "rt-1", ExpiresAt: 1,
+	}
+	if err := st.Upsert(ctx, legacy); err != nil {
+		t.Fatalf("upsert legacy: %v", err)
+	}
+	relogin := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@corp.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-alice",
+		AccessToken: "at-2", RefreshToken: "rt-2", ExpiresAt: 2,
+	}
+	if err := st.Upsert(ctx, relogin); err != nil {
+		t.Fatalf("upsert relogin: %v", err)
+	}
+	if legacy.ID != relogin.ID {
+		t.Fatalf("expected legacy row to be adopted, got legacy=%d relogin=%d", legacy.ID, relogin.ID)
+	}
+	list, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 row, got %d (%+v)", len(list), list)
+	}
+	if list[0].ProviderUserID != "user-alice" {
+		t.Fatalf("legacy row did not adopt user id: %+v", list[0])
+	}
+}
+
 // TestUpsertSameEmailUpdatesTokens is the dedup half: re-logging in with the
 // same email refreshes the row in place rather than creating a duplicate.
 func TestUpsertSameEmailUpdatesTokens(t *testing.T) {
