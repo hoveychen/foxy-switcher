@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -940,4 +942,91 @@ func TestProviderDefaultsAndDedupAreProviderScoped(t *testing.T) {
 	if err != nil || len(codexRows) != 1 || codexRows[0].ID != codex.ID {
 		t.Fatalf("ListProvider codex = %+v, %v", codexRows, err)
 	}
+}
+
+// TestMigrateCodexProviderUserIDBackfill covers the rows that already exist in
+// a running install: they were written before provider_user_id existed, so the
+// column is empty and the next login of a *different* workspace member would
+// still match them on account_uuid. Open() must recover each row's person id
+// from the credential blob it already stores.
+func TestMigrateCodexProviderUserIDBackfill(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ctx := context.Background()
+	legacy := &Account{
+		Provider: ProviderCodex, Name: "alice", Email: "alice@corp.com",
+		AccountUUID: "ws-1", AccessToken: "at-1", RefreshToken: "rt-1", ExpiresAt: 1,
+		CredentialJSON: codexCredentialJSON(t, "ws-1", "user-alice", "alice@corp.com"),
+	}
+	if err := st.Upsert(ctx, legacy); err != nil {
+		t.Fatalf("upsert legacy: %v", err)
+	}
+	// Simulate the pre-migration state: the row exists but carries no person id.
+	if _, err := st.db.ExecContext(ctx, `UPDATE accounts SET provider_user_id = '' WHERE id = ?`, legacy.ID); err != nil {
+		t.Fatalf("clear provider_user_id: %v", err)
+	}
+	st.Close()
+
+	st2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer st2.Close()
+	list, err := st2.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].ProviderUserID != "user-alice" {
+		t.Fatalf("backfill did not stamp the person id: %+v", list)
+	}
+
+	// And with the id in place, a colleague's login no longer adopts the row.
+	bob := &Account{
+		Provider: ProviderCodex, Name: "bob", Email: "bob@corp.com",
+		AccountUUID: "ws-1", ProviderUserID: "user-bob",
+		AccessToken: "at-2", RefreshToken: "rt-2", ExpiresAt: 2,
+	}
+	if err := st2.Upsert(ctx, bob); err != nil {
+		t.Fatalf("upsert bob: %v", err)
+	}
+	if bob.ID == legacy.ID {
+		t.Fatalf("bob adopted alice's backfilled row (id %d)", bob.ID)
+	}
+}
+
+// codexCredentialJSON builds an auth.json blob shaped like the Codex CLI's,
+// with an unsigned id_token whose payload carries the claims Foxy reads.
+func codexCredentialJSON(t *testing.T, accountID, userID, email string) string {
+	t.Helper()
+	payload := map[string]any{
+		"email": email,
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+			"chatgpt_user_id":    userID,
+			"chatgpt_plan_type":  "business",
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	idToken := "h." + base64.RawURLEncoding.EncodeToString(raw) + ".s"
+	blob, err := json.Marshal(map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]any{
+			"id_token":      idToken,
+			"access_token":  "at",
+			"refresh_token": "rt",
+			"account_id":    accountID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal auth file: %v", err)
+	}
+	return string(blob)
 }

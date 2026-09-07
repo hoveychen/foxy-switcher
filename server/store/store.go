@@ -7,6 +7,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -324,6 +325,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate drop cooldown columns: %w", err)
 	}
+	if err := migrateCodexProviderUserID(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate codex provider_user_id: %w", err)
+	}
 	// Rename legacy 'disabled' status to 'paused'. Idempotent: matches no rows
 	// once migration has run. The off-state was renamed when pause/resume
 	// replaced enable/disable in the desktop UI.
@@ -563,6 +568,82 @@ COMMIT;
 `
 	_, err := db.Exec(rebuild)
 	return err
+}
+
+// migrateCodexProviderUserID backfills provider_user_id for Codex rows
+// written before that column existed. Left empty, those rows still match on
+// account_uuid alone, so a second member of the same ChatGPT workspace could
+// adopt a colleague's row. The person id is already sitting in the stored
+// auth.json blob, so no network call is needed.
+//
+// The claim decoding is duplicated from openai.parseJWTClaims rather than
+// reused: the openai package imports this one, so calling into it here would
+// be an import cycle. Idempotent — backfilled rows no longer match the WHERE.
+func migrateCodexProviderUserID(db *sql.DB) error {
+	rows, err := db.Query(`
+SELECT id, credential_json FROM accounts
+ WHERE provider = ? AND provider_user_id = '' AND credential_json != ''`,
+		ProviderCodex)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		id     int64
+		userID string
+	}
+	var updates []pending
+	for rows.Next() {
+		var id int64
+		var cred string
+		if err := rows.Scan(&id, &cred); err != nil {
+			rows.Close()
+			return err
+		}
+		if uid := codexUserIDFromCredential(cred); uid != "" {
+			updates = append(updates, pending{id: id, userID: uid})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, u := range updates {
+		if _, err := db.Exec(`UPDATE accounts SET provider_user_id = ? WHERE id = ?`, u.userID, u.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// codexUserIDFromCredential digs chatgpt_user_id out of a stored Codex
+// auth.json blob. Returns "" for anything it can't read — a row that keeps an
+// empty provider_user_id simply falls back to the old account_uuid matching.
+func codexUserIDFromCredential(cred string) string {
+	var blob struct {
+		Tokens struct {
+			IDToken string `json:"id_token"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal([]byte(cred), &blob); err != nil {
+		return ""
+	}
+	parts := strings.Split(blob.Tokens.IDToken, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Auth struct {
+			ChatGPTUserID string `json:"chatgpt_user_id"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Auth.ChatGPTUserID
 }
 
 func isDuplicateColumn(err error) bool {
