@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"filippo.io/age"
 	keyring "github.com/zalando/go-keyring"
@@ -260,13 +261,42 @@ func (s *autoCredentialStorage) Save(raw []byte) error {
 	}
 	return s.file.Save(raw)
 }
+// Delete removes both copies. A keyring failure is fatal only when the
+// keyring was actually reachable — auto mode never promises the credential
+// went there in the first place, since Save falls back to the file on any
+// keyring error, so on a box with no secret service there is nothing in the
+// keyring to fail to delete.
+//
+// Returning that error unconditionally was worse than noisy, it was a trap:
+// restoreCredentialBackup calls Delete and only removes the backup sentinel
+// once Delete succeeds. On a headless Linux box (no D-Bus session bus) the
+// delete "failed" forever, the sentinel was never cleared, and the codex
+// reconcile loop retried every 5s — 689 identical `dial unix
+// /run/user/0/bus: connect: no such file or directory` lines in one hour on
+// mcn001, with the restore never completing.
 func (s *autoCredentialStorage) Delete() error {
 	keyringErr := s.keyring.Delete()
 	fileErr := s.file.Delete()
-	if keyringErr != nil {
+	if fileErr != nil {
+		return fileErr
+	}
+	if keyringErr != nil && !keyringUnavailable(keyringErr) {
 		return keyringErr
 	}
-	return fileErr
+	return nil
+}
+
+// keyringUnavailable reports whether err means "there is no secret service
+// on this machine" rather than "the delete itself failed". Matched on typed
+// errors, not message text: go-keyring's dbus transport wraps the connect
+// failure in *net.OpError → *os.SyscallError → syscall.Errno, so errors.Is
+// sees ENOENT when /run/user/<uid>/bus doesn't exist (no login session —
+// the systemd-service case) and ECONNREFUSED when the socket is there but
+// nothing is listening (a dead gnome-keyring-daemon).
+func keyringUnavailable(err error) bool {
+	return errors.Is(err, keyring.ErrUnsupportedPlatform) ||
+		errors.Is(err, syscall.ENOENT) ||
+		errors.Is(err, syscall.ECONNREFUSED)
 }
 func (s *autoCredentialStorage) BackupPath() string { return s.file.BackupPath() }
 func (s *autoCredentialStorage) Kind() string       { return "auto" }
