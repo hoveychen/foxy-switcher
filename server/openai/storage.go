@@ -44,7 +44,9 @@ type systemKeyring struct{}
 
 func (systemKeyring) Get(service, user string) (string, error) { return keyring.Get(service, user) }
 func (systemKeyring) Set(service, user, password string) error {
-	return keyring.Set(service, user, password)
+	// keyringSet is platform-split: see keyring_darwin.go for why macOS
+	// does not go through keyring.Set.
+	return keyringSet(service, user, password)
 }
 func (systemKeyring) Delete(service, user string) error { return keyring.Delete(service, user) }
 
