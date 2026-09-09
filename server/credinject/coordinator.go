@@ -603,12 +603,16 @@ func (c *Coordinator) reconcileWithIdle(ctx context.Context, idleFor time.Durati
 
 	hash := hashToken(a.AccessToken)
 	c.mu.Lock()
-	if c.currentAccountID == a.ID && c.lastAccessHash == hash {
-		c.mu.Unlock()
-		return
-	}
+	unchanged := c.currentAccountID == a.ID && c.lastAccessHash == hash
 	prev := c.currentAccountID
 	c.mu.Unlock()
+
+	// The account and its token are what we last injected — so there'd be
+	// nothing to write, unless that injection has since vanished from disk.
+	restoring := unchanged && c.credentialsVanished()
+	if unchanged && !restoring {
+		return
+	}
 
 	c.maybeSnapshotNative()
 
@@ -677,7 +681,14 @@ func (c *Coordinator) reconcileWithIdle(ctx context.Context, idleFor time.Durati
 		}
 	}
 
-	if prev == a.ID {
+	if restoring {
+		c.logger.Printf("[credinject] restored account %d (%s) — credentials file had vanished", a.ID, a.Name)
+		// Warn, not info: the file disappearing is never something foxy did,
+		// so the timeline should show who to go ask (a wiped ~/.claude, a
+		// `claude` logout, a home-directory restore).
+		c.bus.EmitWarn(activity.TypeCredInjected, a.ID,
+			fmt.Sprintf("Restored %s — credentials file had vanished", a.Name))
+	} else if prev == a.ID {
 		c.logger.Printf("[credinject] re-injected account %d (%s) — token rotated", a.ID, a.Name)
 		// Emit so agent-mode debugging has a timeline to read against
 		// reverseSync events: a fast string of "Re-injected" without an
@@ -1147,6 +1158,39 @@ func (c *Coordinator) VerifyMarker() (MarkerState, error) {
 		return MarkerStateIntact, nil
 	}
 	return MarkerStateOverwritten, nil
+}
+
+// credentialsVanished reports whether the injection we believe is live has
+// disappeared from disk. reconcile's no-op early return compares in-memory
+// state only (account id + token hash), so without this check a credentials
+// file deleted behind our back is invisible forever: every 5s tick keeps
+// early-returning while Claude Code sits at /login. Deletion is not
+// hypothetical — a wiped ~/.claude, a `claude` logout, or an unclean reboot
+// that leaves injected.json naming an account whose file is gone all produce
+// it, and the last of those is what stranded mcn001 for an hour and a half.
+// This is also what makes reverseSync's "the blob disappeared — let the next
+// reconcile re-inject so things converge" comment true; before this, the next
+// reconcile did nothing of the sort.
+//
+// Only MarkerStateMissing counts as vanished:
+//   - Overwritten is the ordinary shape of a Claude-Code-side token rotation
+//     (CC rewrites the blob without our marker). Re-injecting on it would race
+//     reverseSync and could clobber CC's newer token with the store's older
+//     one — the exact failure the post-inject tripwire above warns about.
+//   - SidecarMissing means we have no record of our own write: a fresh
+//     install, or the macOS Keychain backend, which reports no file path at
+//     all. Nothing to compare against.
+//   - Unknown is an I/O error, already logged.
+//
+// The last three all leave the no-op intact, so this can only ever add a
+// write, never suppress one.
+func (c *Coordinator) credentialsVanished() bool {
+	state, err := c.VerifyMarker()
+	if err != nil {
+		c.logger.Printf("[credinject] verify marker: %v", err)
+		return false
+	}
+	return state == MarkerStateMissing
 }
 
 // recordMarkerSidecar persists the marker sidecar after a successful inject.
