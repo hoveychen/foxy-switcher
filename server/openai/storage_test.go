@@ -2,9 +2,11 @@ package openai
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 
 	keyring "github.com/zalando/go-keyring"
@@ -14,6 +16,30 @@ type memoryKeyring struct {
 	mu     sync.Mutex
 	values map[string]string
 	fail   bool
+	// failErr overrides what a failing call returns. Default (nil) is a
+	// plain error, i.e. a keyring that answered and refused — distinct from
+	// one that isn't there at all, which callers build with
+	// errNoSecretService.
+	failErr error
+}
+
+// errNoSecretService is the error shape go-keyring surfaces on a machine
+// with no D-Bus session bus: the dbus transport's dial fails, wrapped
+// *net.OpError → *os.SyscallError → syscall.ENOENT.
+func errNoSecretService() error {
+	return &net.OpError{
+		Op:   "dial",
+		Net:  "unix",
+		Addr: &net.UnixAddr{Name: "/run/user/0/bus", Net: "unix"},
+		Err:  &os.SyscallError{Syscall: "connect", Err: syscall.ENOENT},
+	}
+}
+
+func (m *memoryKeyring) failure() error {
+	if m.failErr != nil {
+		return m.failErr
+	}
+	return errors.New("keyring unavailable")
 }
 
 func (m *memoryKeyring) key(service, user string) string { return service + "\x00" + user }
@@ -21,7 +47,7 @@ func (m *memoryKeyring) Get(service, user string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.fail {
-		return "", errors.New("keyring unavailable")
+		return "", m.failure()
 	}
 	value, ok := m.values[m.key(service, user)]
 	if !ok {
@@ -33,7 +59,7 @@ func (m *memoryKeyring) Set(service, user, password string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.fail {
-		return errors.New("keyring unavailable")
+		return m.failure()
 	}
 	if m.values == nil {
 		m.values = map[string]string{}
@@ -45,7 +71,7 @@ func (m *memoryKeyring) Delete(service, user string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.fail {
-		return errors.New("keyring unavailable")
+		return m.failure()
 	}
 	key := m.key(service, user)
 	if _, ok := m.values[key]; !ok {
