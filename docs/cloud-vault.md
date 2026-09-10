@@ -111,6 +111,7 @@ Step 2 agent routes:
 | `POST /agent/v1/leases/{id}/renew` | RenewLease — body: `{ ttl_ms }` |
 | `DELETE /agent/v1/leases/{id}` | ReleaseLease |
 | `GET /agent/v1/openrouter/config` | The calling device's OpenRouter grant (derived key + allowed models), or 204 |
+| `GET /agent/v1/deepseek/config` | The calling device's DeepSeek grant (the pool account's key + base URL), or 204 |
 
 Frontend routes that previously appeared on this list (login, refresh-now, settings, dashboard, activity SSE) stay where they are under `/api/*`. The frontend talks to vault directly over HTTP regardless of deployment topology, so abstracting them through `vault.Service` would just create a parallel call path with no callers. They're documented in [architecture.md](architecture.md) and route definitions live in [server/httpapi/routes.go](../server/httpapi/routes.go).
 
@@ -295,6 +296,108 @@ underneath them. An OpenRouter key does neither. Only the *authorisation* can
 change, so the writer polls on a 5-minute interval. Losing the grant tears the
 config down; a transient vault outage does **not** — that would drop codex's
 provider mid-session over a blip.
+
+## DeepSeek — the same shape, minus the minting
+
+DeepSeek joined the pool after OpenRouter and reuses its whole shape: no
+leases, no LRU, a device-level grant fetched on a slow poll, and a
+`allow_deepseek` flag gating it per device. Reading the OpenRouter section
+above tells you almost everything.
+
+What is worth writing down is the one place the two diverge, because it is not
+a simplification we chose:
+
+**There is no key-minting API.** DeepSeek issues API keys only from its web
+console. The vault cannot mint a key per device, cannot cap one per device, and
+cannot revoke one. So the whole derivation half of OpenRouter's design has no
+counterpart here — no `device_deepseek_keys` table, no `key_hash`, no upstream
+`DELETE`. Every authorised device is served the account's own key, which is
+exactly OpenRouter's *ordinary key* branch, and the grant and admin UI both say
+so rather than implying a per-device revocability that does not exist.
+
+Two smaller consequences follow:
+
+- **No policy template.** With nothing to mint there is no spend cap and no
+  per-key model allowlist to configure, so a DeepSeek `accounts` row carries no
+  `credential_json` at all. An account is a name plus a key
+  (`deepseek_credentials`, its own table for the same reason OpenRouter's is:
+  `GET /agent/v1/accounts` serialises the row verbatim).
+- **Withdrawing the grant is device-side only.** Suspending or revoking a device
+  cannot kill the key, so what actually happens is that the device's next config
+  sync gets a 204 and removes the credential it wrote. A device that is switched
+  off at the moment you revoke it keeps a working key until it next runs. If
+  that matters for your threat model, rotate the account's key — which is one
+  paste in the admin UI, and takes effect on every device's next sync.
+
+### Rotating when an account runs dry
+
+`vault.BalancePoller` reads `GET /user/balance` every 15 minutes and stores
+DeepSeek's own `is_available` flag. The grant service skips accounts where that
+flag is false and rolls onto the next funded one, lowest id first.
+
+Note what is *not* here: a minimum-balance floor. OpenRouter has one
+(`MinUsableCredit`) because it reports a dollar figure. DeepSeek accounts bill
+in CNY or in USD, so any threshold would be wrong for one of them — and the
+provider already publishes the boolean we would be trying to reconstruct. A
+never-polled account counts as funded, for the same reason OpenRouter's does:
+treating "we don't know" as "no money" would lock an operator out of their own
+pool over a failed HTTP call.
+
+### Device side: one line in the harness credential file
+
+`dsh-credentials-local` resolves `DEEPSEEK_API_KEY` from four layers, first
+match wins:
+
+| Layer | Writable by foxy? |
+|---|---|
+| the launch environment (`DEEPSEEK_API_KEY=… dsh`) | no |
+| `$DSH_HOME/.credentials.yaml` | **yes — foxy writes here** |
+| `<cwd>/.env` | not ours to touch |
+| `$DSH_HOME/.env` | below the stored file |
+
+Foxy writes the second layer because it is the highest one a program can write,
+and the only one that beats a key the user saved earlier through dsh's own
+settings UI. Writing `$DSH_HOME/.env` instead would look correct on a fresh
+machine and be silently ignored on any machine where a key had ever been saved.
+
+The edit is one line between sentinel comments, never a wholesale rewrite — the
+file also holds the user's other API keys, their provider sign-in records and
+their comments. Their own `DEEPSEEK_API_KEY`, if they had one, is parked as a
+comment inside the managed block and restored verbatim on teardown; parking it
+on disk rather than in the daemon's memory means a `kill -9` cannot lose it.
+The file is written `0600`, which is also what dsh requires — it refuses to load
+a credential file any other user can read.
+
+```yaml
+version: 1
+
+refs:
+  OPENAI_API_KEY: sk-openai-mine
+  # >>> foxy-switcher deepseek — managed, do not edit >>>
+  # foxy-switcher:saved DEEPSEEK_API_KEY: sk-the-users-own
+  DEEPSEEK_API_KEY: sk-from-the-vault
+  # <<< foxy-switcher deepseek — managed, do not edit <<<
+```
+
+Unlike codex, the key does land on disk. That is not a choice: dsh resolves
+credentials from files and the environment only, so there is no token-command
+provider to point it at the way `foxy cred openrouter-token` does for codex.
+
+Two cases the writer refuses rather than guesses at:
+
+- **A `DEEPSEEK_API_KEY` in the environment** outranks the file, so foxy's key
+  would be ignored. Nothing on disk can fix that, so the daemon logs a warning
+  instead of failing silently.
+- **A pre-release credential file** (a bare mapping with no `version:` key) is
+  refused. dsh migrates that layout in place on its next boot; nesting a `refs:`
+  section into it would produce a document that is neither shape, and dsh
+  refuses to start on a document it cannot read. Corrupting a credential file is
+  worse than asking for one dsh launch.
+
+The writer polls on the same 5-minute interval as OpenRouter's and for the same
+reason — a key neither expires nor rotates, so only authorisation changes and
+pool rollover need noticing. Losing the grant removes the credential; a
+transient vault outage leaves the last known-good value in place.
 
 ## Authentication (Step 3) — device flow
 
