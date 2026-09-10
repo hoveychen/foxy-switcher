@@ -201,11 +201,12 @@ type apiDeviceRow struct {
 	// (UnixMilli) for a suspended one. The DevicesPage renders a
 	// "suspended" badge and flips the action button to Resume when != 0.
 	DisabledAt int64 `json:"disabled_at"`
-	// AllowClaude / AllowCodex / AllowOpenRouter is the per-device provider
-	// allowlist the DevicesPage renders as toggles.
+	// AllowClaude / AllowCodex / AllowOpenRouter / AllowDeepSeek is the
+	// per-device provider allowlist the DevicesPage renders as toggles.
 	AllowClaude     bool `json:"allow_claude"`
 	AllowCodex      bool `json:"allow_codex"`
 	AllowOpenRouter bool `json:"allow_openrouter"`
+	AllowDeepSeek   bool `json:"allow_deepseek"`
 	// CurrentLease names the account this device is currently leasing,
 	// joined with the account name so the admin DevicesPage can render
 	// "currently using X (12 min left)" without a second query. Nil when
@@ -260,6 +261,7 @@ func (s *Server) handleAPIDevicesList(w http.ResponseWriter, r *http.Request) {
 			AllowClaude:     d.AllowClaude,
 			AllowCodex:      d.AllowCodex,
 			AllowOpenRouter: d.AllowOpenRouter,
+			AllowDeepSeek:   d.AllowDeepSeek,
 		}
 		if l, ok := leaseByDevice[d.ID]; ok {
 			row.CurrentLease = &apiDeviceLease{
@@ -380,6 +382,8 @@ type apiDeviceProvidersReq struct {
 	// grant the admin made — omitted means "leave as-is", not false. Claude /
 	// Codex keep their plain-bool shape: every shipped client sends both.
 	AllowOpenRouter *bool `json:"allow_openrouter"`
+	// AllowDeepSeek is a pointer for the same reason as AllowOpenRouter.
+	AllowDeepSeek *bool `json:"allow_deepseek"`
 }
 
 // handleAPIDevicesProviders updates a device's provider allowlist (the choice
@@ -397,11 +401,17 @@ func (s *Server) handleAPIDevicesProviders(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, errors.New("id required"))
 		return
 	}
-	// Resolve the omitted-field case against the row's current grant.
-	allowOpenRouter := false
+	// Resolve the omitted-field cases against the row's current grant. One
+	// lookup covers both pointers, so an older client that omits either field
+	// still preserves what the admin already granted.
+	allowOpenRouter, allowDeepSeek := false, false
 	if req.AllowOpenRouter != nil {
 		allowOpenRouter = *req.AllowOpenRouter
-	} else {
+	}
+	if req.AllowDeepSeek != nil {
+		allowDeepSeek = *req.AllowDeepSeek
+	}
+	if req.AllowOpenRouter == nil || req.AllowDeepSeek == nil {
 		cur, err := s.st.FindDevice(r.Context(), req.ID)
 		if err != nil {
 			if notFoundIs(err) {
@@ -411,9 +421,14 @@ func (s *Server) handleAPIDevicesProviders(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		allowOpenRouter = cur.AllowOpenRouter
+		if req.AllowOpenRouter == nil {
+			allowOpenRouter = cur.AllowOpenRouter
+		}
+		if req.AllowDeepSeek == nil {
+			allowDeepSeek = cur.AllowDeepSeek
+		}
 	}
-	if err := s.st.SetDeviceProviders(r.Context(), req.ID, req.AllowClaude, req.AllowCodex, allowOpenRouter); err != nil {
+	if err := s.st.SetDeviceProviders(r.Context(), req.ID, req.AllowClaude, req.AllowCodex, allowOpenRouter, allowDeepSeek); err != nil {
 		if notFoundIs(err) {
 			writeError(w, http.StatusNotFound, errors.New("device not found"))
 			return
@@ -524,6 +539,7 @@ type apiPairResolveReq struct {
 	AllowClaude     *bool `json:"allow_claude"`
 	AllowCodex      *bool `json:"allow_codex"`
 	AllowOpenRouter *bool `json:"allow_openrouter"`
+	AllowDeepSeek   *bool `json:"allow_deepseek"`
 }
 
 type apiPairResolveResp struct {
@@ -554,7 +570,9 @@ func (s *Server) handleAPIPairResolve(w http.ResponseWriter, r *http.Request) {
 		allowClaude := req.AllowClaude == nil || *req.AllowClaude             // default on
 		allowCodex := req.AllowCodex != nil && *req.AllowCodex                // default off
 		allowOpenRouter := req.AllowOpenRouter != nil && *req.AllowOpenRouter // default off
-		if err := s.st.ApprovePairing(r.Context(), code, deviceID, token, allowClaude, allowCodex, allowOpenRouter); err != nil {
+		allowDeepSeek := req.AllowDeepSeek != nil && *req.AllowDeepSeek       // default off
+		if err := s.st.ApprovePairing(r.Context(), code, deviceID, token,
+			allowClaude, allowCodex, allowOpenRouter, allowDeepSeek); err != nil {
 			if notFoundIs(err) {
 				writeError(w, http.StatusNotFound, errors.New("code expired or already used"))
 				return

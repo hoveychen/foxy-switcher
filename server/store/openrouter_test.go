@@ -339,11 +339,11 @@ func TestOpenRouterProviderAllowlistGating(t *testing.T) {
 	}
 
 	// Grant, then withdraw.
-	if err := st.SetDeviceProviders(ctx, "dev-plain", true, false, true); err != nil {
+	if err := st.SetDeviceProviders(ctx, "dev-plain", true, false, true, false); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	assertAllows(t, st, "dev-plain", ProviderOpenRouter, true)
-	if err := st.SetDeviceProviders(ctx, "dev-plain", true, false, false); err != nil {
+	if err := st.SetDeviceProviders(ctx, "dev-plain", true, false, false, false); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
 	assertAllows(t, st, "dev-plain", ProviderOpenRouter, false)
