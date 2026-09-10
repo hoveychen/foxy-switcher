@@ -385,6 +385,10 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	creditPoller := vault.NewCreditPoller(st, logger)
 	creditPoller.Start(ctx)
 	defer creditPoller.Stop()
+	// DeepSeek balances, for the same reason and on the same cadence.
+	balancePoller := vault.NewBalancePoller(st, logger)
+	balancePoller.Start(ctx)
+	defer balancePoller.Stop()
 
 	// Lease sweeper: GC expired rows so leases_account_id_uniq stays
 	// unblocked for the next AcquireLease attempt. 30s matches the
