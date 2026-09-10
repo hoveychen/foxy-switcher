@@ -159,12 +159,13 @@ func (p *UsagePoller) tick(ctx context.Context) {
 		if a.AccessToken == "" {
 			continue
 		}
-		// OpenRouter exposes no subscription usage windows (it's pay-as-you-go;
-		// spend is capped per derived key), and it has no access_token on the row at
-		// all — so the AccessToken=="" check above already skips it. Explicit
-		// guard so a future field on the row can't accidentally route an
-		// OpenRouter account into Anthropic's /api/oauth/usage.
-		if a.Provider == store.ProviderOpenRouter {
+		// The pay-as-you-go pools expose no subscription usage windows, and
+		// neither has an access_token on the row at all — so the AccessToken==""
+		// check above already skips them. Explicit guard so a future field on
+		// the row can't accidentally route one into Anthropic's
+		// /api/oauth/usage. Their own balances are polled vault-side instead
+		// (vault.CreditPoller / vault.BalancePoller).
+		if a.Provider == store.ProviderOpenRouter || a.Provider == store.ProviderDeepSeek {
 			continue
 		}
 		// Skip accounts whose token expired and hasn't been rotated yet —

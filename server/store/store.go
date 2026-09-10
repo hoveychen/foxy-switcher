@@ -44,7 +44,7 @@ const (
 // ~/.foxy-switcher.
 type Account struct {
 	ID               int64
-	Provider         string // "claude" | "codex" | "openrouter"
+	Provider         string // "claude" | "codex" | "openrouter" | "deepseek"
 	Name             string
 	AccessToken      string
 	RefreshToken     string

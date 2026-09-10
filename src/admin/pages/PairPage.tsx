@@ -21,6 +21,7 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
   const [allowClaude, setAllowClaude] = useState(true);
   const [allowCodex, setAllowCodex] = useState(false);
   const [allowOpenRouter, setAllowOpenRouter] = useState(false);
+  const [allowDeepSeek, setAllowDeepSeek] = useState(false);
 
   // Auto-lookup if URL came in with ?code=…; user can also type one.
   useEffect(() => {
@@ -71,6 +72,7 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
               allow_claude: allowClaude,
               allow_codex: allowCodex,
               allow_openrouter: allowOpenRouter,
+              allow_deepseek: allowDeepSeek,
             }
           : undefined,
       );
@@ -202,6 +204,15 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
                 />
                 {t("admin.pair.provider_openrouter")}
               </label>
+              <label className="admin-checkbox">
+                <input
+                  type="checkbox"
+                  checked={allowDeepSeek}
+                  onChange={(e) => setAllowDeepSeek(e.target.checked)}
+                  disabled={busy}
+                />
+                {t("admin.pair.provider_deepseek")}
+              </label>
             </fieldset>
             {error && <p className="admin-alert admin-alert--error">{error}</p>}
             <div className="admin-actions">
@@ -210,7 +221,8 @@ export function PairPage({ initialCode, onUnauthorized }: Props) {
                 className="admin-button admin-button--primary"
                 onClick={() => resolve("approve")}
                 disabled={
-                  busy || (!allowClaude && !allowCodex && !allowOpenRouter)
+                  busy ||
+                  (!allowClaude && !allowCodex && !allowOpenRouter && !allowDeepSeek)
                 }
                 aria-busy={busy}
               >

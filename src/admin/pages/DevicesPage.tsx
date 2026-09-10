@@ -120,13 +120,16 @@ export function DevicesPage({ onUnauthorized }: Props) {
   // Toggle one provider in a device's allowlist. The vault releases the
   // device's leases so the change takes effect on its next reconcile. For
   // OpenRouter there is no lease — withdrawing the grant revokes the device's
-  // derived API key upstream instead, which takes effect immediately.
+  // derived API key upstream instead, which takes effect immediately. DeepSeek
+  // has no lease either, and nothing to revoke upstream: the device's next
+  // config sync removes the credential it wrote.
   async function setProviders(
     d: AdminDevice,
     next: {
       allow_claude: boolean;
       allow_codex: boolean;
       allow_openrouter: boolean;
+      allow_deepseek: boolean;
     },
   ) {
     setTogglingId(d.id);
@@ -137,6 +140,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
         next.allow_claude,
         next.allow_codex,
         next.allow_openrouter,
+        next.allow_deepseek,
       );
       setDevices((cur) =>
         cur
@@ -282,6 +286,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
                                   allow_claude: e.target.checked,
                                   allow_codex: d.allow_codex,
                                   allow_openrouter: d.allow_openrouter,
+                                  allow_deepseek: d.allow_deepseek,
                                 })
                               }
                             />
@@ -297,6 +302,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
                                   allow_claude: d.allow_claude,
                                   allow_codex: e.target.checked,
                                   allow_openrouter: d.allow_openrouter,
+                                  allow_deepseek: d.allow_deepseek,
                                 })
                               }
                             />
@@ -312,10 +318,27 @@ export function DevicesPage({ onUnauthorized }: Props) {
                                   allow_claude: d.allow_claude,
                                   allow_codex: d.allow_codex,
                                   allow_openrouter: e.target.checked,
+                                  allow_deepseek: d.allow_deepseek,
                                 })
                               }
                             />
                             {t("admin.pair.provider_openrouter")}
+                          </label>
+                          <label className="admin-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={d.allow_deepseek}
+                              disabled={isToggling}
+                              onChange={(e) =>
+                                void setProviders(d, {
+                                  allow_claude: d.allow_claude,
+                                  allow_codex: d.allow_codex,
+                                  allow_openrouter: d.allow_openrouter,
+                                  allow_deepseek: e.target.checked,
+                                })
+                              }
+                            />
+                            {t("admin.pair.provider_deepseek")}
                           </label>
                         </span>
                       </td>

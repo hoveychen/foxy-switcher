@@ -151,11 +151,12 @@ func (p *dashboardPage) renderHero() string {
 	}
 
 	// Hero keeps its own six-column labels rather than reusing usageRows'
-	// prose ones, which don't fit. The provider split is the same: OpenRouter
-	// has no subscription windows, Codex has two and they aren't Anthropic's.
+	// prose ones, which don't fit. The provider split is the same: the two
+	// pay-as-you-go pools have no subscription windows, Codex has two and they
+	// aren't Anthropic's.
 	lines := []string{strings.Join(meta, "  ")}
 	switch a.Provider {
-	case "openrouter":
+	case "openrouter", "deepseek":
 		// no windows
 	case "codex":
 		lines = append(lines,

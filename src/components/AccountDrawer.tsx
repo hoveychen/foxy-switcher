@@ -4,6 +4,7 @@ import type {
   AccountAttribution,
   DeviceShare,
   OpenRouterConfig,
+  DeepSeekConfig,
   ThresholdInput,
   UsageWindow,
 } from "../api";
@@ -367,6 +368,58 @@ function AttributionSection({ accountId, scopedLabel }: { accountId: number; sco
 //
 // Everything here comes from the accountView.openrouter payload the accounts
 // list already carries; the drawer makes no extra request.
+// DeepSeek's counterpart to OpenRouterSection. There is no bar here, and the
+// absence is deliberate: DeepSeek reports a balance but no ceiling to measure
+// it against, so any bar would need a denominator we would have to invent.
+// What the pool actually routes on is is_available, which is a yes/no.
+function DeepSeekSection({ ds, nowMs }: { ds: DeepSeekConfig; nowMs: number }) {
+  const balance = ds.balance;
+  return (
+    <div className="drawer-section">
+      <h3 className="drawer-section-title">{t("drawer.section.deepseek")}</h3>
+      <div className="usage-list">
+        <div className="usage-row">
+          <span className="usage-label">{t("drawer.deepseek.balance")}</span>
+          {balance ? (
+            <span className={`usage-pct ${ds.out_of_balance ? "or-hint-error" : ""}`}>
+              {`${balance.amount.toFixed(2)} ${balance.currency}`.trim()}
+            </span>
+          ) : (
+            <span className="usage-empty">{t("drawer.deepseek.balance_unknown")}</span>
+          )}
+        </div>
+      </div>
+      {/* Reuses the modal's wording: the consequence is the part that matters,
+          and it must read identically wherever the state is surfaced. */}
+      {ds.out_of_balance && balance && (
+        <p className="text-meta or-hint or-hint-error">
+          {tf("deepseek.balance.empty", {
+            amount: balance.amount.toFixed(2),
+            currency: balance.currency || "",
+          })}
+        </p>
+      )}
+
+      <dl className="detail-meta">
+        {balance && (
+          <div>
+            <dt>{t("drawer.deepseek.checked_at")}</dt>
+            <dd>
+              {tf("drawer.detail.usage_updated.ago", {
+                time: fmtRemaining(nowMs - balance.checked_at),
+              })}
+            </dd>
+          </div>
+        )}
+        <div>
+          <dt>{t("drawer.deepseek.key_kind")}</dt>
+          <dd>{t("drawer.deepseek.key_kind.shared")}</dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
 function OpenRouterSection({ or, nowMs }: { or: OpenRouterConfig; nowMs: number }) {
   const credit = or.credit;
   // The bar shows what is LEFT, not what was spent, so its length agrees with
@@ -642,6 +695,8 @@ export function AccountDrawer({
           derive from them. Money and policy take their place. */}
       {account.provider === "openrouter" && account.openrouter ? (
         <OpenRouterSection or={account.openrouter} nowMs={nowMs} />
+      ) : account.provider === "deepseek" && account.deepseek ? (
+        <DeepSeekSection ds={account.deepseek} nowMs={nowMs} />
       ) : (
       <div className="drawer-section">
         <h3 className="drawer-section-title">{t("drawer.section.usage")}</h3>
