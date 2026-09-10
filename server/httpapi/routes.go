@@ -87,6 +87,9 @@ type Server struct {
 	// openRouterClientFor builds an OpenRouter client for a key. Nil uses the
 	// real one; tests substitute a fake so key-kind detection needs no network.
 	openRouterClientFor func(apiKey string) openRouterKeyReader
+	// deepSeekClientFor builds a DeepSeek client for a key. Nil uses the real
+	// one; tests substitute a fake so key validation needs no network.
+	deepSeekClientFor func(apiKey string) deepSeekBalanceReader
 }
 
 func New(st *store.Store, pk *authz.PKCEStore, rf *refresh.Scheduler, dataDir string) *Server {
@@ -106,6 +109,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/openrouter", s.handleCreateOpenRouterAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/openrouter", s.handleUpdateOpenRouterAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/openrouter/check", s.handleCheckOpenRouterAccount)
+	mux.HandleFunc("POST /api/accounts/deepseek", s.handleCreateDeepSeekAccount)
+	mux.HandleFunc("POST /api/accounts/{id}/deepseek", s.handleUpdateDeepSeekAccount)
+	mux.HandleFunc("POST /api/accounts/{id}/deepseek/check", s.handleCheckDeepSeekAccount)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /api/accounts/{id}/resume", s.handleResume)
@@ -283,6 +289,10 @@ type accountView struct {
 	// rows and is nil for every other provider. It never includes the
 	// management key — only whether one is on file.
 	OpenRouter *openRouterView `json:"openrouter,omitempty"`
+	// DeepSeek carries the credential state for provider="deepseek" rows and
+	// is nil for every other provider. It never includes the key — only
+	// whether one is on file, and the last balance reading.
+	DeepSeek *deepSeekView `json:"deepseek,omitempty"`
 	// Tokens are deliberately omitted from the UI surface.
 }
 
@@ -382,6 +392,12 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		v.OpenRouter = orCfg
+		dsCfg, err := s.deepSeekConfigFor(r.Context(), av.Account)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		v.DeepSeek = dsCfg
 		for _, l := range av.Leases {
 			v.Leases = append(v.Leases, accountLeaseView{
 				DeviceID:   l.DeviceID,

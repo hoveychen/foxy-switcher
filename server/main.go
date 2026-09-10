@@ -33,6 +33,7 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/authz"
 	"github.com/hoveychen/foxy-switcher/server/credinject"
+	"github.com/hoveychen/foxy-switcher/server/deepseek"
 	"github.com/hoveychen/foxy-switcher/server/httpapi"
 	openai "github.com/hoveychen/foxy-switcher/server/openai"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
@@ -341,6 +342,16 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 				inprocGrantSource{keys: openRouterKeys, deviceID: cc.DeviceID()},
 				home, exe, logger)
 			orWriter.Start(ctx)
+		}
+		// DeepSeek, same in-process source and same reasoning. Its home is
+		// resolved independently: a machine can have dsh without codex.
+		if dshHome, homeErr := deepseek.DefaultHome(); homeErr != nil {
+			logger.Printf("warning: resolve DSH_HOME: %v (DeepSeek disabled)", homeErr)
+		} else {
+			dsWriter := newDeepSeekWriter(
+				inprocDeepSeekSource{grants: deepSeekGrants, deviceID: cc.DeviceID()},
+				dshHome, logger)
+			dsWriter.Start(ctx)
 		}
 	}
 
