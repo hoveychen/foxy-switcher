@@ -56,6 +56,20 @@ type Server struct {
 	// device, so this stays a vault-internal collaborator. Nil disables the
 	// provider entirely (no derivation, and therefore nothing to revoke).
 	OpenRouter OpenRouterKeyService
+	// DeepSeek answers "which DeepSeek key may this device have". Vault-internal
+	// for the same reason as OpenRouter, and likewise nil-able: nil disables the
+	// provider entirely. Unlike OpenRouter there is no revocation half, because
+	// DeepSeek issues keys only from its console and the vault mints nothing.
+	DeepSeek DeepSeekGrantService
+}
+
+// DeepSeekGrantService is the vault-side grant surface the agent handler
+// depends on. Implemented by vault.DeepSeekGrants.
+type DeepSeekGrantService interface {
+	// EnsureDeviceGrant returns the device's DeepSeek grant. Returns
+	// selector.ErrNoAvailable when the device isn't granted DeepSeek, and
+	// vault.ErrNoDeepSeekAccount when no usable account is configured.
+	EnsureDeviceGrant(ctx context.Context, deviceID string) (vault.DeepSeekGrant, error)
 }
 
 // OpenRouterKeyService is the vault-side derivation/revocation surface the
@@ -110,6 +124,7 @@ func (s *Server) Handler() http.Handler {
 	// ask for its OWN key. There is no pick/acquire/renew/release counterpart —
 	// a pay-as-you-go key is not a leased resource.
 	protected.HandleFunc("GET /agent/v1/openrouter/config", s.handleOpenRouterConfig)
+	protected.HandleFunc("GET /agent/v1/deepseek/config", s.handleDeepSeekConfig)
 	mux.Handle("/agent/v1/", s.requireBearer(protected))
 	return mux
 }
@@ -481,6 +496,42 @@ func (s *Server) handleOpenRouterConfig(w http.ResponseWriter, r *http.Request) 
 		// Anything else is a real fault (upstream down, no management key, a key
 		// that isn't a provisioning key). Surface it so the device logs something an
 		// operator can act on rather than silently running without OpenRouter.
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, grant)
+}
+
+// --- deepseek -------------------------------------------------------------
+
+// handleDeepSeekConfig hands the calling device its DeepSeek grant. The device
+// id is read from the bearer context and never from the request, so a
+// compromised agent can't read a grant meant for another machine.
+//
+// 204 means "nothing for you" and covers both "this device isn't granted
+// DeepSeek" and "no DeepSeek account is configured", for the same reasons as
+// the OpenRouter endpoint above: the device's action is identical either way,
+// and collapsing them avoids telling an unprivileged device whether the vault
+// has DeepSeek accounts at all.
+func (s *Server) handleDeepSeekConfig(w http.ResponseWriter, r *http.Request) {
+	if s.DeepSeek == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	devID, _ := DeviceFromContext(r.Context())
+	if devID == "" || devID == SessionDeviceID {
+		// A cookie session is an admin, not a device.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	grant, err := s.DeepSeek.EnsureDeviceGrant(r.Context(), devID)
+	if err != nil {
+		if errors.Is(err, selector.ErrNoAvailable) || errors.Is(err, vault.ErrNoDeepSeekAccount) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// Anything else is a real fault. Surface it so the device logs something
+		// an operator can act on rather than silently running without DeepSeek.
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}

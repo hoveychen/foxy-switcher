@@ -236,6 +236,10 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// vault.Service, which remote agents drive. Constructed unconditionally:
 	// with no OpenRouter account configured it simply reports none available.
 	openRouterKeys := vault.NewOpenRouterKeys(st, logger)
+	// DeepSeek grants are vault-internal for the same reason, though there is
+	// nothing to derive: the service only decides which account's key a given
+	// device may be served.
+	deepSeekGrants := vault.NewDeepSeekGrants(st, logger)
 	rf := refresh.New(st, logger)
 	rf.Bus = bus
 	rf.IsAccountInUse = st.IsAccountLeased
@@ -424,6 +428,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// Constructed unconditionally: with no OpenRouter account configured it
 	// simply reports none available.
 	vaultHTTP.OpenRouter = openRouterKeys
+	vaultHTTP.DeepSeek = deepSeekGrants
 	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
 	// Re-expose the frontend httpapi under /agent/v1/api/ so a remote
 	// agent can drive the same view + lease routes via the bearer-auth'd
