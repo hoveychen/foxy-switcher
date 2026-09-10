@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,52 @@ func TestBalanceUnavailableIsNotAnError(t *testing.T) {
 	}
 }
 
+// balance_infos is a list with one entry per currency, and a real account
+// carries several: 160.13 CNY alongside 0.00 USD. Reporting whichever came
+// first would show "0.00" for a funded account, which reads as broke. Pinned
+// in both orders because the API does not promise one.
+func TestBalancePicksTheFundedCurrency(t *testing.T) {
+	const cny = `{"currency":"CNY","total_balance":"160.13","granted_balance":"0.00","topped_up_balance":"160.13"}`
+	const usd = `{"currency":"USD","total_balance":"0.00","granted_balance":"0.00","topped_up_balance":"0.00"}`
+	for name, infos := range map[string]string{
+		"funded first": cny + "," + usd,
+		"empty first":  usd + "," + cny,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"is_available":true,"balance_infos":[` + infos + `]}`))
+			}))
+			defer srv.Close()
+
+			b, err := (&Client{BaseURL: srv.URL, APIKey: "sk-test"}).Balance(context.Background())
+			if err != nil {
+				t.Fatalf("Balance: %v", err)
+			}
+			if b.Amount != 160.13 || b.Currency != "CNY" {
+				t.Fatalf("Balance = %+v, want the funded 160.13 CNY entry", b)
+			}
+		})
+	}
+}
+
+// Every currency empty: still name one, so the UI shows "0.00 CNY" rather
+// than a bare number with no unit.
+func TestBalanceAllCurrenciesEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"is_available":false,"balance_infos":[
+		  {"currency":"CNY","total_balance":"0.00"},{"currency":"USD","total_balance":"0.00"}]}`))
+	}))
+	defer srv.Close()
+
+	b, err := (&Client{BaseURL: srv.URL, APIKey: "sk-test"}).Balance(context.Background())
+	if err != nil {
+		t.Fatalf("Balance: %v", err)
+	}
+	if b.Amount != 0 || b.Currency != "CNY" || b.Available {
+		t.Fatalf("Balance = %+v", b)
+	}
+}
+
 // An amount we can't parse must not fail the call: availability is what the
 // pool acts on, and the amount is only ever displayed.
 func TestBalanceTolerateUnparsableAmount(t *testing.T) {
@@ -101,7 +148,7 @@ func TestBalanceUnauthorized(t *testing.T) {
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("err = %v, want ErrUnauthorized", err)
 	}
-	if got := err.Error(); !contains(got, "Authentication Fails") {
+	if got := err.Error(); !strings.Contains(got, "Authentication Fails") {
 		t.Fatalf("error must carry the upstream message, got %q", got)
 	}
 }
@@ -128,15 +175,4 @@ func TestBalanceRequiresKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("a blank key must fail before any network call")
 	}
-}
-
-func contains(hay, needle string) bool {
-	return len(hay) >= len(needle) && (func() bool {
-		for i := 0; i+len(needle) <= len(hay); i++ {
-			if hay[i:i+len(needle)] == needle {
-				return true
-			}
-		}
-		return false
-	})()
 }

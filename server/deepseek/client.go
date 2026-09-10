@@ -92,7 +92,7 @@ type Balance struct {
 	// Available is DeepSeek's is_available: whether the key can still serve
 	// requests. This, not Amount, is the eligibility signal.
 	Available bool
-	// Amount / Currency are the primary balance_infos entry, for display.
+	// Amount / Currency are the funded balance_infos entry, for display.
 	// Currency is "CNY" or "USD" depending on how the account bills.
 	Amount   float64
 	Currency string
@@ -147,14 +147,33 @@ func (c *Client) Balance(ctx context.Context) (Balance, error) {
 		return Balance{}, fmt.Errorf("deepseek: %s: decode response: %w", op, err)
 	}
 	b := Balance{Available: out.IsAvailable}
-	if len(out.BalanceInfos) > 0 {
-		info := out.BalanceInfos[0]
-		b.Currency = info.Currency
+	// balance_infos is a LIST, one entry per currency the account can hold, and
+	// an account routinely carries several — a real account with 160.13 CNY
+	// also reports a 0.00 USD entry. Taking the first entry therefore reports
+	// "0.00" for a funded account roughly at random, which is exactly the
+	// reads-as-broke display this package is careful to avoid elsewhere.
+	//
+	// So: the first entry with money in it, falling back to the first entry
+	// when every currency really is empty (so an empty account still shows a
+	// currency rather than a blank). No conversion and no summing — the two
+	// figures are in different currencies and adding them would be nonsense.
+	//
+	// None of this affects routing: eligibility is is_available, which is the
+	// provider's own verdict over all currencies at once. This is display only.
+	for _, info := range out.BalanceInfos {
 		// A total we can't parse must not fail the call: the availability flag
 		// is what the pool acts on, and the amount is only ever displayed.
-		if v, err := strconv.ParseFloat(strings.TrimSpace(info.TotalBalance), 64); err == nil {
-			b.Amount = v
+		v, err := strconv.ParseFloat(strings.TrimSpace(info.TotalBalance), 64)
+		if err != nil {
+			continue
 		}
+		if b.Currency == "" || (b.Amount == 0 && v != 0) {
+			b.Amount, b.Currency = v, info.Currency
+		}
+	}
+	if b.Currency == "" && len(out.BalanceInfos) > 0 {
+		// Every entry had an unparsable total. Still name the currency.
+		b.Currency = out.BalanceInfos[0].Currency
 	}
 	return b, nil
 }
