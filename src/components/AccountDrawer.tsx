@@ -11,8 +11,6 @@ import type {
 import {
   accountHasOAuthToken,
   accountIsCooling,
-  accountIsShared,
-  accountLeaseHolders,
   accountOutOfCredit,
   accountRefreshDue,
   accountResetAt,
@@ -54,7 +52,7 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
   // Foreign lease wins over other "healthy" statuses — saying "active"
   // when another device is actually holding it would contradict the
   // leased-pill rendered above and confuse the user.
-  if (a.lease && !a.lease.mine && !accountIsShared(a)) {
+  if (a.lease && !a.lease.mine) {
     return {
       text: tf("drawer.status.leased_by_other", {
         device: a.lease.device_name || a.lease.device_id || "—",
@@ -85,38 +83,20 @@ function rowStatus(a: Account, nowMs: number): { text: string; tone: Tone } {
   if (accountRefreshDue(a, nowMs)) {
     return { text: t("drawer.status.refresh_due"), tone: "warn" };
   }
-  // A healthy SHARED account with other tenants: say so rather than falling
-  // through to a bare "active", but keep the ok tone — co-holding is normal
-  // for Codex and the account is fully available to this device.
-  const shared = foreignHolders(a).length;
-  if (shared > 0) {
-    return { text: tf("drawer.status.shared_with", { count: shared }), tone: "ok" };
-  }
   return { text: t("drawer.status.active"), tone: "ok" };
 }
 
 function isSelectable(a: Account): boolean {
-  // Foreign-leased EXCLUSIVE accounts hit leases_exclusive_account_uniq → 409
-  // on AcquireLease. Mirror AccountsPage so the drawer's primary button is
-  // disabled instead of letting the user trigger an error toast. Shared
-  // (Codex) accounts take a second holder happily, so they stay selectable.
-  if (blockingLease(a)) return false;
+  // Foreign-leased accounts hit leases_account_id_uniq → 409 on AcquireLease.
+  // Mirror AccountsPage so the drawer's primary button is disabled instead of
+  // letting the user trigger an error toast.
+  if (foreignLease(a)) return false;
   return (
     a.status === "active" && !a.token_expired && !accountIsCooling(a)
   );
 }
 
-// foreignHolders lists every OTHER device currently holding the account.
-// More than one is possible on shared (Codex) accounts.
-function foreignHolders(a: Account) {
-  return accountLeaseHolders(a).filter((l) => !l.mine);
-}
-
-// blockingLease is a foreign lease that actually stops this device from
-// taking the account — i.e. one on an exclusive (Claude) account. On a shared
-// account a foreign lease is informational, so this returns null.
-function blockingLease(a: Account) {
-  if (accountIsShared(a)) return null;
+function foreignLease(a: Account) {
   return a.lease && !a.lease.mine ? a.lease : null;
 }
 
@@ -569,8 +549,7 @@ export function AccountDrawer({
 }) {
   const status = rowStatus(account, nowMs);
   const paused = account.status !== "active";
-  const fLease = blockingLease(account);
-  const holders = foreignHolders(account);
+  const fLease = foreignLease(account);
 
   const commit = (
     which: "five_hour" | "seven_day" | "seven_day_sonnet",
@@ -597,16 +576,14 @@ export function AccountDrawer({
             )}
             {account.plan && <span className="pill">{account.plan}</span>}
             {isInUse && <span className="pill active-pill">{t("drawer.identity.in_use")}</span>}
-            {/* One pill per other holder — a shared Codex account can have
-                several, and naming only the first would hide the rest. */}
-            {holders.map((l) => (
-              <span key={l.device_id} className="pill leased-pill">
+            {fLease && !isInUse && (
+              <span className="pill leased-pill">
                 {tf("drawer.identity.leased_by", {
-                  device: l.device_name || l.device_id || "—",
-                  remaining: fmtRemaining(l.expires_at - nowMs),
+                  device: fLease.device_name || fLease.device_id || "—",
+                  remaining: fmtRemaining(fLease.expires_at - nowMs),
                 })}
               </span>
-            ))}
+            )}
           </div>
           {account.email && (
             <div className="text-meta">{account.email}</div>
@@ -660,10 +637,7 @@ export function AccountDrawer({
               type="button"
               className="btn btn-secondary"
               onClick={onRefresh}
-              // Still gated on ANY other holder, shared or not: rotating the
-              // token under a device whose local credential is already
-              // injected would 401 its live session until the next reconcile.
-              disabled={busy || holders.length > 0}
+              disabled={busy || !!fLease}
             >
               {t("drawer.actions.refresh")}
             </button>
