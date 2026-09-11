@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useIsMobile } from "./useIsMobile";
 import { Icon, BrandMark } from "./Icon";
 import {
   ICON_DASHBOARD,
@@ -39,29 +40,6 @@ const ADMIN_NAV: Array<{ key: Route; labelKey: string; icon: string }> = [
   { key: "pair", labelKey: "admin.nav.pair", icon: ICON_LINK },
   { key: "password", labelKey: "admin.nav.password", icon: ICON_KEY },
 ];
-
-const MOBILE_QUERY = "(max-width: 767px)";
-
-// useIsMobile mirrors the 767px breakpoint shell.css uses to flip the
-// sidebar into a bottom tab bar. The bar can only hold ~5 targets at a
-// phone width, so the admin section has to move behind a "More" sheet —
-// and a sheet needs state, which CSS alone can't give us. Keeping the
-// breakpoint in both places is the trade: one constant to keep in sync,
-// versus rendering a nav the user can't actually tap.
-function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return false;
-    return window.matchMedia(MOBILE_QUERY).matches;
-  });
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia(MOBILE_QUERY);
-    const onChange = () => setIsMobile(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return isMobile;
-}
 
 export function Sidebar({
   current,

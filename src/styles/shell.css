@@ -202,17 +202,25 @@
   box-shadow: var(--shadow-toolbar);
 }
 
+/* The title block is the part that yields when the actions need room.
+   Without flex/overflow here the h1 refused to shrink and the action
+   buttons ran off the right edge of a phone, painting over the title. */
 .topbar-left {
   display: flex;
   align-items: baseline;
   gap: var(--space-5);
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
 
 .topbar-title {
   margin: 0;
   font: var(--font-h2);
   letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar-status {
@@ -249,6 +257,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  flex-shrink: 0;
 }
 
 .topbar-manual {
@@ -1127,6 +1136,33 @@
 
   .app-main {
     padding-bottom: calc(58px + env(safe-area-inset-bottom));
+  }
+
+  /* The topbar's desktop padding (--space-10, 40px) costs a fifth of a
+     390px screen. Tighten it and let the status badge drop to its own
+     line rather than squeezing the title into two characters. */
+  .topbar {
+    height: auto;
+    min-height: 52px;
+    padding: var(--space-4) var(--space-6);
+    gap: var(--space-4);
+  }
+
+  .topbar-left {
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px var(--space-4);
+  }
+
+  .topbar-status,
+  .topbar-manual {
+    flex-basis: 100%;
+  }
+
+  /* The auto-switch pill loses its word and keeps the toggle: the label
+     is the first thing worth dropping when the row runs out of room. */
+  .topbar-auto-label {
+    display: none;
   }
 
   .drawer {

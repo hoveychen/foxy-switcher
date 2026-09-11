@@ -121,6 +121,7 @@
   "accounts.status.summary": "{total} 个账号 · {inUse} 个使用中",
   "accounts.add_button": "添加账号",
   "accounts.add_claude": "添加 Claude",
+  "accounts.add_account": "添加账号",
   "accounts.import_codex": "导入 Codex",
   "accounts.add_codex": "添加 Codex",
   "accounts.codex_modal.title": "添加 Codex 账号",
