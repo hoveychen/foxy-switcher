@@ -617,8 +617,11 @@
 }
 
 @media (max-width: 767px) {
+  /* Two up, not one: a full-width KPI card is 108px tall for one number,
+     so the four of them used to push everything below the fold. */
   .kpi-grid,
-  .kpi-grid-3 { grid-template-columns: 1fr; }
+  .kpi-grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .kpi-card { min-height: 92px; padding: var(--space-5); }
   .dash-hero { grid-template-columns: 56px 1fr; }
   .dash-hero > .btn { grid-column: 1 / -1; }
 }
@@ -1163,6 +1166,24 @@
      is the first thing worth dropping when the row runs out of room. */
   .topbar-auto-label {
     display: none;
+  }
+
+  /* A settings row is label-on-the-left / control-on-the-right. On a
+     phone the control was the side that got squeezed — the language
+     segmented control wrapped "中文" onto two lines, the "Apply to all
+     accounts" button onto three. Pin the control at its natural width
+     and let the label take the slack, dropping the control to its own
+     line once the label is down to 150px. */
+  .settings-row {
+    flex-wrap: wrap;
+  }
+
+  .settings-row > .settings-row-text {
+    flex: 1 1 150px;
+  }
+
+  .settings-row > *:not(.settings-row-text) {
+    flex-shrink: 0;
   }
 
   .drawer {
