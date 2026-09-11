@@ -3,6 +3,7 @@
   "nav.accounts": "账号",
   "nav.activity": "活动",
   "nav.settings": "设置",
+  "nav.more": "更多",
   "sidebar.health.ok": "守护进程正常",
   "sidebar.health.down": "守护进程不可达",
   "sidebar.collapse": "折叠侧边栏",

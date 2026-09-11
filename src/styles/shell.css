@@ -1063,30 +1063,57 @@
     flex-direction: row;
     border-right: none;
     border-top: 0.5px solid var(--separator);
-    padding: var(--space-2);
-    z-index: 20;
+    /* The home-indicator strip on a modern phone overlaps the bottom
+       edge of the viewport, so the bar pads itself out of the way
+       instead of hiding its labels under it. max() keeps the ordinary
+       padding on hardware that reports a 0 inset. */
+    padding: var(--space-2) var(--space-2)
+      max(var(--space-2), env(safe-area-inset-bottom));
+    gap: 0;
+    /* Above .nav-sheet-backdrop (30) so the other tabs stay tappable
+       while the More sheet is open — tapping one navigates instead of
+       costing the user a dismiss tap first. */
+    z-index: 32;
   }
 
   .sidebar-brand,
-  .sidebar-footer {
+  .sidebar-footer,
+  .sidebar-section-label {
     display: none;
   }
 
   .sidebar-nav {
     flex-direction: row;
-    justify-content: space-around;
     gap: 0;
+  }
+
+  /* Equal-width tabs: an 11-character label ("Dashboard") and a
+     3-character one ("Pair") must not hand themselves different slice
+     widths, or the icons stop lining up. */
+  .sidebar-nav > li {
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .sidebar-link {
     flex-direction: column;
-    height: 48px;
-    gap: 2px;
+    justify-content: center;
+    height: 50px;
+    gap: 3px;
+    padding: 0 2px;
     font-size: 10px;
+    line-height: 1.15;
   }
 
+  /* Labels truncate rather than wrap or bleed into the next tab — at
+     five tabs on a 390px screen there is ~74px per label. */
   .sidebar-link span:last-child {
-    display: inline;
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
   }
 
   .sidebar-link.active::before {
@@ -1099,7 +1126,7 @@
   }
 
   .app-main {
-    padding-bottom: 56px;
+    padding-bottom: calc(58px + env(safe-area-inset-bottom));
   }
 
   .drawer {
@@ -1111,6 +1138,67 @@
   .page {
     padding: var(--space-8) var(--space-6);
   }
+}
+
+/* ─── Mobile "More" sheet ──────────────────────────────────
+ * The bottom tab bar holds five targets at a phone width, so the
+ * admin section (Devices / Pair / Password / Sign out) lives behind
+ * the fifth one. Sidebar.tsx only mounts this below 767px. */
+
+.nav-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.nav-sheet {
+  position: fixed;
+  left: var(--space-4);
+  right: var(--space-4);
+  /* Sit directly above the tab bar (50px tabs + its own padding). */
+  bottom: calc(62px + env(safe-area-inset-bottom));
+  z-index: 31;
+  padding: var(--space-3);
+  background: var(--bg-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-sheet-title {
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  font: var(--font-meta);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.nav-sheet-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  width: 100%;
+  /* 44px is the smallest comfortable touch target; the desktop rail's
+     36px rows are a pointer-sized affordance. */
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-button);
+  font: var(--font-body);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.nav-sheet-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  font-weight: 500;
+}
+
+.nav-sheet-item-danger {
+  color: var(--danger-text);
 }
 
 /* ─── Fox avatar ───────────────────────────────────────── */

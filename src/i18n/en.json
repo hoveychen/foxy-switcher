@@ -3,6 +3,7 @@
   "nav.accounts": "Accounts",
   "nav.activity": "Activity",
   "nav.settings": "Settings",
+  "nav.more": "More",
   "sidebar.health.ok": "Daemon healthy",
   "sidebar.health.down": "Daemon unreachable",
   "sidebar.collapse": "Collapse sidebar",

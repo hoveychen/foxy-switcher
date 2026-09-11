@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from "react";
 import { Icon, BrandMark } from "./Icon";
 import {
   ICON_DASHBOARD,
@@ -8,6 +9,8 @@ import {
   ICON_DEVICE,
   ICON_LINK,
   ICON_KEY,
+  ICON_DOTS,
+  ICON_POWER,
 } from "./icons";
 import { t } from "../i18n";
 
@@ -37,6 +40,29 @@ const ADMIN_NAV: Array<{ key: Route; labelKey: string; icon: string }> = [
   { key: "password", labelKey: "admin.nav.password", icon: ICON_KEY },
 ];
 
+const MOBILE_QUERY = "(max-width: 767px)";
+
+// useIsMobile mirrors the 767px breakpoint shell.css uses to flip the
+// sidebar into a bottom tab bar. The bar can only hold ~5 targets at a
+// phone width, so the admin section has to move behind a "More" sheet —
+// and a sheet needs state, which CSS alone can't give us. Keeping the
+// breakpoint in both places is the trade: one constant to keep in sync,
+// versus rendering a nav the user can't actually tap.
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia(MOBILE_QUERY).matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const onChange = () => setIsMobile(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return isMobile;
+}
+
 export function Sidebar({
   current,
   onNavigate,
@@ -59,102 +85,170 @@ export function Sidebar({
   // process to monitor — the browser is talking to a remote vault.
   hideDaemonStatus?: boolean;
 }) {
-  return (
-    <nav
-      className={`sidebar ${collapsed ? "collapsed" : ""}`}
-      aria-label={t("sidebar.aria")}
-    >
-      <div className="sidebar-brand">
-        <span className="sidebar-mark">
-          <BrandMark size={28} />
-        </span>
-        <span className="brand-name">Foxy Switcher</span>
-      </div>
+  const isMobile = useIsMobile();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const closeMore = useCallback(() => setMoreOpen(false), []);
 
-      <ul className="sidebar-nav">
-        {NAV.map((item) => {
-          const label = t(item.labelKey);
-          return (
-            <li key={item.key}>
-              <button
-                type="button"
-                className={`sidebar-link ${current === item.key ? "active" : ""}`}
-                onClick={() => onNavigate(item.key)}
-                aria-current={current === item.key ? "page" : undefined}
-                title={collapsed ? label : undefined}
-              >
-                <Icon d={item.icon} size={16} />
-                <span>{label}</span>
-              </button>
-            </li>
-          );
-        })}
-        {showAdminNav && (
-          <>
-            <li className="sidebar-section-label" aria-hidden>
-              <span>{t("sidebar.admin.section")}</span>
-            </li>
-            {ADMIN_NAV.map((item) => {
-              const label = t(item.labelKey);
-              return (
-                <li key={item.key}>
-                  <button
-                    type="button"
-                    className={`sidebar-link ${current === item.key ? "active" : ""}`}
-                    onClick={() => onNavigate(item.key)}
-                    aria-current={current === item.key ? "page" : undefined}
-                    title={collapsed ? label : undefined}
-                  >
-                    <Icon d={item.icon} size={16} />
-                    <span>{label}</span>
-                  </button>
-                </li>
-              );
-            })}
-            {onLogout && (
-              <li>
-                <button
-                  type="button"
-                  className="sidebar-link sidebar-link-logout"
-                  onClick={onLogout}
-                  title={collapsed ? t("admin.nav.logout") : undefined}
-                >
-                  <Icon d={ICON_KEY} size={16} />
-                  <span>{t("admin.nav.logout")}</span>
-                </button>
-              </li>
-            )}
-          </>
-        )}
-      </ul>
+  // Leaving the phone breakpoint (rotation, desktop resize) must drop the
+  // sheet — otherwise it stays pinned over a layout that already shows
+  // every admin link in the rail.
+  useEffect(() => {
+    if (!isMobile) setMoreOpen(false);
+  }, [isMobile]);
 
-      <div className="sidebar-footer">
-        {!hideDaemonStatus && (
-          <span
-            className={`sidebar-health ${daemonOk ? "ok" : "danger"}`}
-            aria-label={daemonOk ? t("sidebar.health.ok") : t("sidebar.health.down")}
-          >
-            <span className="dot" />
-            <span className="sidebar-health-label">
-              {daemonOk ? t("sidebar.health.label.ok") : t("sidebar.health.label.down")}
-            </span>
-          </span>
-        )}
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMoreOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [moreOpen]);
+
+  const adminRoute =
+    current === "devices" || current === "pair" || current === "password";
+  const showMoreTab = isMobile && !!showAdminNav;
+
+  const navItem = (item: { key: Route; labelKey: string; icon: string }) => {
+    const label = t(item.labelKey);
+    return (
+      <li key={item.key}>
         <button
           type="button"
-          className="sidebar-collapse-btn"
-          onClick={onToggleCollapse}
-          aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
-          aria-pressed={collapsed}
-          title={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
+          className={`sidebar-link ${current === item.key ? "active" : ""}`}
+          onClick={() => {
+            setMoreOpen(false);
+            onNavigate(item.key);
+          }}
+          aria-current={current === item.key ? "page" : undefined}
+          title={collapsed ? label : undefined}
         >
-          <Icon
-            d={ICON_CHEVRON_RIGHT}
-            size={14}
-            className={`sidebar-collapse-icon ${collapsed ? "" : "flipped"}`}
-          />
+          <Icon d={item.icon} size={16} />
+          <span>{label}</span>
         </button>
-      </div>
-    </nav>
+      </li>
+    );
+  };
+
+  return (
+    <>
+      <nav
+        className={`sidebar ${collapsed ? "collapsed" : ""}`}
+        aria-label={t("sidebar.aria")}
+      >
+        <div className="sidebar-brand">
+          <span className="sidebar-mark">
+            <BrandMark size={28} />
+          </span>
+          <span className="brand-name">Foxy Switcher</span>
+        </div>
+
+        <ul className="sidebar-nav">
+          {NAV.map(navItem)}
+          {showMoreTab ? (
+            <li>
+              <button
+                type="button"
+                className={`sidebar-link ${adminRoute || moreOpen ? "active" : ""}`}
+                onClick={() => setMoreOpen((v) => !v)}
+                aria-expanded={moreOpen}
+                aria-haspopup="menu"
+              >
+                <Icon d={ICON_DOTS} size={16} />
+                <span>{t("nav.more")}</span>
+              </button>
+            </li>
+          ) : (
+            showAdminNav && (
+              <>
+                <li className="sidebar-section-label" aria-hidden>
+                  <span>{t("sidebar.admin.section")}</span>
+                </li>
+                {ADMIN_NAV.map(navItem)}
+                {onLogout && (
+                  <li>
+                    <button
+                      type="button"
+                      className="sidebar-link sidebar-link-logout"
+                      onClick={onLogout}
+                      title={collapsed ? t("admin.nav.logout") : undefined}
+                    >
+                      <Icon d={ICON_POWER} size={16} />
+                      <span>{t("admin.nav.logout")}</span>
+                    </button>
+                  </li>
+                )}
+              </>
+            )
+          )}
+        </ul>
+
+        <div className="sidebar-footer">
+          {!hideDaemonStatus && (
+            <span
+              className={`sidebar-health ${daemonOk ? "ok" : "danger"}`}
+              aria-label={daemonOk ? t("sidebar.health.ok") : t("sidebar.health.down")}
+            >
+              <span className="dot" />
+              <span className="sidebar-health-label">
+                {daemonOk ? t("sidebar.health.label.ok") : t("sidebar.health.label.down")}
+              </span>
+            </span>
+          )}
+          <button
+            type="button"
+            className="sidebar-collapse-btn"
+            onClick={onToggleCollapse}
+            aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
+            aria-pressed={collapsed}
+            title={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
+          >
+            <Icon
+              d={ICON_CHEVRON_RIGHT}
+              size={14}
+              className={`sidebar-collapse-icon ${collapsed ? "" : "flipped"}`}
+            />
+          </button>
+        </div>
+      </nav>
+
+      {showMoreTab && moreOpen && (
+        <>
+          <div className="nav-sheet-backdrop" onClick={closeMore} />
+          <div className="nav-sheet" role="menu" aria-label={t("admin.nav.aria")}>
+            <div className="nav-sheet-title">{t("sidebar.admin.section")}</div>
+            {ADMIN_NAV.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                role="menuitem"
+                className={`nav-sheet-item ${current === item.key ? "active" : ""}`}
+                onClick={() => {
+                  setMoreOpen(false);
+                  onNavigate(item.key);
+                }}
+              >
+                <Icon d={item.icon} size={16} />
+                <span>{t(item.labelKey)}</span>
+              </button>
+            ))}
+            {onLogout && (
+              <button
+                type="button"
+                role="menuitem"
+                className="nav-sheet-item nav-sheet-item-danger"
+                onClick={() => {
+                  setMoreOpen(false);
+                  onLogout();
+                }}
+              >
+                <Icon d={ICON_POWER} size={16} />
+                <span>{t("admin.nav.logout")}</span>
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </>
   );
 }

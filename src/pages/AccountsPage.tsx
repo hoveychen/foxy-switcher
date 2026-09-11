@@ -408,7 +408,11 @@ function AccountCard({
               <span className="usage-label">{t("accounts.openrouter.policy")}</span>
               <span className="usage-empty">
                 {tf("accounts.openrouter.policy_value", {
-                  models: a.openrouter?.allowed_models.length ?? 0,
+                  // allowed_models is null on the wire when the admin never
+                  // narrowed the model list, so the optional chain has to
+                  // cover the array too — `?.length` on a null array threw and
+                  // took the whole SPA down with it (blank page, no error).
+                  models: a.openrouter?.allowed_models?.length ?? 0,
                   limit: a.openrouter?.limit_usd
                     ? `$${a.openrouter.limit_usd}`
                     : t("accounts.openrouter.no_limit"),
