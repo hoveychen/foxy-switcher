@@ -202,17 +202,25 @@
   box-shadow: var(--shadow-toolbar);
 }
 
+/* The title block is the part that yields when the actions need room.
+   Without flex/overflow here the h1 refused to shrink and the action
+   buttons ran off the right edge of a phone, painting over the title. */
 .topbar-left {
   display: flex;
   align-items: baseline;
   gap: var(--space-5);
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
 
 .topbar-title {
   margin: 0;
   font: var(--font-h2);
   letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar-status {
@@ -249,6 +257,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  flex-shrink: 0;
 }
 
 .topbar-manual {
@@ -608,8 +617,11 @@
 }
 
 @media (max-width: 767px) {
+  /* Two up, not one: a full-width KPI card is 108px tall for one number,
+     so the four of them used to push everything below the fold. */
   .kpi-grid,
-  .kpi-grid-3 { grid-template-columns: 1fr; }
+  .kpi-grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .kpi-card { min-height: 92px; padding: var(--space-5); }
   .dash-hero { grid-template-columns: 56px 1fr; }
   .dash-hero > .btn { grid-column: 1 / -1; }
 }
@@ -1063,30 +1075,57 @@
     flex-direction: row;
     border-right: none;
     border-top: 0.5px solid var(--separator);
-    padding: var(--space-2);
-    z-index: 20;
+    /* The home-indicator strip on a modern phone overlaps the bottom
+       edge of the viewport, so the bar pads itself out of the way
+       instead of hiding its labels under it. max() keeps the ordinary
+       padding on hardware that reports a 0 inset. */
+    padding: var(--space-2) var(--space-2)
+      max(var(--space-2), env(safe-area-inset-bottom));
+    gap: 0;
+    /* Above .nav-sheet-backdrop (30) so the other tabs stay tappable
+       while the More sheet is open — tapping one navigates instead of
+       costing the user a dismiss tap first. */
+    z-index: 32;
   }
 
   .sidebar-brand,
-  .sidebar-footer {
+  .sidebar-footer,
+  .sidebar-section-label {
     display: none;
   }
 
   .sidebar-nav {
     flex-direction: row;
-    justify-content: space-around;
     gap: 0;
+  }
+
+  /* Equal-width tabs: an 11-character label ("Dashboard") and a
+     3-character one ("Pair") must not hand themselves different slice
+     widths, or the icons stop lining up. */
+  .sidebar-nav > li {
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .sidebar-link {
     flex-direction: column;
-    height: 48px;
-    gap: 2px;
+    justify-content: center;
+    height: 50px;
+    gap: 3px;
+    padding: 0 2px;
     font-size: 10px;
+    line-height: 1.15;
   }
 
+  /* Labels truncate rather than wrap or bleed into the next tab — at
+     five tabs on a 390px screen there is ~74px per label. */
   .sidebar-link span:last-child {
-    display: inline;
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
   }
 
   .sidebar-link.active::before {
@@ -1099,7 +1138,52 @@
   }
 
   .app-main {
-    padding-bottom: 56px;
+    padding-bottom: calc(58px + env(safe-area-inset-bottom));
+  }
+
+  /* The topbar's desktop padding (--space-10, 40px) costs a fifth of a
+     390px screen. Tighten it and let the status badge drop to its own
+     line rather than squeezing the title into two characters. */
+  .topbar {
+    height: auto;
+    min-height: 52px;
+    padding: var(--space-4) var(--space-6);
+    gap: var(--space-4);
+  }
+
+  .topbar-left {
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px var(--space-4);
+  }
+
+  .topbar-status,
+  .topbar-manual {
+    flex-basis: 100%;
+  }
+
+  /* The auto-switch pill loses its word and keeps the toggle: the label
+     is the first thing worth dropping when the row runs out of room. */
+  .topbar-auto-label {
+    display: none;
+  }
+
+  /* A settings row is label-on-the-left / control-on-the-right. On a
+     phone the control was the side that got squeezed — the language
+     segmented control wrapped "中文" onto two lines, the "Apply to all
+     accounts" button onto three. Pin the control at its natural width
+     and let the label take the slack, dropping the control to its own
+     line once the label is down to 150px. */
+  .settings-row {
+    flex-wrap: wrap;
+  }
+
+  .settings-row > .settings-row-text {
+    flex: 1 1 150px;
+  }
+
+  .settings-row > *:not(.settings-row-text) {
+    flex-shrink: 0;
   }
 
   .drawer {
@@ -1111,6 +1195,67 @@
   .page {
     padding: var(--space-8) var(--space-6);
   }
+}
+
+/* ─── Mobile "More" sheet ──────────────────────────────────
+ * The bottom tab bar holds five targets at a phone width, so the
+ * admin section (Devices / Pair / Password / Sign out) lives behind
+ * the fifth one. Sidebar.tsx only mounts this below 767px. */
+
+.nav-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.nav-sheet {
+  position: fixed;
+  left: var(--space-4);
+  right: var(--space-4);
+  /* Sit directly above the tab bar (50px tabs + its own padding). */
+  bottom: calc(62px + env(safe-area-inset-bottom));
+  z-index: 31;
+  padding: var(--space-3);
+  background: var(--bg-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-sheet-title {
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  font: var(--font-meta);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.nav-sheet-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  width: 100%;
+  /* 44px is the smallest comfortable touch target; the desktop rail's
+     36px rows are a pointer-sized affordance. */
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-button);
+  font: var(--font-body);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.nav-sheet-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  font-weight: 500;
+}
+
+.nav-sheet-item-danger {
+  color: var(--danger-text);
 }
 
 /* ─── Fox avatar ───────────────────────────────────────── */
@@ -1198,8 +1343,34 @@
 }
 
 @media (max-width: 767px) {
-  .accounts-toolbar { flex-wrap: wrap; }
-  .accounts-toolbar .filter-chips { width: 100%; overflow-x: auto; }
+  /* Four toolbar children in one wrapping flex row gave four stacked
+     rows on a phone — roughly a fifth of the screen before the first
+     account. Lay them out explicitly instead: search and the view
+     toggle share the first row, then one row per chip group, each
+     scrolling sideways rather than wrapping. */
+  .accounts-toolbar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--space-3) var(--space-4);
+  }
+
+  .accounts-toolbar .search-input {
+    order: 1;
+  }
+
+  .accounts-toolbar .view-toggle {
+    order: 2;
+  }
+
+  .accounts-toolbar .filter-chips {
+    order: 3;
+    grid-column: 1 / -1;
+    width: 100%;
+    overflow-x: auto;
+    /* The last chip should not sit flush against the screen edge when
+       the row is scrolled to its end. */
+    scroll-padding-inline: var(--space-4);
+  }
 }
 
 /* ─── Modal ────────────────────────────────────────────── */

@@ -144,6 +144,10 @@
   flex-wrap: wrap;
 }
 
+.admin-actions--end {
+  justify-content: flex-end;
+}
+
 .admin-alert {
   padding: var(--space-8) var(--space-10);
   border-radius: var(--radius-button);
@@ -197,6 +201,89 @@
   background: var(--bg-overlay);
   border: 1px solid var(--border-subtle, var(--bg-overlay));
 }
+/* Phone layout: the devices table is nine columns wide, so on a 390px
+ * screen everything past "Providers" — including the rename / suspend /
+ * revoke buttons — was simply clipped off the right edge with no way to
+ * scroll to it. Below 767px each row becomes a card and each cell a
+ * labelled line, using the data-label attributes DevicesPage puts on the
+ * cells (the <thead> that used to carry those names is hidden here). */
+@media (max-width: 767px) {
+  .admin-table,
+  .admin-table tbody,
+  .admin-table tr,
+  .admin-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .admin-table thead {
+    display: none;
+  }
+
+  .admin-table tr {
+    padding: var(--space-8);
+    border-bottom: 1px solid var(--separator);
+  }
+
+  .admin-table tr:last-child {
+    border-bottom: none;
+  }
+
+  .admin-table td {
+    display: grid;
+    /* minmax(0,…) instead of 1fr: the value column holds nowrap content
+       (provider labels, versions) that would otherwise refuse to shrink
+       and push itself off the right edge. */
+    grid-template-columns: 84px minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--space-6);
+    padding: var(--space-4) 0;
+    border-bottom: none;
+  }
+
+  .admin-table td::before {
+    content: attr(data-label);
+    font: var(--font-caption);
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  /* The trailing actions cell has no header, so it spans the full width
+     and its buttons wrap into touch-sized rows instead of one clipped
+     nowrap line. */
+  .admin-table td:not([data-label]) {
+    display: block;
+    padding-top: var(--space-8);
+  }
+
+  /* Actions read left-to-right with the rest of the card here; the
+     right alignment only makes sense against a table's right edge. */
+  .admin-actions--end {
+    justify-content: flex-start;
+  }
+
+  .admin-table td:last-child {
+    text-align: left;
+    white-space: normal;
+  }
+
+  .admin-table .admin-button {
+    min-height: 36px;
+  }
+
+  /* Four provider checkboxes in one line overflow; two per line fits. */
+  .admin-table .admin-providers--inline {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-6) var(--space-8);
+  }
+
+  .admin-badge {
+    margin-left: var(--space-6);
+  }
+}
+
 .admin-table__empty {
   padding: var(--space-24) var(--space-16);
   text-align: center;

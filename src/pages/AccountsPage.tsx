@@ -25,6 +25,7 @@ import {
   ICON_GRID,
   ICON_LIST,
 } from "../components/icons";
+import { useIsMobile } from "../components/useIsMobile";
 import { t, tf, scopedUsageLabel } from "../i18n";
 
 type LoginState =
@@ -177,6 +178,71 @@ function matchesStatus(a: Account, f: StatusFilter): boolean {
   return true;
 }
 
+// AddAccountMenu is the phone-width form of the topbar's add-account
+// buttons: one target that opens the same four actions as a menu. Shares
+// the .kebab-* styles with the per-account menu so both popovers look and
+// behave the same.
+function AddAccountMenu({
+  items,
+  busy,
+}: {
+  items: Array<{ key: string; label: string; onClick: () => void }>;
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="kebab" ref={ref}>
+      <button
+        type="button"
+        className="btn btn-primary"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {busy ? <span className="spinner" aria-hidden /> : <Icon d={ICON_PLUS} />}
+        {t("accounts.add_account")}
+      </button>
+      {open && (
+        <div className="kebab-menu kebab-menu-touch" role="menu">
+          {items.map((it) => (
+            <button
+              key={it.key}
+              type="button"
+              role="menuitem"
+              className="kebab-item"
+              onClick={() => {
+                setOpen(false);
+                it.onClick();
+              }}
+            >
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type KebabItem = {
   label: string;
   onClick: () => void;
@@ -258,7 +324,9 @@ function UsageMiniBar({
   if (!win) {
     return (
       <div className="usage-row usage-row-compact">
-        <span className="usage-label">{label}</span>
+        <span className="usage-label" title={label}>
+          {label}
+        </span>
         <span className="usage-empty">{t("drawer.usage.no_data")}</span>
       </div>
     );
@@ -267,7 +335,9 @@ function UsageMiniBar({
   const tone = utilizationTone(pct);
   return (
     <div className="usage-row usage-row-compact">
-      <span className="usage-label">{label}</span>
+      <span className="usage-label" title={label}>
+        {label}
+      </span>
       <div className={`usage-track ${tone}`}>
         <div className="usage-fill" style={{ width: `${pct}%` }} />
       </div>
@@ -408,7 +478,11 @@ function AccountCard({
               <span className="usage-label">{t("accounts.openrouter.policy")}</span>
               <span className="usage-empty">
                 {tf("accounts.openrouter.policy_value", {
-                  models: a.openrouter?.allowed_models.length ?? 0,
+                  // allowed_models is null on the wire when the admin never
+                  // narrowed the model list, so the optional chain has to
+                  // cover the array too — `?.length` on a null array threw and
+                  // took the whole SPA down with it (blank page, no error).
+                  models: a.openrouter?.allowed_models?.length ?? 0,
                   limit: a.openrouter?.limit_usd
                     ? `$${a.openrouter.limit_usd}`
                     : t("accounts.openrouter.no_limit"),
@@ -774,6 +848,7 @@ export function AccountsPage({
   // single "managed" account from the admin's perspective. Counts come from
   // the same accounts list the cards render off, so the header stays in sync
   // with what the user is looking at without an extra round-trip.
+  const isMobile = useIsMobile();
   const inUseCount = useMemo(
     () => accounts.filter((a) => !!a.lease).length,
     [accounts],
@@ -793,6 +868,59 @@ export function AccountsPage({
         }
       : { label: t("accounts.status.idle"), tone: "muted" as const };
 
+  // One description of the add-account actions, rendered two ways: as a
+  // button row on desktop, and behind a single "+ Add account" menu on a
+  // phone. Four side-by-side buttons overflow a 390px topbar — they used
+  // to run off the right edge and paint over the page title.
+  const addBusy = modalOpen || codexImporting || codexModalOpen;
+  const addActions: Array<{
+    key: string;
+    label: string;
+    onClick: () => void;
+    spinner?: boolean;
+    primary?: boolean;
+  }> = disableAdminActions
+    ? []
+    : [
+        vaultMode
+          ? // Vault has no local codex CLI to read, so add Codex via the
+            // OAuth authorize + paste flow instead of the local-import path.
+            {
+              key: "codex",
+              label: t("accounts.add_codex"),
+              onClick: startCodexLogin,
+              spinner: codexModalOpen,
+            }
+          : {
+              key: "codex",
+              label: t("accounts.import_codex"),
+              onClick: importCodex,
+              spinner: codexImporting,
+            },
+        {
+          key: "openrouter",
+          label: t("accounts.add_openrouter"),
+          onClick: () => {
+            setOpenRouterEditing(null);
+            setOpenRouterAdding(true);
+          },
+        },
+        {
+          key: "deepseek",
+          label: t("accounts.add_deepseek"),
+          onClick: () => {
+            setDeepSeekEditing(null);
+            setDeepSeekAdding(true);
+          },
+        },
+        {
+          key: "claude",
+          label: t("accounts.add_claude"),
+          onClick: startLogin,
+          primary: true,
+        },
+      ];
+
   return (
     <>
       <Topbar
@@ -801,58 +929,22 @@ export function AccountsPage({
         autoSwitch={autoSwitch}
         onAutoSwitchToggle={onAutoSwitchToggle}
         actions={
-          disableAdminActions ? null : (
+          addActions.length === 0 ? null : isMobile ? (
+            <AddAccountMenu items={addActions} busy={addBusy} />
+          ) : (
             <div className="accounts-add-actions">
-              {!vaultMode && (
+              {addActions.map((a) => (
                 <button
-                  className="btn btn-secondary"
-                  onClick={importCodex}
-                  disabled={modalOpen || codexImporting || codexModalOpen}
+                  key={a.key}
+                  className={`btn ${a.primary ? "btn-primary" : "btn-secondary"}`}
+                  onClick={a.onClick}
+                  disabled={addBusy}
                 >
-                  {codexImporting && <span className="spinner" aria-hidden />}
-                  {t("accounts.import_codex")}
+                  {a.spinner && <span className="spinner" aria-hidden />}
+                  {a.primary && <Icon d={ICON_PLUS} />}
+                  {a.label}
                 </button>
-              )}
-              {vaultMode && (
-                // Vault has no local codex CLI to read, so add Codex via the
-                // OAuth authorize + paste flow instead of the local-import path.
-                <button
-                  className="btn btn-secondary"
-                  onClick={startCodexLogin}
-                  disabled={modalOpen || codexModalOpen}
-                >
-                  {codexModalOpen && <span className="spinner" aria-hidden />}
-                  {t("accounts.add_codex")}
-                </button>
-              )}
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  setOpenRouterEditing(null);
-                  setOpenRouterAdding(true);
-                }}
-                disabled={modalOpen || codexImporting || codexModalOpen}
-              >
-                {t("accounts.add_openrouter")}
-              </button>
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  setDeepSeekEditing(null);
-                  setDeepSeekAdding(true);
-                }}
-                disabled={modalOpen || codexImporting || codexModalOpen}
-              >
-                {t("accounts.add_deepseek")}
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={startLogin}
-                disabled={modalOpen || codexImporting || codexModalOpen}
-              >
-                <Icon d={ICON_PLUS} />
-                {t("accounts.add_claude")}
-              </button>
+              ))}
             </div>
           )
         }
