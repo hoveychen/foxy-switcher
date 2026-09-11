@@ -145,6 +145,29 @@ func (c *Client) OpenRouterConfig(ctx context.Context) (*vault.OpenRouterGrant, 
 	return &grant, nil
 }
 
+// DeepSeekConfig fetches this device's DeepSeek grant. Same shape and same
+// reasoning as OpenRouterConfig above: not part of vault.Service (no lease
+// lifecycle to drive), device identified by the bearer token, and 204 mapped to
+// selector.ErrNoAvailable so callers have one "nothing for you" branch.
+func (c *Client) DeepSeekConfig(ctx context.Context) (*vault.DeepSeekGrant, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/agent/v1/deepseek/config", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, selector.ErrNoAvailable
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeError(resp)
+	}
+	var grant vault.DeepSeekGrant
+	if err := json.NewDecoder(resp.Body).Decode(&grant); err != nil {
+		return nil, fmt.Errorf("decode deepseek config: %w", err)
+	}
+	return &grant, nil
+}
+
 func (c *Client) MarkUsed(ctx context.Context, id int64) error {
 	return c.postNoBody(ctx, "/agent/v1/accounts/"+strconv.FormatInt(id, 10)+"/used")
 }

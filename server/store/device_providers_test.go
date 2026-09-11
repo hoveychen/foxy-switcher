@@ -55,11 +55,11 @@ func TestDeviceProviderAllowlistRoundTrip(t *testing.T) {
 	}
 
 	// SetDeviceProviders edits the choice later (enable Codex on the claude-only device).
-	if err := st.SetDeviceProviders(ctx, "dev-claude", true, true, false); err != nil {
+	if err := st.SetDeviceProviders(ctx, "dev-claude", true, true, false, false); err != nil {
 		t.Fatalf("SetDeviceProviders: %v", err)
 	}
 	assertAllows(t, st, "dev-claude", ProviderCodex, true)
-	if err := st.SetDeviceProviders(ctx, "ghost", true, true, false); err != ErrNotFound {
+	if err := st.SetDeviceProviders(ctx, "ghost", true, true, false, false); err != ErrNotFound {
 		t.Fatalf("SetDeviceProviders unknown = %v, want ErrNotFound", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestApprovePairingCarriesProviderChoice(t *testing.T) {
 		t.Fatalf("insert pairing: %v", err)
 	}
 	// Admin approves with both providers enabled.
-	if err := st.ApprovePairing(ctx, "CODE-1", "dev-x", "tok-x", true, true, true); err != nil {
+	if err := st.ApprovePairing(ctx, "CODE-1", "dev-x", "tok-x", true, true, true, false); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	p, err := st.FindPairingByCode(ctx, "CODE-1")

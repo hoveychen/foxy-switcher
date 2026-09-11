@@ -142,11 +142,12 @@ func (s *Scheduler) tick(ctx context.Context) {
 		if a.RefreshToken == "" {
 			continue
 		}
-		// OpenRouter has no OAuth token to rotate — its derived runtime keys are
-		// minted and revoked by the vault, never refreshed. The RefreshToken==""
-		// check above already skips these rows today; the explicit guard keeps it
-		// that way if an OpenRouter row ever grows a token-shaped field.
-		if a.Provider == store.ProviderOpenRouter {
+		// Neither pay-as-you-go pool has an OAuth token to rotate: an OpenRouter
+		// runtime key is minted and revoked by the vault, and a DeepSeek key is
+		// issued by hand in its console. The RefreshToken=="" check above
+		// already skips these rows today; the explicit guard keeps it that way
+		// if such a row ever grows a token-shaped field.
+		if a.Provider == store.ProviderOpenRouter || a.Provider == store.ProviderDeepSeek {
 			continue
 		}
 		// needs_reauth is terminal: the refresh_token was rejected with

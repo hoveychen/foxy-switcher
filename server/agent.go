@@ -20,6 +20,7 @@ import (
 
 	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/credinject"
+	"github.com/hoveychen/foxy-switcher/server/deepseek"
 	openai "github.com/hoveychen/foxy-switcher/server/openai"
 	"github.com/hoveychen/foxy-switcher/server/store"
 	"github.com/hoveychen/foxy-switcher/server/vault/httpclient"
@@ -126,6 +127,15 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		} else {
 			orWriter = newOpenRouterWriter(client, home, exe, logger)
 			orWriter.Start(ctx)
+		}
+		// DeepSeek's grant comes over the same vault client. Its home is
+		// resolved independently of CODEX_HOME: a machine can have dsh
+		// without codex.
+		if dshHome, homeErr := deepseek.DefaultHome(); homeErr != nil {
+			logger.Printf("warning: resolve DSH_HOME: %v (DeepSeek disabled)", homeErr)
+		} else {
+			dsWriter := newDeepSeekWriter(client, dshHome, logger)
+			dsWriter.Start(ctx)
 		}
 		defer func() {
 			if err := cc.RestoreOnShutdown(); err != nil {
@@ -251,6 +261,9 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		"POST /api/accounts/openrouter",
 		"POST /api/accounts/{id}/openrouter",
 		"POST /api/accounts/{id}/openrouter/check",
+		"POST /api/accounts/deepseek",
+		"POST /api/accounts/{id}/deepseek",
+		"POST /api/accounts/{id}/deepseek/check",
 		"DELETE /api/accounts/{id}",
 		"POST /api/accounts/{id}/pause",
 		"POST /api/accounts/{id}/resume",

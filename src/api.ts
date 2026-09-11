@@ -258,7 +258,7 @@ export function codexUsageBars(
 
 export interface Account {
   id: number;
-  provider: "claude" | "codex" | "openrouter";
+  provider: "claude" | "codex" | "openrouter" | "deepseek";
   in_use: boolean;
   name: string;
   status: string;
@@ -330,6 +330,47 @@ export interface Account {
   // Derivation template for provider="openrouter" rows; absent for every other
   // provider. Never carries the management key — only whether one is on file.
   openrouter?: OpenRouterConfig;
+  // Credential state for provider="deepseek" rows; absent for every other
+  // provider. Never carries the key — only whether one is on file.
+  deepseek?: DeepSeekConfig;
+}
+
+// DeepSeekConfig is what the admin sees for a DeepSeek account. There is no
+// derivation template to edit — DeepSeek issues keys only from its console, so
+// an account is a name plus a key, with no per-key model allowlist or spend
+// cap to configure.
+export interface DeepSeekConfig {
+  // The key itself is write-only over the API; this is how the UI shows
+  // whether one is configured.
+  has_api_key: boolean;
+  // Balance as last polled. Absent when never polled — render "unknown", never
+  // "0", which would read as broke. `available` is DeepSeek's own is_available
+  // flag and is what the pool routes on; `currency` is "CNY" or "USD"
+  // depending on the account, which is why nothing compares `amount` against a
+  // threshold anywhere.
+  balance?: {
+    available: boolean;
+    amount: number;
+    currency: string;
+    checked_at: number;
+  };
+  // Mirrors the grant service's own verdict, so the badge and the routing
+  // decision can't disagree.
+  out_of_balance: boolean;
+  // Always true, and stated rather than assumed: every authorised device is
+  // served this same key, because there is nothing to derive per device.
+  shared: boolean;
+}
+
+// DeepSeekCheck is the result of the "is this working?" button: it re-reads
+// the balance with the stored key, which both proves the key is still valid
+// and refreshes the figure.
+export interface DeepSeekCheck {
+  key_valid: boolean;
+  available?: boolean;
+  amount?: number;
+  currency?: string;
+  detail?: string;
 }
 
 // OpenRouterConfig is what an admin edits per OpenRouter account: which models
@@ -494,7 +535,12 @@ export function accountLeaseHolders(a: Account): AccountLease[] {
 // computed server-side (openRouterView.out_of_credit) off the same
 // OpenRouterCredential.HasCredit the picker calls, so the two cannot drift.
 export function accountOutOfCredit(a: Account): boolean {
-  return a.provider === "openrouter" && !!a.openrouter?.out_of_credit;
+  if (a.provider === "openrouter") return !!a.openrouter?.out_of_credit;
+  // DeepSeek's equivalent: the grant service skips any account DeepSeek
+  // reports as unavailable, so such an account must not render as "active"
+  // while routing quietly steps over it.
+  if (a.provider === "deepseek") return !!a.deepseek?.out_of_balance;
+  return false;
 }
 
 // accountResetAt returns the soonest future reset (unix ms) across the
@@ -962,6 +1008,28 @@ export const apiClient = {
   // inference key. Read-only — it lists keys rather than creating anything.
   checkOpenRouterAccount: (id: number) =>
     api<OpenRouterCapabilities>(`/api/accounts/${id}/openrouter/check`, {
+      method: "POST",
+    }),
+
+  // DeepSeek accounts have no OAuth flow and no policy to configure: the admin
+  // pastes a key from the DeepSeek console and every authorised device is
+  // served that same key, because DeepSeek mints nothing on request.
+  createDeepSeekAccount: (body: { name: string; api_key: string }) =>
+    api<{ account: Account }>("/api/accounts/deepseek", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // Rotating the key revokes nothing — the vault mints nothing — so this only
+  // changes which key devices are served on their next config fetch.
+  updateDeepSeekAccount: (id: number, body: { api_key: string }) =>
+    api<{ account: Account }>(`/api/accounts/${id}/deepseek`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // Re-reads the balance with the stored key: proves the key still works and
+  // refreshes the figure on the card.
+  checkDeepSeekAccount: (id: number) =>
+    api<DeepSeekCheck>(`/api/accounts/${id}/deepseek/check`, {
       method: "POST",
     }),
 

@@ -30,6 +30,13 @@ const (
 	// credential_json holds only the policy template (OpenRouterAccountConfig).
 	// The account's API key lives in openrouter_credentials.
 	ProviderOpenRouter = "openrouter"
+	// ProviderDeepSeek is the DeepSeek Harness (`dsh`) pool. Like OpenRouter it
+	// is pay-as-you-go and NOT lease-managed, so many devices may use one key at
+	// once. Unlike OpenRouter there is nothing to derive: DeepSeek issues keys
+	// only from its console, so each authorised device is served the account's
+	// own key. A DeepSeek accounts row carries no secret — the key lives in
+	// deepseek_credentials (see deepseek.go).
+	ProviderDeepSeek = "deepseek"
 )
 
 // Account is the in-memory representation of a row in the accounts table.
@@ -37,7 +44,7 @@ const (
 // ~/.foxy-switcher.
 type Account struct {
 	ID               int64
-	Provider         string // "claude" | "codex" | "openrouter"
+	Provider         string // "claude" | "codex" | "openrouter" | "deepseek"
 	Name             string
 	AccessToken      string
 	RefreshToken     string
@@ -372,6 +379,10 @@ func Open(path string) (*Store, error) {
 	if err := migrateOpenRouterManagementKeys(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate openrouter management keys: %w", err)
+	}
+	if _, err := db.Exec(deepseekSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply deepseek schema: %w", err)
 	}
 	return &Store{db: db}, nil
 }

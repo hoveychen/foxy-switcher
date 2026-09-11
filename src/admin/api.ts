@@ -35,6 +35,12 @@ export type AdminDevice = {
   // spend-capped API key for this device; withdrawing it revokes that key
   // upstream immediately.
   allow_openrouter: boolean;
+  // DeepSeek is not leased either. Granting it serves this device the pool
+  // account's key; withdrawing it makes the device's next config sync remove
+  // the credential it wrote. Unlike OpenRouter there is nothing to revoke
+  // upstream — DeepSeek issues keys only from its console, so every
+  // authorised device shares one key.
+  allow_deepseek: boolean;
   // current_lease names the account this device is currently holding,
   // joined with account_name server-side. Absent when the device has no
   // live lease.
@@ -145,6 +151,7 @@ export const adminApi = {
       allow_claude: boolean;
       allow_codex: boolean;
       allow_openrouter: boolean;
+      allow_deepseek: boolean;
     },
   ) =>
     request<{ result: "approved" | "denied" }>("/admin/api/pair", {
@@ -156,10 +163,17 @@ export const adminApi = {
     allow_claude: boolean,
     allow_codex: boolean,
     allow_openrouter: boolean,
+    allow_deepseek: boolean,
   ) =>
     request<void>("/admin/api/devices/providers", {
       method: "POST",
-      body: JSON.stringify({ id, allow_claude, allow_codex, allow_openrouter }),
+      body: JSON.stringify({
+        id,
+        allow_claude,
+        allow_codex,
+        allow_openrouter,
+        allow_deepseek,
+      }),
     }),
   changePassword: (current: string, next: string, confirm: string) =>
     request<{ ok: true }>("/admin/api/password", {

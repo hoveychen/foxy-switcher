@@ -33,6 +33,7 @@ import (
 	"github.com/hoveychen/foxy-switcher/server/activity"
 	"github.com/hoveychen/foxy-switcher/server/authz"
 	"github.com/hoveychen/foxy-switcher/server/credinject"
+	"github.com/hoveychen/foxy-switcher/server/deepseek"
 	"github.com/hoveychen/foxy-switcher/server/httpapi"
 	openai "github.com/hoveychen/foxy-switcher/server/openai"
 	"github.com/hoveychen/foxy-switcher/server/refresh"
@@ -236,6 +237,10 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// vault.Service, which remote agents drive. Constructed unconditionally:
 	// with no OpenRouter account configured it simply reports none available.
 	openRouterKeys := vault.NewOpenRouterKeys(st, logger)
+	// DeepSeek grants are vault-internal for the same reason, though there is
+	// nothing to derive: the service only decides which account's key a given
+	// device may be served.
+	deepSeekGrants := vault.NewDeepSeekGrants(st, logger)
 	rf := refresh.New(st, logger)
 	rf.Bus = bus
 	rf.IsAccountInUse = st.IsAccountLeased
@@ -338,6 +343,16 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 				home, exe, logger)
 			orWriter.Start(ctx)
 		}
+		// DeepSeek, same in-process source and same reasoning. Its home is
+		// resolved independently: a machine can have dsh without codex.
+		if dshHome, homeErr := deepseek.DefaultHome(); homeErr != nil {
+			logger.Printf("warning: resolve DSH_HOME: %v (DeepSeek disabled)", homeErr)
+		} else {
+			dsWriter := newDeepSeekWriter(
+				inprocDeepSeekSource{grants: deepSeekGrants, deviceID: cc.DeviceID()},
+				dshHome, logger)
+			dsWriter.Start(ctx)
+		}
 	}
 
 	if opts.ParentPID > 0 {
@@ -385,6 +400,10 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	creditPoller := vault.NewCreditPoller(st, logger)
 	creditPoller.Start(ctx)
 	defer creditPoller.Stop()
+	// DeepSeek balances, for the same reason and on the same cadence.
+	balancePoller := vault.NewBalancePoller(st, logger)
+	balancePoller.Start(ctx)
+	defer balancePoller.Stop()
 
 	// Lease sweeper: GC expired rows so leases_account_id_uniq stays
 	// unblocked for the next AcquireLease attempt. 30s matches the
@@ -420,6 +439,7 @@ func runDaemon(ctx context.Context, opts daemonOpts, ready func(port int)) error
 	// Constructed unconditionally: with no OpenRouter account configured it
 	// simply reports none available.
 	vaultHTTP.OpenRouter = openRouterKeys
+	vaultHTTP.DeepSeek = deepSeekGrants
 	rootMux.Handle("/agent/v1/", vaultHTTP.Handler())
 	// Re-expose the frontend httpapi under /agent/v1/api/ so a remote
 	// agent can drive the same view + lease routes via the bearer-auth'd

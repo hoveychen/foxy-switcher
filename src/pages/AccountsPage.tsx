@@ -16,6 +16,7 @@ import { Topbar } from "../components/Topbar";
 import { FoxAvatar } from "../components/FoxAvatar";
 import { Modal } from "../components/Modal";
 import { OpenRouterModal } from "../components/OpenRouterModal";
+import { DeepSeekModal } from "../components/DeepSeekModal";
 import {
   ICON_PLUS,
   ICON_COPY,
@@ -46,7 +47,7 @@ type CodexLoginState =
 type Tone = "ok" | "warn" | "danger" | "muted";
 
 type StatusFilter = "all" | "active" | "paused" | "cooling";
-type ProviderFilter = "all" | "claude" | "codex" | "openrouter";
+type ProviderFilter = "all" | "claude" | "codex" | "openrouter" | "deepseek";
 
 type ViewMode = "grid" | "list";
 
@@ -73,6 +74,7 @@ const PROVIDER_FILTERS: Array<{ key: ProviderFilter; labelKey: string }> = [
   { key: "claude", labelKey: "accounts.providers.claude" },
   { key: "codex", labelKey: "accounts.providers.codex" },
   { key: "openrouter", labelKey: "accounts.providers.openrouter" },
+  { key: "deepseek", labelKey: "accounts.providers.deepseek" },
 ];
 
 function fmtRemaining(ms: number): string {
@@ -287,6 +289,7 @@ function AccountCard({
   onDelete,
   onTogglePause,
   onEditOpenRouter,
+  onEditDeepSeek,
   busy,
   disableAdminActions,
 }: {
@@ -302,6 +305,7 @@ function AccountCard({
   onDelete: () => void;
   onTogglePause: () => void;
   onEditOpenRouter: () => void;
+  onEditDeepSeek: () => void;
   busy: boolean;
   disableAdminActions: boolean;
 }) {
@@ -420,6 +424,20 @@ function AccountCard({
               </span>
             </div>
           </>
+        ) : a.provider === "deepseek" ? (
+          // DeepSeek is pay-as-you-go too, so there are no subscription
+          // windows to render. The balance is the only number that governs
+          // whether the pool keeps handing this account out — and it is shown
+          // in the account's own currency, because DeepSeek bills in CNY or
+          // USD and we deliberately never convert or threshold it.
+          <div className="usage-row usage-row-compact">
+            <span className="usage-label">{t("accounts.deepseek.balance")}</span>
+            <span className={`usage-empty ${a.deepseek?.out_of_balance ? "or-hint-error" : ""}`}>
+              {a.deepseek?.balance
+                ? `${a.deepseek.balance.amount.toFixed(2)} ${a.deepseek.balance.currency}`.trim()
+                : t("accounts.deepseek.balance_unknown")}
+            </span>
+          </div>
         ) : (
           <>
             {a.provider === "codex" ? (
@@ -457,13 +475,18 @@ function AccountCard({
           // OpenRouter is configured, not selected: it holds no lease and
           // every authorised device uses it at once, so "use now" and
           // "refresh" are meaningless. Editing its policy is the real action.
-          ...(a.provider === "openrouter"
+          ...(a.provider === "openrouter" || a.provider === "deepseek"
             ? disableAdminActions
               ? []
               : [
                   {
-                    label: t("accounts.kebab.edit_openrouter"),
-                    onClick: onEditOpenRouter,
+                    label: t(
+                      a.provider === "deepseek"
+                        ? "accounts.kebab.edit_deepseek"
+                        : "accounts.kebab.edit_openrouter",
+                    ),
+                    onClick:
+                      a.provider === "deepseek" ? onEditDeepSeek : onEditOpenRouter,
                   },
                 ]
             : [
@@ -480,7 +503,9 @@ function AccountCard({
           // Refresh is hidden in agent mode (cloud vault owns token
           // rotation). Disabled when another device holds the lease so
           // we don't 401 their live CC session.
-          ...(disableAdminActions || a.provider === "openrouter"
+          ...(disableAdminActions ||
+          a.provider === "openrouter" ||
+          a.provider === "deepseek"
             ? []
             : [
                 {
@@ -601,6 +626,8 @@ export function AccountsPage({
   // null + closed = no modal; null + open = "add"; an account = "edit".
   const [openRouterEditing, setOpenRouterEditing] = useState<Account | null>(null);
   const [openRouterAdding, setOpenRouterAdding] = useState(false);
+  const [deepSeekEditing, setDeepSeekEditing] = useState<Account | null>(null);
+  const [deepSeekAdding, setDeepSeekAdding] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
 
   const setViewModePersisted = useCallback((mode: ViewMode) => {
@@ -809,6 +836,16 @@ export function AccountsPage({
                 {t("accounts.add_openrouter")}
               </button>
               <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setDeepSeekEditing(null);
+                  setDeepSeekAdding(true);
+                }}
+                disabled={modalOpen || codexImporting || codexModalOpen}
+              >
+                {t("accounts.add_deepseek")}
+              </button>
+              <button
                 className="btn btn-primary"
                 onClick={startLogin}
                 disabled={modalOpen || codexImporting || codexModalOpen}
@@ -976,6 +1013,7 @@ export function AccountsPage({
                   onDelete={() => onDelete(a.id)}
                   onTogglePause={() => onTogglePause(a)}
                   onEditOpenRouter={() => setOpenRouterEditing(a)}
+                  onEditDeepSeek={() => setDeepSeekEditing(a)}
                   busy={busyAccountId === a.id}
                   disableAdminActions={disableAdminActions}
                 />
@@ -990,6 +1028,16 @@ export function AccountsPage({
           onClose={() => {
             setOpenRouterAdding(false);
             setOpenRouterEditing(null);
+          }}
+          onSaved={onRefresh}
+        />
+
+        <DeepSeekModal
+          open={deepSeekAdding || deepSeekEditing !== null}
+          account={deepSeekEditing}
+          onClose={() => {
+            setDeepSeekAdding(false);
+            setDeepSeekEditing(null);
           }}
           onSaved={onRefresh}
         />

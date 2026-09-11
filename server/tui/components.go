@@ -203,11 +203,12 @@ type usageRow struct {
 //     carry neutral Primary/Secondary labels and there is no scoped third.
 //   - openrouter — none. It is pay-as-you-go: no subscription windows exist, and
 //     rendering three empty bars said "no data" about data that will never come.
+//   - deepseek  — none, for the same reason.
 //
 // Empty provider = legacy row predating the column = Claude.
 func usageRows(a Account) []usageRow {
 	switch a.Provider {
-	case "openrouter":
+	case "openrouter", "deepseek":
 		return nil
 	case "codex":
 		return []usageRow{
