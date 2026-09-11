@@ -324,7 +324,9 @@ function UsageMiniBar({
   if (!win) {
     return (
       <div className="usage-row usage-row-compact">
-        <span className="usage-label">{label}</span>
+        <span className="usage-label" title={label}>
+          {label}
+        </span>
         <span className="usage-empty">{t("drawer.usage.no_data")}</span>
       </div>
     );
@@ -333,7 +335,9 @@ function UsageMiniBar({
   const tone = utilizationTone(pct);
   return (
     <div className="usage-row usage-row-compact">
-      <span className="usage-label">{label}</span>
+      <span className="usage-label" title={label}>
+        {label}
+      </span>
       <div className={`usage-track ${tone}`}>
         <div className="usage-fill" style={{ width: `${pct}%` }} />
       </div>

@@ -729,6 +729,11 @@ input {
 .usage-row-compact .usage-label {
   font-size: 11px;
   white-space: nowrap;
+  /* A scoped label can grow past the column ("7d Fable · capped"). Clip
+     it instead of letting it run under the bar; the full string stays
+     available as the element's title. */
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .usage-row-compact .usage-track {
@@ -814,6 +819,16 @@ input {
   grid-template-columns: 52px 70px 32px;
   font-size: 10.5px;
   gap: 6px;
+}
+
+@media (max-width: 767px) {
+  /* Grid cards go full-width on a phone, so the bar can spare the width
+     that keeps a scoped label ("7d Fable · capped") whole instead of
+     ellipsised. Scoped to .mode-grid so the list mode's tighter
+     three-bar layout below is untouched. */
+  .mode-grid .account-card-usage .usage-row-compact {
+    grid-template-columns: 96px 1fr 40px;
+  }
 }
 
 @media (max-width: 900px) {

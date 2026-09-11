@@ -1322,8 +1322,34 @@
 }
 
 @media (max-width: 767px) {
-  .accounts-toolbar { flex-wrap: wrap; }
-  .accounts-toolbar .filter-chips { width: 100%; overflow-x: auto; }
+  /* Four toolbar children in one wrapping flex row gave four stacked
+     rows on a phone — roughly a fifth of the screen before the first
+     account. Lay them out explicitly instead: search and the view
+     toggle share the first row, then one row per chip group, each
+     scrolling sideways rather than wrapping. */
+  .accounts-toolbar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--space-3) var(--space-4);
+  }
+
+  .accounts-toolbar .search-input {
+    order: 1;
+  }
+
+  .accounts-toolbar .view-toggle {
+    order: 2;
+  }
+
+  .accounts-toolbar .filter-chips {
+    order: 3;
+    grid-column: 1 / -1;
+    width: 100%;
+    overflow-x: auto;
+    /* The last chip should not sit flush against the screen edge when
+       the row is scrolled to its end. */
+    scroll-padding-inline: var(--space-4);
+  }
 }
 
 /* ─── Modal ────────────────────────────────────────────── */
