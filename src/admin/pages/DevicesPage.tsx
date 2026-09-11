@@ -234,7 +234,7 @@ export function DevicesPage({ onUnauthorized }: Props) {
                   const isToggling = togglingId === d.id;
                   return (
                     <tr key={d.id}>
-                      <td>
+                      <td data-label={t("admin.devices.col.name")}>
                         {isEditing ? (
                           <input
                             className="admin-input"
@@ -255,7 +255,11 @@ export function DevicesPage({ onUnauthorized }: Props) {
                             disabled={isSaving}
                           />
                         ) : (
-                          <>
+                          // One element, not a fragment: the phone layout
+                          // makes each cell a two-column grid (label | value),
+                          // and loose siblings would each claim their own grid
+                          // slot — the hostname would land under the label.
+                          <span className="admin-cell">
                             {d.name}
                             {isSuspended && (
                               <span className="admin-badge admin-badge--muted">
@@ -265,16 +269,16 @@ export function DevicesPage({ onUnauthorized }: Props) {
                             {d.hostname && d.hostname !== d.name && (
                               <span className="admin-table__sub">{d.hostname}</span>
                             )}
-                          </>
+                          </span>
                         )}
                       </td>
-                      <td>
+                      <td data-label={t("admin.devices.col.current_account")}>
                         {d.current_lease
                           ? d.current_lease.account_name ||
                             `#${d.current_lease.account_id}`
                           : "—"}
                       </td>
-                      <td>
+                      <td data-label={t("admin.devices.col.providers")}>
                         <span className="admin-providers admin-providers--inline">
                           <label className="admin-checkbox">
                             <input
@@ -342,19 +346,19 @@ export function DevicesPage({ onUnauthorized }: Props) {
                           </label>
                         </span>
                       </td>
-                      <td>
+                      <td data-label={t("admin.devices.col.os")}>
                         {d.os || "—"}
                         {d.os_version ? ` ${d.os_version}` : ""}
                       </td>
-                      <td>{d.arch || "—"}</td>
-                      <td>
+                      <td data-label={t("admin.devices.col.arch")}>{d.arch || "—"}</td>
+                      <td data-label={t("admin.devices.col.app")}>
                         {d.app_version || "—"}
                         {d.client_type ? ` (${d.client_type})` : ""}
                       </td>
-                      <td>{formatRelative(d.created_at)}</td>
-                      <td>{formatRelative(d.last_seen_at)}</td>
+                      <td data-label={t("admin.devices.col.paired")}>{formatRelative(d.created_at)}</td>
+                      <td data-label={t("admin.devices.col.last_seen")}>{formatRelative(d.last_seen_at)}</td>
                       <td>
-                        <span className="admin-actions" style={{ justifyContent: "flex-end" }}>
+                        <span className="admin-actions admin-actions--end">
                           {isEditing ? (
                             <>
                               <button
