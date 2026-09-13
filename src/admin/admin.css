@@ -68,6 +68,20 @@
   gap: var(--space-12);
 }
 
+/* A card whose only child is a table: no padding of its own, and it clips
+   the scroller so the table's own edges can't paint over the rounded
+   corners. */
+.admin-card--table {
+  padding: 0;
+  overflow: hidden;
+}
+
+.admin-table__scroll {
+  overflow-x: auto;
+  /* Keeps a horizontally scrolled table from jittering vertically. */
+  overflow-y: hidden;
+}
+
 .admin-form {
   display: grid;
   gap: var(--space-10);
@@ -180,6 +194,31 @@
   text-align: right;
   white-space: nowrap;
 }
+/* The devices table used to be nine columns; beside the app sidebar that
+   overflowed the card and the action buttons landed outside its right
+   border. OS/arch/app and paired/last-seen are merged into one column
+   each, the providers box is a 2x2 grid instead of a four-item row, and
+   the actions column shrink-wraps its buttons so the remaining width
+   goes to the name and account. Narrower than that the .admin-table__scroll
+   wrapper takes over and the table side-scrolls inside the card. */
+.admin-table--devices td:last-child,
+.admin-table--devices th:last-child {
+  width: 1%;
+}
+.admin-table--devices td:last-child .admin-actions {
+  flex-wrap: nowrap;
+}
+/* "Last seen" holds two short relative timestamps; letting them wrap
+   ("42 天 / 前") costs a line for no width saved. */
+.admin-table--devices td:nth-child(5) {
+  white-space: nowrap;
+}
+/* Stacks a value and its sub-line without the loose siblings each
+   claiming a slot of the phone layout's per-cell grid. */
+.admin-cell {
+  display: block;
+  min-width: 0;
+}
 .admin-table__sub {
   display: block;
   color: var(--text-tertiary);
@@ -201,19 +240,29 @@
   background: var(--bg-overlay);
   border: 1px solid var(--border-subtle, var(--bg-overlay));
 }
-/* Phone layout: the devices table is nine columns wide, so on a 390px
- * screen everything past "Providers" — including the rename / suspend /
- * revoke buttons — was simply clipped off the right edge with no way to
- * scroll to it. Below 767px each row becomes a card and each cell a
- * labelled line, using the data-label attributes DevicesPage puts on the
- * cells (the <thead> that used to carry those names is hidden here). */
+/* Phone layout: even at six columns the devices table is far wider than a
+ * 390px screen, and side-scrolling a whole table to reach the revoke
+ * button is no way to use a phone. Below 767px each row becomes a card
+ * and each cell a labelled line, using the data-label attributes
+ * DevicesPage puts on the cells (the <thead> that carries those names on
+ * desktop is hidden here). */
 @media (max-width: 767px) {
   .admin-table,
   .admin-table tbody,
   .admin-table tr,
   .admin-table td {
     display: block;
-    width: 100%;
+    /* No width:100% here: these boxes are content-box, so on the padded
+       row it resolved to content + 32px of padding and pushed the row —
+       and every cell in it — past the card's right border. Block boxes
+       already fill their container. */
+    width: auto;
+  }
+
+  /* Rows are cards here and always fit, so the scroller has nothing to
+     clip — and clipping would cut off the focus ring on a checkbox. */
+  .admin-table__scroll {
+    overflow-x: visible;
   }
 
   .admin-table thead {
@@ -249,12 +298,26 @@
     letter-spacing: 0.04em;
   }
 
-  /* The trailing actions cell has no header, so it spans the full width
-     and its buttons wrap into touch-sized rows instead of one clipped
-     nowrap line. */
-  .admin-table td:not([data-label]) {
+  /* The trailing actions cell spans the full width, its label sitting on
+     its own line above buttons that share the row evenly instead of
+     being squeezed into the 84px-label grid. */
+  .admin-table td:last-child {
     display: block;
+    /* Undoes the desktop shrink-wrap: as a card line it wants the row. */
+    width: auto;
     padding-top: var(--space-8);
+    text-align: left;
+    white-space: normal;
+  }
+  .admin-table td:last-child::before {
+    display: block;
+    margin-bottom: var(--space-4);
+  }
+  .admin-table--devices td:last-child .admin-actions {
+    flex-wrap: wrap;
+  }
+  .admin-table--devices td:last-child .admin-button {
+    flex: 1 1 auto;
   }
 
   /* Actions read left-to-right with the rest of the card here; the
@@ -263,19 +326,24 @@
     justify-content: flex-start;
   }
 
-  .admin-table td:last-child {
-    text-align: left;
-    white-space: normal;
-  }
-
   .admin-table .admin-button {
     min-height: 36px;
   }
 
-  /* Four provider checkboxes in one line overflow; two per line fits. */
-  .admin-table .admin-providers--inline {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+  /* Providers get the same full-width treatment as the actions: squeezed
+     beside the 84px label column the two checkbox columns leave barely
+     100px each and "OpenRouter" runs into its neighbour's box. */
+  .admin-table--devices td:nth-child(3) {
+    display: block;
+  }
+  .admin-table--devices td:nth-child(3)::before {
+    display: block;
+    margin-bottom: var(--space-4);
+  }
+  /* auto columns are sized by the widest label and would push "DeepSeek"
+     off the card; even halves fit a 390px screen. */
+  .admin-table .admin-providers--grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-6) var(--space-8);
   }
 
@@ -313,7 +381,12 @@
   color: var(--text-secondary);
   padding: 0 4px;
 }
-.admin-providers--inline {
+/* In-table variant: bare (no fieldset chrome) and 2x2, because four
+   provider names in one row is the widest thing in the devices table. */
+.admin-providers--grid {
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  justify-content: start;
   border: none;
   padding: 0;
   margin: 0;
