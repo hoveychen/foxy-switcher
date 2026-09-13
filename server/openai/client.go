@@ -29,6 +29,24 @@ func IsPermanentRefreshError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// UnauthorizedError is returned when ChatGPT rejects the access_token itself
+// (HTTP 401), as opposed to any other non-2xx. It matters because a Codex
+// access_token can be killed upstream long before its JWT `exp`: `codex login`
+// and `codex logout` both POST the refresh_token to auth.openai.com/oauth/revoke
+// (see codex-rs logout_with_revoke), which voids the whole grant. The row then
+// looks perfectly healthy — unexpired, status active — while every request made
+// with it 401s.
+type UnauthorizedError struct{ Endpoint string }
+
+func (e *UnauthorizedError) Error() string {
+	return fmt.Sprintf("Codex %s rejected the access token: HTTP 401", e.Endpoint)
+}
+
+func IsUnauthorized(err error) bool {
+	var target *UnauthorizedError
+	return errors.As(err, &target)
+}
+
 func Refresh(ctx context.Context, auth *AuthFile) error {
 	body, err := json.Marshal(map[string]string{
 		"client_id":     codexOAuthClientID,
@@ -128,6 +146,9 @@ func FetchUsage(ctx context.Context, accessToken, accountID string) (*Usage, err
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, &UnauthorizedError{Endpoint: "usage"}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("Codex usage failed: HTTP %d", resp.StatusCode)

@@ -54,6 +54,33 @@ type UsagePoller struct {
 	// would not serialise on each other.
 	mu            sync.Mutex
 	nextAllowedAt map[int64]time.Time
+	// codex401 counts consecutive 401s from the Codex usage endpoint, per
+	// account. Guarded by mu. See codexUnauthorizedStrikes.
+	codex401 map[int64]int
+}
+
+// codexUnauthorizedStrikes is how many consecutive 401s from the Codex usage
+// endpoint it takes before the account is flagged needs_reauth. One 401 could
+// be an upstream blip; three in a row (15 minutes at the default interval) is
+// a revoked grant.
+const codexUnauthorizedStrikes = 3
+
+// noteCodexUnauthorized records a 401 and reports the new consecutive count.
+func (p *UsagePoller) noteCodexUnauthorized(id int64) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.codex401 == nil {
+		p.codex401 = make(map[int64]int)
+	}
+	p.codex401[id]++
+	return p.codex401[id]
+}
+
+// clearCodexUnauthorized resets the strike count after any non-401 outcome.
+func (p *UsagePoller) clearCodexUnauthorized(id int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.codex401, id)
 }
 
 // canPoll reports whether `id` is currently outside any 429 backoff window.
@@ -288,13 +315,24 @@ func (p *UsagePoller) tick(ctx context.Context) {
 }
 
 func (p *UsagePoller) pollCodex(ctx context.Context, a store.Account) bool {
+	// needs_reauth is terminal until the user re-logs in, and a dead token
+	// has no usage to report. Polling it just reprints the same 401 every
+	// tick — account 93 logged 129 of them in two hours before this guard.
+	if a.Status == store.StatusNeedsReauth {
+		return false
+	}
 	u, err := openai.FetchUsage(ctx, a.AccessToken, a.AccountUUID)
 	if err != nil {
+		if openai.IsUnauthorized(err) {
+			return p.handleCodexUnauthorized(ctx, a)
+		}
+		p.clearCodexUnauthorized(a.ID)
 		p.logger.Printf("[usage] Codex account %d (%s): %v", a.ID, a.Name, err)
 		p.Bus.EmitError(activity.TypeErrorUsage, a.ID,
 			fmt.Sprintf("Usage poll for %s failed: %v", a.Name, err))
 		return false
 	}
+	p.clearCodexUnauthorized(a.ID)
 	var primaryUtil, secondaryUtil float64
 	var primaryReset, secondaryReset string
 	var primaryWindowSeconds, secondaryWindowSeconds int64
@@ -331,6 +369,47 @@ func (p *UsagePoller) pollCodex(ctx context.Context, a store.Account) bool {
 		p.logger.Printf("[usage] Codex account %d history: %v", a.ID, err)
 	}
 	return true
+}
+
+// handleCodexUnauthorized reacts to a 401 from the Codex usage endpoint.
+//
+// A Codex access_token can be killed upstream long before its JWT `exp`: both
+// `codex login` (which silently calls logout_with_revoke first) and `codex
+// logout` POST the refresh_token to auth.openai.com/oauth/revoke, voiding the
+// whole grant for every device the pool ever handed it to. Nothing else notices
+// — the refresh Scheduler is the only thing that flips needs_reauth, and it
+// won't even look at the row until `exp` comes within an hour, which for Codex
+// is up to ten days out. Meanwhile the selector keeps handing the dead
+// credential to devices, and every Codex CLI it lands on reports "your refresh
+// token was revoked".
+//
+// So the usage poller is the early-warning system. It refuses to act on a
+// single 401 (upstream blips happen) and flags the account after
+// codexUnauthorizedStrikes consecutive ones.
+func (p *UsagePoller) handleCodexUnauthorized(ctx context.Context, a store.Account) bool {
+	strikes := p.noteCodexUnauthorized(a.ID)
+	if strikes < codexUnauthorizedStrikes {
+		p.logger.Printf("[usage] Codex account %d (%s): HTTP 401 (%d/%d) — waiting before flagging",
+			a.ID, a.Name, strikes, codexUnauthorizedStrikes)
+		return false
+	}
+	p.clearCodexUnauthorized(a.ID)
+	if err := p.st.MarkNeedsReauth(ctx, a.ID); err != nil {
+		p.logger.Printf("[usage] Codex account %d (%s): mark needs_reauth: %v", a.ID, a.Name, err)
+		return false
+	}
+	p.logger.Printf("[usage] Codex account %d (%s): %d consecutive 401s; marked needs_reauth",
+		a.ID, a.Name, strikes)
+	p.Bus.EmitError(activity.TypeAccountNeedsReauth, a.ID,
+		fmt.Sprintf("%s needs re-authentication — ChatGPT rejected its access token (the grant was most likely revoked by a `codex login` or logout on some device)", a.Name))
+	// The account just became non-selectable; let the injectors reconcile it
+	// out now rather than on their own cadence. Called directly instead of via
+	// tick's `changed` flag, which also drives the "Refreshed usage for N
+	// accounts" summary — nothing was refreshed here.
+	if p.OnChange != nil {
+		p.OnChange()
+	}
+	return false
 }
 
 func pluralS(n int) string {
