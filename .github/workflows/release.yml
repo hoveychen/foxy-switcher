@@ -411,14 +411,26 @@ jobs:
           sha256sum "foxy-switcher-linux-${GOARCH}" > "foxy-switcher-linux-${GOARCH}.sha256"
           cat "foxy-switcher-linux-${GOARCH}.sha256"
 
+      # Uploaded with the gh CLI rather than softprops/action-gh-release: on
+      # v1.3.3 the amd64 leg failed that action three times in a row with
+      # "Error creating asset temp dir", every time on the 16 MB binary while
+      # the 92-byte .sha256 beside it uploaded in the same second. gh streams
+      # the file straight to the upload endpoint with no temp-dir copy, so it
+      # doesn't have that failure mode. --clobber makes a re-run idempotent.
       - name: Publish to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist-bin/foxy-switcher-linux-${{ matrix.goarch }}
-            dist-bin/foxy-switcher-linux-${{ matrix.goarch }}.sha256
-          draft: false
-          fail_on_unmatched_files: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GOARCH: ${{ matrix.goarch }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$REF_NAME" \
+            "dist-bin/foxy-switcher-linux-${GOARCH}" \
+            "dist-bin/foxy-switcher-linux-${GOARCH}.sha256" \
+            --clobber
+          gh release view "$REF_NAME" --json assets \
+            --jq '.assets[] | select(.name | startswith("foxy-switcher-linux-'"$GOARCH"'")) | .name + " " + (.size|tostring)'
 
   # Build and push the cloud-vault image to GHCR. The Dockerfile builds
   # everything from source (React → //go:embed → static Go binary), so
