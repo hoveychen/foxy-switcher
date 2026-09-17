@@ -17,6 +17,11 @@ import (
 
 const remoteLeaseTTL = time.Minute
 
+// errIdleParked is ensureLease's benign "I'm idle and hold no slot, so I did
+// nothing" result — the steady state of an idle device waiting for the user to
+// run codex again, not a failure.
+var errIdleParked = errors.New("codex: idle, lease parked")
+
 // RemoteManager is the agent-mode counterpart to Manager. Account selection
 // and persistence live on the vault; only provider-native credential storage
 // and the native backup live on the agent device.
@@ -25,6 +30,19 @@ type RemoteManager struct {
 	storage  CredentialStorage
 	deviceID string
 	logger   *log.Logger
+
+	// activityDir is <CODEX_HOME>/sessions — the tree the Codex CLI appends
+	// session rollouts to. idleFor() derives last-real-activity from the newest
+	// rollout mtime there. Empty disables the probe (idleFor reports active),
+	// which turns idle-reclaim off for this device. Set via SetActivityDir
+	// before Start; read without the mutex, so don't mutate it afterwards.
+	activityDir string
+	// idleThreshold is how long without local Codex activity before this device
+	// stops competing for a slot. Kept equal to the vault's reclaim threshold so
+	// both sides agree on "idle".
+	idleThreshold time.Duration
+	// activityProbe, when non-nil, replaces the filesystem probe — a test seam.
+	activityProbe func() time.Duration
 
 	mu               sync.Mutex
 	currentAccountID int64
@@ -41,8 +59,21 @@ func NewRemoteManager(svc vault.Service, storage CredentialStorage, deviceID str
 	}
 	return &RemoteManager{
 		svc: svc, storage: storage, deviceID: deviceID, logger: logger,
+		idleThreshold: vault.DefaultIdleReclaimThreshold,
 		restoreOnQuit: true, stop: make(chan struct{}), done: make(chan struct{}),
 	}
+}
+
+// SetActivityDir wires <CODEX_HOME>/sessions so idleFor() can measure local
+// Codex activity, enabling idle-lease-reclaim for this device. Call before
+// Start; leaving it unset (the default, and what most tests do) disables the
+// probe, so idleFor always reports active and this device never yields its
+// Codex slot. Safe on a nil receiver.
+func (m *RemoteManager) SetActivityDir(dir string) {
+	if m == nil {
+		return
+	}
+	m.activityDir = dir
 }
 
 func (m *RemoteManager) Start(ctx context.Context) {
@@ -106,6 +137,19 @@ func (m *RemoteManager) Reconcile(ctx context.Context) error {
 	if err := m.reverseSync(ctx); err != nil {
 		m.logger.Printf("[codex-agent] reverse sync skipped: %v", err)
 	}
+
+	// Idle-and-not-holding: there's nothing to renew and we won't take a slot
+	// we aren't using, so skip the pick entirely. Without this gate a machine
+	// that never runs codex still grabs a pool account at startup and squats it
+	// until the process exits. A device that IS holding a lease falls through —
+	// it must keep renewing so the vault sees a fresh (and now large) idleFor
+	// and can reclaim the slot under pressure. When activity resumes, a later
+	// tick acquires again.
+	idleFor := m.idleFor()
+	if idleFor >= m.idleThreshold && m.currentLeaseID == "" {
+		return nil
+	}
+
 	accounts, err := m.svc.ListAccounts(ctx)
 	if err != nil {
 		return err
@@ -135,8 +179,14 @@ func (m *RemoteManager) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	lease, err := m.ensureLease(ctx, selected.ID)
+	lease, err := m.ensureLease(ctx, selected.ID, idleFor)
 	if err != nil {
+		// Idle and parked: we let a reclaimed slot go rather than re-grabbing an
+		// account we aren't using. Nothing to report — it's the steady state of
+		// an idle device waiting for the user to come back.
+		if errors.Is(err, errIdleParked) {
+			return nil
+		}
 		// The vault refuses a lease when this device's provider allowlist
 		// no longer grants Codex (e.g. the admin revoked it mid-session).
 		// Treat it the same as an empty pool: drop the injected creds.
@@ -174,24 +224,40 @@ func (m *RemoteManager) Reconcile(ctx context.Context) error {
 	return nil
 }
 
-func (m *RemoteManager) ensureLease(ctx context.Context, accountID int64) (vault.Lease, error) {
+func (m *RemoteManager) ensureLease(ctx context.Context, accountID int64, idleFor time.Duration) (vault.Lease, error) {
+	active := idleFor < m.idleThreshold
 	if m.currentLeaseID != "" && m.currentAccountID == accountID {
-		// idleFor 0: the Codex remote manager has no local-activity probe, so it
-		// always reports "active". Its leases therefore never become
-		// idle-reclaimable — idle-reclaim is scoped to the Claude Code agent,
-		// whose activity signal (~/.claude/projects session files) is
-		// Claude-specific. Reporting 0 preserves Codex's pre-feature behaviour.
-		lease, err := m.svc.RenewLease(ctx, m.currentLeaseID, remoteLeaseTTL, 0)
+		// Renew the held lease, reporting idleFor so the vault can tell a
+		// live-but-idle lease apart from one in active use. An idle holder still
+		// keeps its slot (zero churn) until the vault actually reclaims it.
+		lease, err := m.svc.RenewLease(ctx, m.currentLeaseID, remoteLeaseTTL, idleFor)
 		if err == nil {
 			return lease, nil
 		}
 		if !errors.Is(err, vault.ErrLeaseNotFound) {
 			return vault.Lease{}, err
 		}
+		// The lease is gone: expired (vault GC / restart) or reclaimed under
+		// pool pressure because we reported ourselves idle.
+		if !active {
+			// Idle → park: drop the local lease and DON'T re-grab an account we
+			// aren't using. A later tick re-acquires once codex runs again.
+			m.currentLeaseID = ""
+			return vault.Lease{}, errIdleParked
+		}
+		// Active → fall through and re-acquire our slot below.
 	}
 	oldLease := m.currentLeaseID
 	lease, err := m.svc.AcquireLease(ctx, accountID, m.deviceID, remoteLeaseTTL)
 	if err != nil {
+		if errors.Is(err, vault.ErrLeaseLocked) {
+			// Another device holds this account now — we lost it (reclaimed
+			// while we were idle, or a plain acquire race). Drop stickiness so
+			// the next tick re-picks a free account via PickProviderForDevice
+			// instead of looping forever on this now-foreign account.
+			m.currentLeaseID = ""
+			m.currentAccountID = 0
+		}
 		return vault.Lease{}, err
 	}
 	if oldLease != "" && oldLease != lease.ID {
