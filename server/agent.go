@@ -112,6 +112,13 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 			logger.Printf("warning: resolve Codex credential storage: %v (remote Codex injection disabled)", storageErr)
 		} else {
 			codexRemote = openai.NewRemoteManager(client, codexStorage, cfg.DeviceID, logger)
+			// Without the sessions dir the probe stays off and this device never
+			// yields its Codex slot — log it rather than failing the agent.
+			if sessions, sessErr := openai.DefaultCodexSessionsDir(); sessErr != nil {
+				logger.Printf("warning: resolve Codex sessions dir: %v (Codex idle-reclaim disabled)", sessErr)
+			} else {
+				codexRemote.SetActivityDir(sessions)
+			}
 			codexRemote.SetRestoreOnQuit(settings.RestoreNativeOnQuit)
 			codexRemote.SetAutoSwitchSource(agentStore.GetAutoSwitch)
 			codexRemote.Start(ctx)

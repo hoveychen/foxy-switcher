@@ -215,7 +215,33 @@ function UsageBar({
 // cooldown). Fetched on open; silently hidden if the endpoint is unavailable
 // (e.g. an agent-mode proxy that doesn't forward it) so it never breaks the
 // drawer.
-function AttributionSection({ accountId, scopedLabel }: { accountId: number; scopedLabel?: string }) {
+type AttributionWindow = {
+  key: keyof Omit<DeviceShare, "device_id" | "device_name" | "last_used_at">;
+  label: string;
+};
+
+// attributionWindows names the rate-limit windows the breakdown should draw for
+// this account, in the account's own vocabulary. Claude has three fixed ones.
+// Codex only fills two — refresh/usage.go maps its primary/secondary quotas
+// onto five_hour/seven_day and writes 0 for the third — and its window names
+// come from the provider, so they're read off the same bars the usage section
+// renders instead of being hardcoded.
+function attributionWindows(account: Account): AttributionWindow[] {
+  if (account.provider === "codex") {
+    const bars = codexUsageBars(account, t);
+    return (["five_hour", "seven_day"] as const).flatMap((slot) => {
+      const bar = bars.find((b) => b.threshold_slot === slot);
+      return bar ? [{ key: slot, label: bar.label }] : [];
+    });
+  }
+  return [
+    { key: "five_hour", label: t("drawer.usage.5h") },
+    { key: "seven_day", label: t("drawer.usage.7d_opus") },
+    { key: "seven_day_sonnet", label: scopedUsageLabel(account.seven_day_scoped_label) },
+  ];
+}
+
+function AttributionSection({ accountId, windows }: { accountId: number; windows: AttributionWindow[] }) {
   const [attr, setAttr] = useState<AccountAttribution | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -237,12 +263,6 @@ function AttributionSection({ accountId, scopedLabel }: { accountId: number; sco
   }, [accountId]);
 
   if (failed || !attr) return null;
-
-  const windows: { key: keyof Omit<DeviceShare, "device_id" | "device_name" | "last_used_at">; label: string }[] = [
-    { key: "five_hour", label: t("drawer.usage.5h") },
-    { key: "seven_day", label: t("drawer.usage.7d_opus") },
-    { key: "seven_day_sonnet", label: scopedUsageLabel(scopedLabel) },
-  ];
 
   const rows = attr.devices.map((d, i) => ({
     id: d.device_id || `dev-${i}`,
@@ -728,8 +748,10 @@ export function AccountDrawer({
       </div>
       )}
 
-      {account.provider === "claude" && (
-        <AttributionSection accountId={account.id} scopedLabel={account.seven_day_scoped_label} />
+      {/* Subscription providers only: OpenRouter/DeepSeek are pay-as-you-go,
+          with no windows to split across devices. */}
+      {(account.provider === "claude" || account.provider === "codex") && (
+        <AttributionSection accountId={account.id} windows={attributionWindows(account)} />
       )}
 
       <div className="drawer-section">
