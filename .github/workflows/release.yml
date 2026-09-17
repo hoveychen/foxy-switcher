@@ -328,12 +328,30 @@ jobs:
           }
           Remove-Item $pfx
 
+      # Same gh-CLI upload the linux legs use, and for the same reason: the
+      # macOS leg failed softprops/action-gh-release on both v1.3.3 ("Error
+      # creating asset temp dir") and v1.3.4 ("Error saving asset"), each time
+      # after the bundle was already built, signed and notarized. `shell: bash`
+      # so the glob expands the same way on the Windows runner; an unmatched
+      # glob leaves the literal pattern behind, which the guard below turns
+      # into a failure (what fail_on_unmatched_files used to do).
       - name: Publish to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ matrix.artifact_glob }}
-          draft: false
-          fail_on_unmatched_files: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_GLOB: ${{ matrix.artifact_glob }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          files=( $ARTIFACT_GLOB )
+          for f in "${files[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: no artifact matched '$ARTIFACT_GLOB'" >&2
+              exit 1
+            fi
+          done
+          gh release upload "$REF_NAME" "${files[@]}" --clobber
+          gh release view "$REF_NAME" --json assets --jq '.assets[] | .name + " " + (.size|tostring)'
 
   # Linux ships the standalone Go binary instead of a Tauri bundle. The same
   # executable runs the TUI by default and the desktop-callable daemon under
