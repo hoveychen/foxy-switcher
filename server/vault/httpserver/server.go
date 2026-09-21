@@ -12,11 +12,14 @@ package httpserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/selector"
@@ -338,7 +341,14 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accounts": accs})
+	// Conditional, because every agent in the field re-reads this on its 5s
+	// reconcile tick and the body is dominated by OAuth blobs that change far
+	// more slowly than that. On 2026-09-21 this one route accounted for 273MB
+	// of egress in 45 minutes (8095 requests × 33KB) while the pool itself
+	// barely moved. The ETag covers the bytes we would have sent — including
+	// the per-device provider filter above — so a 304 can never hide a change
+	// this device was entitled to see.
+	writeJSONETag(w, r, map[string]any{"accounts": accs})
 }
 
 // filterAllowedProviders drops rows for providers the calling device's
@@ -634,6 +644,49 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeJSONETag is writeJSON plus a strong ETag derived from the exact bytes
+// being sent, answering 304 when the caller's If-None-Match already names that
+// version. Reach for it on routes a fleet of agents polls on a timer; plain
+// writeJSON stays the default everywhere else (hashing a body nobody re-reads
+// is just work).
+func writeJSONETag(w http.ResponseWriter, r *http.Request, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	sum := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(sum[:]) + `"`
+	w.Header().Set("ETag", etag)
+	// Revalidate every time — the payload carries live OAuth tokens, so a
+	// stale copy served without asking us would be a correctness bug, not a
+	// saved round trip. We want the request, just not the body.
+	w.Header().Set("Cache-Control", "no-cache")
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// etagMatches implements RFC 9110 If-None-Match evaluation for our one strong
+// tag: a comma-separated candidate list, `*`, and the `W/` prefix an
+// intermediary may have added.
+func etagMatches(header, etag string) bool {
+	if header == "" {
+		return false
+	}
+	for _, cand := range strings.Split(header, ",") {
+		cand = strings.TrimSpace(cand)
+		if cand == "*" || cand == etag || strings.TrimPrefix(cand, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // writeError emits a JSON body so the agent can decode `{"error":"…"}`

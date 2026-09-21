@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/selector"
@@ -27,6 +28,20 @@ type Client struct {
 	baseURL string
 	hc      *http.Client
 	token   string // bearer token; empty until SetToken
+
+	// accounts caches the last /agent/v1/accounts body so the reconcile
+	// tick can revalidate instead of re-downloading it. See getConditional.
+	accounts condCache
+}
+
+// condCache is one route's last 200 response, kept so the next poll can ask
+// "still this?" rather than pull the payload down again. The body is stored
+// raw and re-decoded per hit: callers own the structs we hand them and may
+// mutate them, which would poison a cache of decoded values.
+type condCache struct {
+	mu   sync.Mutex
+	etag string
+	body []byte
 }
 
 // New constructs a Client. baseURL must include scheme and host (e.g.
@@ -55,7 +70,7 @@ func (c *Client) ListAccounts(ctx context.Context) ([]vault.Account, error) {
 	var out struct {
 		Accounts []vault.Account `json:"accounts"`
 	}
-	if err := c.get(ctx, "/agent/v1/accounts", &out); err != nil {
+	if err := c.getConditional(ctx, "/agent/v1/accounts", &c.accounts, &out); err != nil {
 		return nil, err
 	}
 	return out.Accounts, nil
@@ -264,6 +279,55 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// getConditional is get plus an If-None-Match round trip against cache. A 304
+// decodes the cached bytes; a 200 replaces them. Only worth wiring on a route
+// the agent re-reads on a timer — the vault must answer it with an ETag
+// (writeJSONETag) or every request simply falls through to the 200 path.
+//
+// A 304 we can't satisfy from cache (empty body — a vault that tagged a
+// response we never stored, or a cache cleared underneath us) drops the tag
+// and errors out, so the next tick asks unconditionally rather than looping on
+// a hit it cannot decode.
+func (c *Client) getConditional(ctx context.Context, path string, cache *condCache, out any) error {
+	cache.mu.Lock()
+	etag, body := cache.etag, cache.body
+	cache.mu.Unlock()
+
+	resp, err := c.do(ctx, http.MethodGet, path, nil, func(req *http.Request) {
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
+	})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNotModified:
+		if len(body) == 0 {
+			cache.mu.Lock()
+			cache.etag, cache.body = "", nil
+			cache.mu.Unlock()
+			return fmt.Errorf("vault 304 for %s with no cached body", path)
+		}
+		return json.Unmarshal(body, out)
+	case http.StatusOK:
+		fresh, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		if tag := resp.Header.Get("ETag"); tag != "" {
+			cache.mu.Lock()
+			cache.etag, cache.body = tag, fresh
+			cache.mu.Unlock()
+		}
+		return json.Unmarshal(fresh, out)
+	default:
+		return decodeError(resp)
+	}
+}
+
 func (c *Client) postNoBody(ctx context.Context, path string) error {
 	resp, err := c.do(ctx, http.MethodPost, path, nil)
 	if err != nil {
@@ -291,7 +355,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body, out any) error
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+func (c *Client) do(ctx context.Context, method, path string, body any, opts ...func(*http.Request)) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -309,6 +373,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	for _, o := range opts {
+		o(req)
 	}
 	return c.hc.Do(req)
 }
