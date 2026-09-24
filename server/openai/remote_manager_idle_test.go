@@ -138,3 +138,53 @@ func TestRemoteManagerLostLeaseClearsStickiness(t *testing.T) {
 			m.ManagedAccountID(), m.currentLeaseID)
 	}
 }
+
+// An idle device must still honour an explicit "use now": the click is the
+// activity signal. Before, the idle gate returned before the pick ever saw the
+// pin, so selecting a Codex account on a machine that hadn't run codex for 10
+// minutes silently did nothing.
+func TestRemoteManagerExplicitSelectWakesIdleDevice(t *testing.T) {
+	ctx := context.Background()
+	m, st, managed := newIdleTestManager(t)
+	m.activityProbe = func() time.Duration { return 23 * time.Hour }
+
+	if err := st.MarkForNextPick(ctx, managed.ID, "device-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reconcile(ctx); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if m.ManagedAccountID() != 0 {
+		t.Fatalf("idle tick should still park, got managed=%d", m.ManagedAccountID())
+	}
+
+	if err := m.NoteExplicitSelect(ctx, managed.ID); err != nil {
+		t.Fatalf("NoteExplicitSelect: %v", err)
+	}
+	if !st.IsAccountLeased(managed.ID) || m.ManagedAccountID() != managed.ID {
+		t.Fatalf("select on idle device did not inject: leased=%v managed=%d",
+			st.IsAccountLeased(managed.ID), m.ManagedAccountID())
+	}
+	raw, _, err := m.storage.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := ParseAuthFile(raw); got.Tokens.AccountID != "pooled" {
+		t.Fatalf("auth file not swapped to the pooled account: %q", got.Tokens.AccountID)
+	}
+}
+
+// Picking a non-Codex account must not wake the Codex side into taking a slot.
+func TestRemoteManagerExplicitSelectIgnoresOtherProviders(t *testing.T) {
+	ctx := context.Background()
+	m, st, managed := newIdleTestManager(t)
+	m.activityProbe = func() time.Duration { return 23 * time.Hour }
+
+	if err := m.NoteExplicitSelect(ctx, managed.ID+1000); err != nil {
+		t.Fatalf("NoteExplicitSelect: %v", err)
+	}
+	if st.IsAccountLeased(managed.ID) || m.ManagedAccountID() != 0 {
+		t.Fatalf("non-Codex select took a Codex slot: leased=%v managed=%d",
+			st.IsAccountLeased(managed.ID), m.ManagedAccountID())
+	}
+}

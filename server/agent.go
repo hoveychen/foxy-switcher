@@ -242,10 +242,10 @@ func runAgent(ctx context.Context, opts daemonOpts, ready func(port int)) error 
 		"GET /api/activity/stream",
 		"GET /api/devices",
 		"POST /api/accounts/{id}/refresh",
-		"POST /api/accounts/{id}/select",
 	} {
 		mux.Handle(path, proxy)
 	}
+	mux.Handle("POST /api/accounts/{id}/select", selectThenReconcileCodex(proxy, codexRemote, logger))
 
 	// Admin write routes are 405'd in agent mode — the vault is the
 	// single source of truth for account CRUD, and a remote agent is
@@ -391,6 +391,44 @@ func newVaultAPIProxy(target *url.URL, token string) *httputil.ReverseProxy {
 	}
 	return proxy
 }
+
+// selectThenReconcileCodex forwards "use now" to the vault (which only records
+// a pin) and, once the vault accepts it, tells the local Codex manager so the
+// pin is actually consumed. Without this an idle device — no Codex rollout in
+// the last 10 min — skipped the pick on every tick and the click did nothing.
+// The reconcile runs before the response returns so the frontend's follow-up
+// refresh already sees the new in-use account. A reconcile failure is logged,
+// not surfaced: the vault accepted the pin and the next tick retries.
+func selectThenReconcileCodex(proxy http.Handler, codex *openai.RemoteManager, logger *log.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		proxy.ServeHTTP(rec, r)
+		if codex == nil || rec.status < 200 || rec.status >= 300 {
+			return
+		}
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+		defer cancel()
+		if err := codex.NoteExplicitSelect(ctx, id); err != nil {
+			logger.Printf("[codex-agent] reconcile after select %d: %v", id, err)
+		}
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 // patchDashboardInUseSelf returns a ReverseProxy.ModifyResponse hook
 // that reconciles the agent's own entry in /api/dashboard's
