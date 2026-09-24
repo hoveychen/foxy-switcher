@@ -47,6 +47,9 @@ type RemoteManager struct {
 	mu               sync.Mutex
 	currentAccountID int64
 	currentLeaseID   string
+	// selectedAt is when the user last clicked "use now" on a Codex account;
+	// idleFor treats it as local activity.
+	selectedAt       time.Time
 	restoreOnQuit    bool
 	autoSwitchSource func(context.Context) (vault.AutoSwitch, error)
 	stop             chan struct{}
@@ -128,6 +131,36 @@ func (m *RemoteManager) reconcileLogged(ctx context.Context) {
 	if err := m.Reconcile(ctx); err != nil {
 		m.logger.Printf("[codex-agent] reconcile: %v", err)
 	}
+}
+
+// NoteExplicitSelect is called after the vault accepted a "use now" for
+// accountID. If it's a Codex account, the device counts as active from now on
+// (so the idle gate in Reconcile no longer skips the pin) and reconciles
+// immediately instead of waiting for the next tick. Other providers are
+// ignored — picking a Claude account must not make this device take a Codex
+// slot.
+func (m *RemoteManager) NoteExplicitSelect(ctx context.Context, accountID int64) error {
+	if m == nil {
+		return nil
+	}
+	accounts, err := m.svc.ListAccounts(ctx)
+	if err != nil {
+		return err
+	}
+	isCodex := false
+	for i := range accounts {
+		if accounts[i].ID == accountID {
+			isCodex = accounts[i].Provider == store.ProviderCodex
+			break
+		}
+	}
+	if !isCodex {
+		return nil
+	}
+	m.mu.Lock()
+	m.selectedAt = time.Now()
+	m.mu.Unlock()
+	return m.Reconcile(ctx)
 }
 
 func (m *RemoteManager) Reconcile(ctx context.Context) error {
