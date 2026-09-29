@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hoveychen/foxy-switcher/server/selector"
@@ -44,8 +45,11 @@ type RemoteManager struct {
 	// activityProbe, when non-nil, replaces the filesystem probe — a test seam.
 	activityProbe func() time.Duration
 
-	mu               sync.Mutex
-	currentAccountID int64
+	mu sync.Mutex
+	// currentAccountID is written under mu but read lock-free by
+	// ManagedAccountID: Reconcile holds mu across several vault round trips
+	// (30s timeout each), and /api/cred/status must not stall behind them.
+	currentAccountID atomic.Int64
 	currentLeaseID   string
 	// selectedAt is when the user last clicked "use now" on a Codex account;
 	// idleFor treats it as local activity.
@@ -195,7 +199,7 @@ func (m *RemoteManager) Reconcile(ctx context.Context) error {
 	} else if value, autoErr := m.svc.GetAutoSwitch(ctx); autoErr == nil {
 		auto = value
 	}
-	selected, err := chooseStickyCodex(accounts, m.currentAccountID, m.deviceID, auto.Enabled, time.Now())
+	selected, err := chooseStickyCodex(accounts, m.currentAccountID.Load(), m.deviceID, auto.Enabled, time.Now())
 	if err == nil && selected == nil {
 		selected, err = m.svc.PickProviderForDevice(ctx, time.Now(), m.deviceID, store.ProviderCodex)
 	}
@@ -235,7 +239,7 @@ func (m *RemoteManager) Reconcile(ctx context.Context) error {
 	if have, parseErr := ParseAuthFile(current); parseErr == nil &&
 		have.Tokens.AccountID == want.Tokens.AccountID &&
 		have.Tokens.AccessToken == want.Tokens.AccessToken {
-		m.currentAccountID = selected.ID
+		m.currentAccountID.Store(selected.ID)
 		m.currentLeaseID = lease.ID
 		return nil
 	}
@@ -252,14 +256,14 @@ func (m *RemoteManager) Reconcile(ctx context.Context) error {
 	if err := m.svc.MarkUsed(ctx, selected.ID); err != nil {
 		return err
 	}
-	m.currentAccountID = selected.ID
+	m.currentAccountID.Store(selected.ID)
 	m.currentLeaseID = lease.ID
 	return nil
 }
 
 func (m *RemoteManager) ensureLease(ctx context.Context, accountID int64, idleFor time.Duration) (vault.Lease, error) {
 	active := idleFor < m.idleThreshold
-	if m.currentLeaseID != "" && m.currentAccountID == accountID {
+	if m.currentLeaseID != "" && m.currentAccountID.Load() == accountID {
 		// Renew the held lease, reporting idleFor so the vault can tell a
 		// live-but-idle lease apart from one in active use. An idle holder still
 		// keeps its slot (zero churn) until the vault actually reclaims it.
@@ -289,7 +293,7 @@ func (m *RemoteManager) ensureLease(ctx context.Context, accountID int64, idleFo
 			// the next tick re-picks a free account via PickProviderForDevice
 			// instead of looping forever on this now-foreign account.
 			m.currentLeaseID = ""
-			m.currentAccountID = 0
+			m.currentAccountID.Store(0)
 		}
 		return vault.Lease{}, err
 	}
@@ -343,9 +347,7 @@ func (m *RemoteManager) ManagedAccountID() int64 {
 	if m == nil {
 		return 0
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.currentAccountID
+	return m.currentAccountID.Load()
 }
 
 func (m *RemoteManager) Restore() error {
@@ -376,7 +378,7 @@ func (m *RemoteManager) releaseLeaseLocked(ctx context.Context) error {
 			return err
 		}
 	}
-	m.currentAccountID = 0
+	m.currentAccountID.Store(0)
 	m.currentLeaseID = ""
 	return nil
 }
