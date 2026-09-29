@@ -482,6 +482,87 @@ func TestUsagePollerHonorsRetryAfter(t *testing.T) {
 	}
 }
 
+// TestUsagePollerAnthropicFloor pins the per-account floor on
+// /api/oauth/usage: after a successful call the same Anthropic account is not
+// asked again on the next ticks, however short the configured interval, while
+// a Codex account on the same poller is still read every tick.
+func TestUsagePollerAnthropicFloor(t *testing.T) {
+	ctx := context.Background()
+
+	var claudeHits, codexHits int32
+	claudeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/oauth/usage" {
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		atomic.AddInt32(&claudeHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"five_hour": map[string]any{"utilization": 10.0},
+		})
+	}))
+	defer claudeSrv.Close()
+	prevURL := anthropic.BaseURL
+	anthropic.BaseURL = claudeSrv.URL
+	defer func() { anthropic.BaseURL = prevURL }()
+
+	codexSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&codexHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"plan_type": "plus",
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{"used_percent": 5.0, "reset_at": time.Now().Add(time.Hour).Unix()},
+			},
+		})
+	}))
+	defer codexSrv.Close()
+	prevCodexURL := openai.UsageURL
+	openai.UsageURL = codexSrv.URL
+	defer func() { openai.UsageURL = prevCodexURL }()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	claude := &store.Account{
+		Name: "claude", Email: "floor@example.com", AccessToken: "live-access",
+		RefreshToken: "live-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+		Status: "active", AccountUUID: "u-floor", Plan: "Claude Max 5x",
+		SubscriptionType: "max", RateLimitTier: "default_claude_max_5x",
+	}
+	codex := &store.Account{
+		Provider: store.ProviderCodex, Name: "codex", AccessToken: "codex-access",
+		RefreshToken: "codex-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+		Status: "active", AccountUUID: "codex-floor", Plan: "Codex Plus", SubscriptionType: "plus",
+	}
+	for _, a := range []*store.Account{claude, codex} {
+		if err := st.Upsert(ctx, a); err != nil {
+			t.Fatalf("upsert %s: %v", a.Name, err)
+		}
+	}
+
+	p := NewUsagePoller(st, nil)
+	for range 3 {
+		p.tick(ctx)
+	}
+	if got := atomic.LoadInt32(&claudeHits); got != 1 {
+		t.Fatalf("Anthropic usage hits over 3 back-to-back ticks = %d (want 1 — the floor must hold the account)", got)
+	}
+	if got := atomic.LoadInt32(&codexHits); got != 3 {
+		t.Fatalf("Codex usage hits over 3 ticks = %d (want 3 — the floor is Anthropic-only)", got)
+	}
+
+	// Once the floor has passed the account is polled again.
+	p.clearBackoff(claude.ID)
+	p.tick(ctx)
+	if got := atomic.LoadInt32(&claudeHits); got != 2 {
+		t.Fatalf("after the floor passed, Anthropic usage hits = %d (want 2)", got)
+	}
+}
+
 // TestUsagePollerEmitsBackoffEvent pins the user-facing surface of the 429
 // path: the Activity page must see one info-level "usage.backoff" event per
 // backoff window (not the alarming "error.usage" event, since 429 is a known

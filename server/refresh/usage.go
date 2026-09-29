@@ -20,6 +20,22 @@ import (
 // boundaries — the bars never look stale to a human.
 const UsageInterval = 5 * time.Minute
 
+// anthropicUsageFloor is the minimum gap between two /api/oauth/usage calls
+// for the same Anthropic account, whatever Settings.UsagePollIntervalSec says.
+// Anthropic tolerates roughly one call per ~2 minutes per token: at the 60s
+// default every Claude account in the vault got a 429 on every other tick
+// (usage_history topped out at ~780 successes/day against 1440 for Codex on
+// the same ticker). A lessee's Claude Code also reads usage with the same
+// bearer, so the vault must leave it headroom rather than use up the budget.
+// Codex's endpoint keeps up at 60s and is not subject to this floor.
+const anthropicUsageFloor = 3 * time.Minute
+
+// usageFloorSlack is shaved off the floor so an account comes due on the tick
+// that lands at ~floor after its last call, instead of just missing it (where
+// in a tick an account gets polled drifts with its predecessors' latency) and
+// waiting a whole extra interval.
+const usageFloorSlack = 10 * time.Second
+
 // UsagePoller fetches /api/oauth/usage for every account on its tick
 // and writes the snapshot to the store. It runs alongside the token-refresh
 // Scheduler but is intentionally a separate goroutine: token rotation has a
@@ -114,8 +130,8 @@ func (p *UsagePoller) markBackoff(id int64, d time.Duration) {
 	p.nextAllowedAt[id] = time.Now().Add(d)
 }
 
-// clearBackoff drops any pending backoff for `id`. Called on a successful
-// poll (window naturally rolled over) and exposed for tests.
+// clearBackoff drops any pending backoff for `id`. Tests use it to roll the
+// clock past a backoff window.
 func (p *UsagePoller) clearBackoff(id int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -248,12 +264,13 @@ func (p *UsagePoller) tick(ctx context.Context) {
 				// canPoll guard above will skip this account on every
 				// subsequent tick until the window passes, so this info
 				// event fires exactly once per backoff period.
-				p.markBackoff(a.ID, rl.RetryAfter)
+				pause := max(rl.RetryAfter, anthropicUsageFloor)
+				p.markBackoff(a.ID, pause)
 				p.logger.Printf("[usage] account %d (%s): rate limited, paused for %s",
-					a.ID, a.Name, rl.RetryAfter)
+					a.ID, a.Name, pause)
 				p.Bus.EmitInfo(activity.TypeUsageBackoff, a.ID,
 					fmt.Sprintf("Usage poll for %s paused for %s (rate limited)",
-						a.Name, rl.RetryAfter))
+						a.Name, pause))
 				continue
 			}
 			var od *anthropic.OrgDisabledError
@@ -278,9 +295,9 @@ func (p *UsagePoller) tick(ctx context.Context) {
 				fmt.Sprintf("Usage poll for %s failed: %v", a.Name, err))
 			continue
 		}
-		// Successful poll — drop any stale backoff so a recovered account
-		// resumes its normal cadence immediately.
-		p.clearBackoff(a.ID)
+		// Successful poll — replace any stale 429 backoff with the per-account
+		// floor, so a recovered account resumes at the pace Anthropic tolerates.
+		p.markBackoff(a.ID, anthropicUsageFloor-usageFloorSlack)
 		// Auto-heal: a poll succeeding on a previously org-disabled account means
 		// the org re-enabled OAuth, so restore it to active and let routing resume.
 		if a.Status == store.StatusOrgDisabled {
