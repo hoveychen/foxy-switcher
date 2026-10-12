@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hoveychen/foxy-switcher/server/fileswap"
 	"github.com/hoveychen/foxy-switcher/server/selector"
 	"github.com/hoveychen/foxy-switcher/server/store"
 )
@@ -297,5 +298,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	// auth.json may be a single-file bind mount shared with other containers;
+	// fileswap rewrites it in place when rename is refused.
+	return fileswap.Replace(path, tmpPath, data, mode)
 }
