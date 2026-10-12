@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/hoveychen/foxy-switcher/server/fileswap"
 )
 
 // On non-macOS platforms Claude Code falls back to plaintext storage:
@@ -60,14 +62,13 @@ func (b *fileBackend) WriteOAuthBlob(blob []byte) error {
 	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
 	}
-	return os.Rename(tmp, b.credentialsPath)
+	// fileswap, not a bare rename: the path may be a single-file bind mount
+	// shared with other containers.
+	return fileswap.Replace(b.credentialsPath, tmp, blob, 0o600)
 }
 
 func (b *fileBackend) DeleteOAuthBlob() error {
-	if err := os.Remove(b.credentialsPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+	return fileswap.Remove(b.credentialsPath)
 }
 
 func (b *fileBackend) ReadManagedAPIKey() (string, bool, error) {
