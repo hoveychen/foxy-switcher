@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"filippo.io/age"
+	"github.com/hoveychen/foxy-switcher/server/fileswap"
 	keyring "github.com/zalando/go-keyring"
 )
 
@@ -61,14 +62,9 @@ func (s *fileCredentialStorage) Load() ([]byte, bool, error) {
 	return raw, err == nil, err
 }
 func (s *fileCredentialStorage) Save(raw []byte) error { return atomicWrite(s.authPath, raw, 0o600) }
-func (s *fileCredentialStorage) Delete() error {
-	if err := os.Remove(s.authPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-func (s *fileCredentialStorage) BackupPath() string { return s.authPath + ".foxy-backup" }
-func (s *fileCredentialStorage) Kind() string       { return "file" }
+func (s *fileCredentialStorage) Delete() error         { return fileswap.Remove(s.authPath) }
+func (s *fileCredentialStorage) BackupPath() string    { return s.authPath + ".foxy-backup" }
+func (s *fileCredentialStorage) Kind() string          { return "file" }
 
 type directKeyringStorage struct {
 	codexHome string
