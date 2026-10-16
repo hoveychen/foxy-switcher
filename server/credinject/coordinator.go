@@ -504,6 +504,24 @@ func (c *Coordinator) pinnedForMe(a vault.Account) bool {
 	return a.LastUsedAt == 0
 }
 
+// pinnedToMe reports whether an eligible Claude account carries an explicit
+// device-scoped pin naming this device. Unlike pinnedForMe it ignores the
+// legacy global sentinel (last_used_at == 0): every never-used account looks
+// like that, and it must not wake every idle agent in the fleet.
+func (c *Coordinator) pinnedToMe(ctx context.Context) bool {
+	accs, err := c.svc.ListAccounts(ctx)
+	if err != nil {
+		return false
+	}
+	now := c.clock()
+	for _, a := range accs {
+		if a.Provider == store.ProviderClaude && a.PinnedDeviceID == c.deviceID && selector.IsEligible(a, now) {
+			return true
+		}
+	}
+	return false
+}
+
 // chooseManual implements the auto-switch=off path. Order:
 //  1. Honour an explicit pin for this device (or a legacy global pin) —
 //     that's how the UI's "Use now" button reaches us, and a manual user
@@ -567,7 +585,15 @@ func (c *Coordinator) reconcileWithIdle(ctx context.Context, idleFor time.Durati
 	haveLease := c.currentLeaseID != ""
 	c.mu.Unlock()
 	if !active && !haveLease {
-		return
+		// Exception: an admin's "Use now" pin naming this device is an explicit
+		// request to switch now, not to wait for the user's next Claude Code
+		// turn — which may never come through foxy if a native login is still
+		// working. Treat this tick as active; the pin is cleared once used
+		// (MarkUsed), so later ticks fall back to the ordinary idle gate.
+		if !c.pinnedToMe(ctx) {
+			return
+		}
+		idleFor = 0
 	}
 
 	a, err := c.choose(ctx)
