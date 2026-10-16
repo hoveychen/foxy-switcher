@@ -178,3 +178,60 @@ func TestReconcile_ReclaimedIdleHolderParksThenReacquires(t *testing.T) {
 		t.Fatalf("re-acquired account changed unexpectedly: %d", c.CurrentAccountID())
 	}
 }
+
+// TestReconcile_IdleAgentHonoursPinForThisDevice: an admin's "Use now" pin
+// naming this device must take effect even while the agent is idle. A user
+// who still has a working native Claude Code login may never produce the
+// fresh transcript that would otherwise un-park the agent, so without this the
+// pin would sit unconsumed forever.
+func TestReconcile_IdleAgentHonoursPinForThisDevice(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	ctx := context.Background()
+	seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	beta := seedActive(t, st, "beta", "sk-ant-oat01-beta")
+	if err := st.MarkForNextPick(ctx, beta, c.DeviceID()); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	c.activityProbe = idleProbe(c)
+
+	c.reconcile(ctx)
+
+	if c.CurrentAccountID() != beta {
+		t.Fatalf("idle agent must inject the pinned account: got %d want %d", c.CurrentAccountID(), beta)
+	}
+	if !be.hasOAuth {
+		t.Fatal("idle agent with a pin must write the keychain")
+	}
+	if c.currentLeaseID == "" {
+		t.Fatal("idle agent with a pin must acquire a lease")
+	}
+
+	// The pin is consumed by the inject, so the agent is back under the
+	// ordinary idle rules: once reclaimed it parks instead of re-acquiring.
+	if err := st.ReleaseLease(ctx, c.currentLeaseID); err != nil {
+		t.Fatalf("simulate reclaim: %v", err)
+	}
+	c.reconcile(ctx)
+	if c.currentLeaseID != "" {
+		t.Fatalf("consumed pin must not keep an idle agent acquiring, got lease %q", c.currentLeaseID)
+	}
+}
+
+// TestReconcile_IdleAgentIgnoresOtherDevicesPin: a pin scoped to another
+// device must not wake this idle agent.
+func TestReconcile_IdleAgentIgnoresOtherDevicesPin(t *testing.T) {
+	c, be, st, _ := newCoord(t)
+	ctx := context.Background()
+	id := seedActive(t, st, "alpha", "sk-ant-oat01-alpha")
+	if err := st.MarkForNextPick(ctx, id, "other-dev"); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	c.activityProbe = idleProbe(c)
+
+	c.reconcile(ctx)
+
+	if c.CurrentAccountID() != 0 || be.hasOAuth || c.currentLeaseID != "" {
+		t.Fatalf("another device's pin must leave this idle agent parked: current=%d oauth=%v lease=%q",
+			c.CurrentAccountID(), be.hasOAuth, c.currentLeaseID)
+	}
+}
