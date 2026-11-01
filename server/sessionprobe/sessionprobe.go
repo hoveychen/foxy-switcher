@@ -26,6 +26,14 @@ import (
 func LatestMTime(dir, ext string) (time.Time, bool) {
 	var newest time.Time
 	found := false
+	// WalkDir Lstats its root, so a symlinked root is reported as a plain
+	// entry and never descended. Fleet Cloud symlinks ~/.claude/projects and
+	// ~/.codex/sessions onto its state volume; without resolving here every
+	// probe there finds nothing, reports active forever, and the vault can
+	// never reclaim that device's idle lease.
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// Unreadable subtree — skip it, keep walking the rest.
