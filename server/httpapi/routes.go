@@ -1180,11 +1180,15 @@ type DashboardTrendBucket struct {
 	SevenDayUsed     float64 `json:"seven_day_used"`
 	SevenDayCapacity float64 `json:"seven_day_capacity"`
 	SevenDayPct      float64 `json:"seven_day_pct"`
-	// Account counts at the bucket's end (now, for the current hour):
-	// AvailableCount is active accounts not cooling on their latest sample,
-	// LeasedCount is accounts held by a lease at that instant.
-	AvailableCount int `json:"available_count"`
-	LeasedCount    int `json:"leased_count"`
+	// Account counts at the bucket's end (now, for the current hour), split
+	// by the two lease-managed providers: *Available is active accounts not
+	// cooling on their latest sample, *Leased is accounts held by a lease at
+	// that instant. OpenRouter / DeepSeek are shared, never leased, and stay
+	// out of both.
+	ClaudeAvailable int `json:"claude_available_count"`
+	ClaudeLeased    int `json:"claude_leased_count"`
+	CodexAvailable  int `json:"codex_available_count"`
+	CodexLeased     int `json:"codex_leased_count"`
 }
 
 // planWeight returns this account's Pro-equivalent (5h, 7d) weights.
@@ -1371,7 +1375,8 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	// no history, so the account set is today's active accounts; cooling is
 	// judged on each account's latest sample at or before the bucket's end,
 	// against its current thresholds. Before an account's first sample in
-	// the window, its current utilization stands in.
+	// the window, its current utilization stands in. Only Claude and Codex
+	// are counted: they're the exclusive, lease-managed providers.
 	segs, err := s.Store.LeaseEventsSince(ctx, since)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1393,15 +1398,33 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Empty provider = legacy row predating the column = Claude.
+	providerOf := make(map[int64]string, len(accs))
+	for _, a := range accs {
+		p := a.Provider
+		if p == "" {
+			p = store.ProviderClaude
+		}
+		providerOf[a.ID] = p
+	}
+	type counts struct{ claude, codex int }
+	bump := func(c *counts, accID int64) {
+		switch providerOf[accID] {
+		case store.ProviderClaude:
+			c.claude++
+		case store.ProviderCodex:
+			c.codex++
+		}
+	}
 	nowMs := now.UnixMilli()
 	rowIdx := 0
-	availableAt := func(at int64) int {
+	availableAt := func(at int64) counts {
 		for rowIdx < len(rows) && rows[rowIdx].Timestamp <= at {
 			r := rows[rowIdx]
 			latest[r.AccountID] = sample{r.FiveHourUtil, r.SevenDayUtil}
 			rowIdx++
 		}
-		n := 0
+		var c counts
 		for _, a := range accs {
 			if a.Status != "active" {
 				continue
@@ -1410,18 +1433,22 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			if l.five >= a.FiveHourThreshold || l.seven >= a.SevenDayThreshold {
 				continue
 			}
-			n++
+			bump(&c, a.ID)
 		}
-		return n
+		return c
 	}
-	leasedAt := func(at int64) int {
+	leasedAt := func(at int64) counts {
 		held := make(map[int64]struct{})
 		for _, e := range segs {
 			if e.StartedAt <= at && (e.EndedAt == 0 || e.EndedAt > at) {
 				held[e.AccountID] = struct{}{}
 			}
 		}
-		return len(held)
+		var c counts
+		for id := range held {
+			bump(&c, id)
+		}
+		return c
 	}
 
 	trend := make([]DashboardTrendBucket, buckets)
@@ -1430,6 +1457,7 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		if at > nowMs {
 			at = nowMs
 		}
+		avail, leased := availableAt(at), leasedAt(at)
 		var used5h, used7d float64
 		for accID, p := range peakPerAccount[i] {
 			w := accountWeights[accID]
@@ -1464,8 +1492,10 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			SevenDayUsed:     used7d,
 			SevenDayCapacity: cap7d,
 			SevenDayPct:      pct7d,
-			AvailableCount:   availableAt(at),
-			LeasedCount:      leasedAt(at),
+			ClaudeAvailable:  avail.claude,
+			ClaudeLeased:     leased.claude,
+			CodexAvailable:   avail.codex,
+			CodexLeased:      leased.codex,
 		}
 	}
 	writeJSON(w, http.StatusOK, DashboardResponse{KPIs: kpis, Trend: trend})
