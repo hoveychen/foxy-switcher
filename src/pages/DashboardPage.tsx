@@ -321,7 +321,16 @@ export function DashboardPage({
                 </h3>
                 <span className="text-meta">{t("dashboard.section.utilization_sub")}</span>
               </div>
-              <UsageTrendChart trend={trend} />
+              {hasCodexTrend(trend) && (
+                <div className="trend-chart-title text-meta">Claude</div>
+              )}
+              <UsageTrendChart trend={trend} provider="claude" />
+              {hasCodexTrend(trend) && (
+                <>
+                  <div className="trend-chart-title text-meta">Codex</div>
+                  <UsageTrendChart trend={trend} provider="codex" />
+                </>
+              )}
             </section>
 
             <section className="dash-section">
@@ -621,31 +630,45 @@ function StaleDot() {
   );
 }
 
-// UsageTrendChart plots the pool's weighted utilization over 24 hours: one
-// line for 5h and one for 7d, where each bucket's value is the
-// Pro-equivalent used divided by Pro-equivalent capacity. Mirrors the 5h/7d
-// KPI cards above so the eye can connect the current snapshot to its
-// history. Four lines on a right-hand count axis track how many Claude and
-// Codex accounts were available (dashed) and leased (dotted). Inline SVG keeps
-// the daemon dependency-light.
 // Account-count series on the trend's right-hand axis. Only Claude and Codex
 // are lease-managed; OpenRouter / DeepSeek are shared and never counted.
-// Color tells the provider apart, dash style available (dashed) vs leased
-// (dotted).
-const COUNT_SERIES: {
-  key: string;
-  label: string;
-  cls: string;
-  tip: string;
-  sel: (b: DashboardTrendBucket) => number;
-}[] = [
-  { key: "claude-avail", tip: "trend-tooltip-claude", label: "dashboard.trend.legend.claude_available", cls: "trend-claude trend-available", sel: (b) => b.claude_available_count ?? 0 },
-  { key: "claude-leased", tip: "trend-tooltip-claude", label: "dashboard.trend.legend.claude_leased", cls: "trend-claude trend-leased", sel: (b) => b.claude_leased_count ?? 0 },
-  { key: "codex-avail", tip: "trend-tooltip-codex", label: "dashboard.trend.legend.codex_available", cls: "trend-codex trend-available", sel: (b) => b.codex_available_count ?? 0 },
-  { key: "codex-leased", tip: "trend-tooltip-codex", label: "dashboard.trend.legend.codex_leased", cls: "trend-codex trend-leased", sel: (b) => b.codex_leased_count ?? 0 },
-];
+// Dash style tells available (dashed) from leased (dotted).
+type TrendProvider = "claude" | "codex";
+const COUNT_SERIES: Record<
+  TrendProvider,
+  { key: string; label: string; cls: string; sel: (b: DashboardTrendBucket) => number }[]
+> = {
+  claude: [
+    { key: "avail", label: "dashboard.trend.legend.available", cls: "trend-claude trend-available", sel: (b) => b.claude_available_count ?? 0 },
+    { key: "leased", label: "dashboard.trend.legend.leased", cls: "trend-claude trend-leased", sel: (b) => b.claude_leased_count ?? 0 },
+  ],
+  codex: [
+    { key: "avail", label: "dashboard.trend.legend.available", cls: "trend-codex trend-available", sel: (b) => b.codex_available_count ?? 0 },
+    { key: "leased", label: "dashboard.trend.legend.leased", cls: "trend-codex trend-leased", sel: (b) => b.codex_leased_count ?? 0 },
+  ],
+};
 
-function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
+// hasCodexTrend: whether any bucket saw a Codex account, so a Claude-only
+// pool doesn't get an empty Codex chart.
+function hasCodexTrend(trend: DashboardTrendBucket[]): boolean {
+  return trend.some((b) => COUNT_SERIES.codex.some((c) => c.sel(b) > 0));
+}
+
+// UsageTrendChart plots one provider's 24h trend. For Claude: the pool's
+// weighted utilization, one line for 5h and one for 7d, where each bucket's
+// value is the Pro-equivalent used divided by Pro-equivalent capacity —
+// mirrors the 5h/7d KPI cards above so the eye can connect the current
+// snapshot to its history. Codex has no Pro-equivalent weights, so its chart
+// carries only the account counts. Both draw available (dashed) and leased
+// (dotted) account counts on a right-hand axis. Inline SVG keeps the daemon
+// dependency-light.
+function UsageTrendChart({
+  trend,
+  provider,
+}: {
+  trend: DashboardTrendBucket[];
+  provider: TrendProvider;
+}) {
   const W = 720;
   const H = 200;
   const PAD_LEFT = 32;
@@ -656,11 +679,13 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
+  const showPct = provider === "claude";
+  const series = COUNT_SERIES[provider];
+
   const hasData = trend.some(
     (b) =>
-      (b.five_hour_pct ?? 0) > 0 ||
-      (b.seven_day_pct ?? 0) > 0 ||
-      COUNT_SERIES.some((c) => c.sel(b) > 0),
+      (showPct && ((b.five_hour_pct ?? 0) > 0 || (b.seven_day_pct ?? 0) > 0)) ||
+      series.some((c) => c.sel(b) > 0),
   );
 
   if (trend.length === 0 || !hasData) {
@@ -684,7 +709,7 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   // Account counts share the plot area on their own right-hand scale, rounded
   // up to an even number so the midpoint label is a whole account.
   const maxCount = trend.reduce(
-    (m, b) => Math.max(m, ...COUNT_SERIES.map((c) => c.sel(b))),
+    (m, b) => Math.max(m, ...series.map((c) => c.sel(b))),
     0,
   );
   const countTop = Math.max(2, Math.ceil(maxCount / 2) * 2);
@@ -744,7 +769,8 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   // clip the chart's right edge. Fixed dimensions keep the rect/text aligned
   // without needing post-render measurement.
   const TT_W = 150;
-  const TT_H = 136;
+  const pctRows = showPct ? 2 : 0;
+  const TT_H = 28 + (pctRows + series.length) * 18;
   let tooltip: JSX.Element | null = null;
   if (hoverIdx !== null) {
     const b = trend[hoverIdx];
@@ -764,9 +790,9 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
           y2={H - PAD_BOTTOM}
           className="trend-cursor"
         />
-        <circle cx={cx} cy={y(v5)} r={4} className="trend-dot trend-five" />
-        <circle cx={cx} cy={y(v7)} r={4} className="trend-dot trend-seven" />
-        {COUNT_SERIES.map((c) => (
+        {showPct && <circle cx={cx} cy={y(v5)} r={4} className="trend-dot trend-five" />}
+        {showPct && <circle cx={cx} cy={y(v7)} r={4} className="trend-dot trend-seven" />}
+        {series.map((c) => (
           <circle key={c.key} cx={cx} cy={yc(c.sel(b))} r={4} className={`trend-dot ${c.cls}`} />
         ))}
         <rect
@@ -780,20 +806,29 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
         <text x={tx + 10} y={ty + 18} className="trend-tooltip-time">
           {fmtHour(b.ts)}
         </text>
-        <text x={tx + 10} y={ty + 38} className="trend-tooltip-row trend-tooltip-five">
-          {tf("dashboard.trend.tooltip.row", {
-            label: t("dashboard.trend.legend.5h_pool"),
-            pct: fmtPct(v5),
-          })}
-        </text>
-        <text x={tx + 10} y={ty + 56} className="trend-tooltip-row trend-tooltip-seven">
-          {tf("dashboard.trend.tooltip.row", {
-            label: t("dashboard.trend.legend.7d_pool"),
-            pct: fmtPct(v7),
-          })}
-        </text>
-        {COUNT_SERIES.map((c, k) => (
-          <text key={c.key} x={tx + 10} y={ty + 74 + k * 18} className={`trend-tooltip-row ${c.tip}`}>
+        {showPct && (
+          <text x={tx + 10} y={ty + 38} className="trend-tooltip-row trend-tooltip-five">
+            {tf("dashboard.trend.tooltip.row", {
+              label: t("dashboard.trend.legend.5h_pool"),
+              pct: fmtPct(v5),
+            })}
+          </text>
+        )}
+        {showPct && (
+          <text x={tx + 10} y={ty + 56} className="trend-tooltip-row trend-tooltip-seven">
+            {tf("dashboard.trend.tooltip.row", {
+              label: t("dashboard.trend.legend.7d_pool"),
+              pct: fmtPct(v7),
+            })}
+          </text>
+        )}
+        {series.map((c, k) => (
+          <text
+            key={c.key}
+            x={tx + 10}
+            y={ty + 38 + (pctRows + k) * 18}
+            className={`trend-tooltip-row trend-tooltip-${provider}`}
+          >
             {tf("dashboard.trend.count.row", { label: t(c.label), n: c.sel(b) })}
           </text>
         ))}
@@ -814,10 +849,14 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
       {/* Y-axis labels — anchor to the left padding so 0/50/90/100 line up
           with the gridlines they describe. 90 is colored to match the warn
           band so the user knows which line is the threshold. */}
-      <text x={PAD_LEFT - 6} y={y(100) + 3} textAnchor="end" className="trend-axis trend-axis-y">100</text>
-      <text x={PAD_LEFT - 6} y={y(90) + 3} textAnchor="end" className="trend-axis trend-axis-y trend-axis-warn">90</text>
-      <text x={PAD_LEFT - 6} y={y(50) + 3} textAnchor="end" className="trend-axis trend-axis-y">50</text>
-      <text x={PAD_LEFT - 6} y={y(0) + 3} textAnchor="end" className="trend-axis trend-axis-y">0</text>
+      {showPct && (
+        <>
+          <text x={PAD_LEFT - 6} y={y(100) + 3} textAnchor="end" className="trend-axis trend-axis-y">100</text>
+          <text x={PAD_LEFT - 6} y={y(90) + 3} textAnchor="end" className="trend-axis trend-axis-y trend-axis-warn">90</text>
+          <text x={PAD_LEFT - 6} y={y(50) + 3} textAnchor="end" className="trend-axis trend-axis-y">50</text>
+          <text x={PAD_LEFT - 6} y={y(0) + 3} textAnchor="end" className="trend-axis trend-axis-y">0</text>
+        </>
+      )}
 
       {/* Right-hand axis for the account-count lines. */}
       <text x={W - PAD_RIGHT + 6} y={yc(countTop) + 3} className="trend-axis trend-axis-y">{countTop}</text>
@@ -826,25 +865,30 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
 
       {/* Reference grid at 50% and 90% (the threshold band). */}
       <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(0)} y2={y(0)} className="trend-grid trend-grid-baseline" />
-      <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(50)} y2={y(50)} className="trend-grid" />
-      <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(90)} y2={y(90)} className="trend-grid trend-grid-warn" />
-
-      <path
-        className="trend-line trend-five"
-        d={path((b) => b.five_hour_pct ?? 0)}
-      />
-      <path
-        className="trend-line trend-seven"
-        d={path((b) => b.seven_day_pct ?? 0)}
-      />
-      {COUNT_SERIES.map((c) => (
+      {showPct ? (
+        <>
+          <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(50)} y2={y(50)} className="trend-grid" />
+          <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(90)} y2={y(90)} className="trend-grid trend-grid-warn" />
+          <path
+            className="trend-line trend-five"
+            d={path((b) => b.five_hour_pct ?? 0)}
+          />
+          <path
+            className="trend-line trend-seven"
+            d={path((b) => b.seven_day_pct ?? 0)}
+          />
+        </>
+      ) : (
+        <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={yc(countTop / 2)} y2={yc(countTop / 2)} className="trend-grid" />
+      )}
+      {series.map((c) => (
         <path key={c.key} className={`trend-line ${c.cls}`} d={path(c.sel, yc)} />
       ))}
 
       {/* End-of-series dots — anchor the eye to "what's the current value". */}
-      <circle cx={x(n - 1)} cy={y(cur5)} r={3.5} className="trend-dot trend-five" />
-      <circle cx={x(n - 1)} cy={y(cur7)} r={3.5} className="trend-dot trend-seven" />
-      {COUNT_SERIES.map((c) => (
+      {showPct && <circle cx={x(n - 1)} cy={y(cur5)} r={3.5} className="trend-dot trend-five" />}
+      {showPct && <circle cx={x(n - 1)} cy={y(cur7)} r={3.5} className="trend-dot trend-seven" />}
+      {series.map((c) => (
         <circle key={c.key} cx={x(n - 1)} cy={yc(c.sel(last))} r={3.5} className={`trend-dot ${c.cls}`} />
       ))}
 
@@ -863,28 +907,35 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
       {/* Legend now carries the live "current value" — answers "我池子现在用了多少"
           without needing the user to hover. */}
       <g className="trend-legend">
-        <circle cx={PAD_LEFT + 4} cy={PAD_TOP - 16} r={3} className="trend-dot trend-five" />
-        <text x={PAD_LEFT + 12} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
-          {tf("dashboard.trend.current.row", {
-            label: t("dashboard.trend.legend.5h_pool"),
-            pct: fmtPct(cur5),
-          })}
-        </text>
-        <circle cx={PAD_LEFT + 104} cy={PAD_TOP - 16} r={3} className="trend-dot trend-seven" />
-        <text x={PAD_LEFT + 112} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
-          {tf("dashboard.trend.current.row", {
-            label: t("dashboard.trend.legend.7d_pool"),
-            pct: fmtPct(cur7),
-          })}
-        </text>
-        {COUNT_SERIES.map((c, k) => (
-          <g key={c.key}>
-            <circle cx={PAD_LEFT + 204 + k * 114} cy={PAD_TOP - 16} r={3} className={`trend-dot ${c.cls}`} />
-            <text x={PAD_LEFT + 212 + k * 114} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
-              {tf("dashboard.trend.count.row", { label: t(c.label), n: c.sel(last) })}
+        {showPct && (
+          <>
+            <circle cx={PAD_LEFT + 4} cy={PAD_TOP - 16} r={3} className="trend-dot trend-five" />
+            <text x={PAD_LEFT + 12} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
+              {tf("dashboard.trend.current.row", {
+                label: t("dashboard.trend.legend.5h_pool"),
+                pct: fmtPct(cur5),
+              })}
             </text>
-          </g>
-        ))}
+            <circle cx={PAD_LEFT + 124} cy={PAD_TOP - 16} r={3} className="trend-dot trend-seven" />
+            <text x={PAD_LEFT + 132} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
+              {tf("dashboard.trend.current.row", {
+                label: t("dashboard.trend.legend.7d_pool"),
+                pct: fmtPct(cur7),
+              })}
+            </text>
+          </>
+        )}
+        {series.map((c, k) => {
+          const lx = PAD_LEFT + (showPct ? 244 : 0) + k * 120;
+          return (
+            <g key={c.key}>
+              <circle cx={lx + 4} cy={PAD_TOP - 16} r={3} className={`trend-dot ${c.cls}`} />
+              <text x={lx + 12} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
+                {tf("dashboard.trend.count.row", { label: t(c.label), n: c.sel(last) })}
+              </text>
+            </g>
+          );
+        })}
       </g>
 
       {tooltip}

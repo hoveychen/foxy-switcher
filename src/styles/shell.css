@@ -1732,6 +1732,11 @@
 .trend-dot.trend-claude { fill: var(--ok); }
 .trend-dot.trend-codex  { fill: var(--warn); }
 
+.trend-chart-title {
+  margin: 4px 0 -4px;
+  font-weight: 600;
+}
+
 .trend-axis {
   fill: var(--text-tertiary);
   font-size: 10px;
