@@ -169,3 +169,45 @@ func TestDashboard_BearerCallerSeesMineFlag(t *testing.T) {
 		t.Errorf("other entry: expected mine=false, got %+v", e)
 	}
 }
+
+// TestDashboard_TrendCoolingCountsFull: in the pool trend, a 7d-frozen account
+// fills both windows and a 5h-frozen one fills only 5h, matching the KPI cards.
+func TestDashboard_TrendCoolingCountsFull(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	mk := func(name string) *store.Account {
+		a := &store.Account{Name: name, AccessToken: "at-" + name, RefreshToken: "rt-" + name,
+			ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Status: "active",
+			RateLimitTier: "default_claude_max_5x"}
+		if err := st.Upsert(ctx, a); err != nil {
+			t.Fatalf("upsert %s: %v", name, err)
+		}
+		if err := st.SetThresholds(ctx, a.ID, 90, 90, 90); err != nil {
+			t.Fatalf("thresholds %s: %v", name, err)
+		}
+		return a
+	}
+	seven := mk("seven")
+	five := mk("five")
+	ts := time.Now().UnixMilli()
+	if err := st.AppendUsageHistory(ctx, seven.ID, ts, 10, 92, 0); err != nil {
+		t.Fatalf("history seven: %v", err)
+	}
+	if err := st.AppendUsageHistory(ctx, five.ID, ts, 91, 40, 0); err != nil {
+		t.Fatalf("history five: %v", err)
+	}
+
+	srv := New(st, nil, nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	var got DashboardResponse
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	last := got.Trend[len(got.Trend)-1]
+	// seven: 5h 5 + 7d 5; five: 5h 5 + 7d 0.4*5=2.
+	if last.FiveHourUsed != 10 || last.SevenDayUsed != 7 {
+		t.Errorf("trend used: 5h=%v 7d=%v want 10/7", last.FiveHourUsed, last.SevenDayUsed)
+	}
+}
