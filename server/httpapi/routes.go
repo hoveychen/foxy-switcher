@@ -1350,13 +1350,14 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// accountWeights maps each currently-tracked account to its (5h, 7d)
-	// Pro-equivalent weights. Capacity is the constant sum across accounts
-	// — emitted per-bucket so the chart is self-contained.
-	accountWeights := make(map[int64]struct{ w5h, w7d float64 }, len(accs))
+	// Pro-equivalent weights and current thresholds. Capacity is the constant
+	// sum across accounts — emitted per-bucket so the chart is self-contained.
+	type acctWeight struct{ w5h, w7d, th5h, th7d float64 }
+	accountWeights := make(map[int64]acctWeight, len(accs))
 	var cap5h, cap7d float64
 	for _, a := range accs {
 		w5h, w7d := planWeight(a.Provider, a.RateLimitTier, a.SubscriptionType)
-		accountWeights[a.ID] = struct{ w5h, w7d float64 }{w5h, w7d}
+		accountWeights[a.ID] = acctWeight{w5h, w7d, a.FiveHourThreshold, a.SevenDayThreshold}
 		cap5h += w5h
 		cap7d += w7d
 	}
@@ -1366,8 +1367,18 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		var used5h, used7d float64
 		for accID, p := range peakPerAccount[i] {
 			w := accountWeights[accID]
-			used5h += (p.five / 100) * w.w5h
-			used7d += (p.seven / 100) * w.w7d
+			// A cooling account's quota is unusable, so it counts as full
+			// (mirrors the frontend's windowExhausted): a 7d freeze fills
+			// both windows, a 5h freeze fills only 5h. Uses the account's
+			// current thresholds, which approximates history if they changed.
+			five, seven := p.five, p.seven
+			if w.th7d > 0 && seven >= w.th7d {
+				five, seven = 100, 100
+			} else if w.th5h > 0 && five >= w.th5h {
+				five = 100
+			}
+			used5h += (five / 100) * w.w5h
+			used7d += (seven / 100) * w.w7d
 		}
 		var pct5h, pct7d float64
 		if cap5h > 0 {
