@@ -1180,6 +1180,11 @@ type DashboardTrendBucket struct {
 	SevenDayUsed     float64 `json:"seven_day_used"`
 	SevenDayCapacity float64 `json:"seven_day_capacity"`
 	SevenDayPct      float64 `json:"seven_day_pct"`
+	// Account counts at the bucket's end (now, for the current hour):
+	// AvailableCount is active accounts not cooling on their latest sample,
+	// LeasedCount is accounts held by a lease at that instant.
+	AvailableCount int `json:"available_count"`
+	LeasedCount    int `json:"leased_count"`
 }
 
 // planWeight returns this account's Pro-equivalent (5h, 7d) weights.
@@ -1362,8 +1367,69 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 		cap7d += w7d
 	}
 
+	// Point-in-time account counts per bucket. Status (active / paused) has
+	// no history, so the account set is today's active accounts; cooling is
+	// judged on each account's latest sample at or before the bucket's end,
+	// against its current thresholds. Before an account's first sample in
+	// the window, its current utilization stands in.
+	segs, err := s.Store.LeaseEventsSince(ctx, since)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type sample struct{ five, seven float64 }
+	latest := make(map[int64]sample, len(accs))
+	for _, a := range accs {
+		latest[a.ID] = sample{a.FiveHourUtil, a.SevenDayUtil}
+	}
+	if len(rows) > 0 {
+		// Seed with each account's earliest in-window sample so pre-sample
+		// buckets aren't judged on today's numbers when history exists.
+		seen := make(map[int64]bool)
+		for _, row := range rows {
+			if !seen[row.AccountID] {
+				seen[row.AccountID] = true
+				latest[row.AccountID] = sample{row.FiveHourUtil, row.SevenDayUtil}
+			}
+		}
+	}
+	nowMs := now.UnixMilli()
+	rowIdx := 0
+	availableAt := func(at int64) int {
+		for rowIdx < len(rows) && rows[rowIdx].Timestamp <= at {
+			r := rows[rowIdx]
+			latest[r.AccountID] = sample{r.FiveHourUtil, r.SevenDayUtil}
+			rowIdx++
+		}
+		n := 0
+		for _, a := range accs {
+			if a.Status != "active" {
+				continue
+			}
+			l := latest[a.ID]
+			if l.five >= a.FiveHourThreshold || l.seven >= a.SevenDayThreshold {
+				continue
+			}
+			n++
+		}
+		return n
+	}
+	leasedAt := func(at int64) int {
+		held := make(map[int64]struct{})
+		for _, e := range segs {
+			if e.StartedAt <= at && (e.EndedAt == 0 || e.EndedAt > at) {
+				held[e.AccountID] = struct{}{}
+			}
+		}
+		return len(held)
+	}
+
 	trend := make([]DashboardTrendBucket, buckets)
 	for i := 0; i < buckets; i++ {
+		at := bucketStart + int64(i+1)*hourMs
+		if at > nowMs {
+			at = nowMs
+		}
 		var used5h, used7d float64
 		for accID, p := range peakPerAccount[i] {
 			w := accountWeights[accID]
@@ -1398,6 +1464,8 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			SevenDayUsed:     used7d,
 			SevenDayCapacity: cap7d,
 			SevenDayPct:      pct7d,
+			AvailableCount:   availableAt(at),
+			LeasedCount:      leasedAt(at),
 		}
 	}
 	writeJSON(w, http.StatusOK, DashboardResponse{KPIs: kpis, Trend: trend})

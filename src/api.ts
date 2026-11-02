@@ -741,6 +741,10 @@ export interface DashboardTrendBucket {
   seven_day_used?: number;
   seven_day_capacity?: number;
   seven_day_pct?: number;
+  // Account counts at the bucket's end: active and not cooling, and held by
+  // a lease. Older daemons omit them.
+  available_count?: number;
+  leased_count?: number;
 }
 
 export interface DashboardResponse {

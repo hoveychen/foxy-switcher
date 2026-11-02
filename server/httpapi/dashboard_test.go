@@ -211,3 +211,52 @@ func TestDashboard_TrendCoolingCountsFull(t *testing.T) {
 		t.Errorf("trend used: 5h=%v 7d=%v want 10/7", last.FiveHourUsed, last.SevenDayUsed)
 	}
 }
+
+// TestDashboard_TrendAccountCounts: the current bucket counts active accounts
+// that aren't cooling (a paused account and a frozen one drop out) and the
+// accounts held by a live lease.
+func TestDashboard_TrendAccountCounts(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	mk := func(name, status string) *store.Account {
+		a := &store.Account{Name: name, AccessToken: "at-" + name, RefreshToken: "rt-" + name,
+			ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Status: status}
+		if err := st.Upsert(ctx, a); err != nil {
+			t.Fatalf("upsert %s: %v", name, err)
+		}
+		if err := st.SetThresholds(ctx, a.ID, 90, 90, 90); err != nil {
+			t.Fatalf("thresholds %s: %v", name, err)
+		}
+		return a
+	}
+	ok1 := mk("ok1", "active")
+	mk("ok2", "active")
+	frozen := mk("frozen", "active")
+	mk("paused", "paused")
+	ts := time.Now().UnixMilli()
+	if err := st.AppendUsageHistory(ctx, ok1.ID, ts, 20, 30, 0); err != nil {
+		t.Fatalf("history ok1: %v", err)
+	}
+	if err := st.AppendUsageHistory(ctx, frozen.ID, ts, 10, 95, 0); err != nil {
+		t.Fatalf("history frozen: %v", err)
+	}
+	if err := st.InsertDevice(ctx, store.Device{ID: "dev-A", Name: "MacA", TokenHash: "ha"}); err != nil {
+		t.Fatalf("ins A: %v", err)
+	}
+	if _, err := st.AcquireLease(ctx, "lease-1", ok1.ID, "dev-A", time.Minute); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	srv := New(st, nil, nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	var got DashboardResponse
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	last := got.Trend[len(got.Trend)-1]
+	if last.AvailableCount != 2 || last.LeasedCount != 1 {
+		t.Errorf("counts: available=%d leased=%d want 2/1", last.AvailableCount, last.LeasedCount)
+	}
+}
