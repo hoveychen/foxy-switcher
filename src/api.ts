@@ -610,6 +610,21 @@ export interface PoolWindowTotals {
   percent: number; // used / capacity * 100, 0 when capacity is 0
 }
 
+// windowExhausted: a cooling account's quota in this window is unusable, so it
+// counts as fully used rather than at its raw utilization (the threshold is
+// usually below 100). Hitting the 7d threshold freezes the account for both
+// windows — its unused 5h headroom can't be spent — while hitting only the 5h
+// threshold leaves the 7d window as reported.
+function windowExhausted(a: Account, window: "five_hour" | "seven_day"): boolean {
+  const hit7d = !!a.seven_day && a.seven_day.utilization >= a.seven_day_threshold;
+  if (hit7d) return true;
+  return (
+    window === "five_hour" &&
+    !!a.five_hour &&
+    a.five_hour.utilization >= a.five_hour_threshold
+  );
+}
+
 export function poolWindowTotals(
   accounts: Account[],
   window: "five_hour" | "seven_day",
@@ -621,6 +636,10 @@ export function poolWindowTotals(
     const w = planWeight(a.provider, a.rate_limit_tier, a.subscription_type)[window];
     if (w <= 0) continue;
     capacity += w;
+    if (windowExhausted(a, window)) {
+      used += w;
+      continue;
+    }
     const u = a[window]?.utilization;
     if (typeof u === "number") {
       used += (Math.max(0, Math.min(100, u)) / 100) * w;
