@@ -662,6 +662,29 @@ type LeaseEvent struct {
 	EndedAt   int64 // 0 == still open
 }
 
+// LeaseEventsSince is LeaseEventsForAccountSince across every account. The
+// Dashboard trend uses it to count how many accounts were leased at each hour.
+func (s *Store) LeaseEventsSince(ctx context.Context, since int64) ([]LeaseEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT lease_id, account_id, device_id, started_at, ended_at
+  FROM lease_events
+ WHERE ended_at = 0 OR ended_at >= ?
+ ORDER BY started_at ASC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LeaseEvent
+	for rows.Next() {
+		var e LeaseEvent
+		if err := rows.Scan(&e.LeaseID, &e.AccountID, &e.DeviceID, &e.StartedAt, &e.EndedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // LeaseEventsForAccountSince returns every lease segment for accountID that
 // overlaps [since, ∞): either still open (ended_at == 0) or ended at/after
 // `since`. Ordered by started_at ascending so attribution can walk them in

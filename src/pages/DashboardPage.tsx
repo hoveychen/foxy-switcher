@@ -625,12 +625,14 @@ function StaleDot() {
 // line for 5h and one for 7d, where each bucket's value is the
 // Pro-equivalent used divided by Pro-equivalent capacity. Mirrors the 5h/7d
 // KPI cards above so the eye can connect the current snapshot to its
-// history. Inline SVG keeps the daemon dependency-light.
+// history. Two dashed lines on a right-hand count axis track how many accounts
+// were available and how many were leased. Inline SVG keeps the daemon
+// dependency-light.
 function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   const W = 720;
   const H = 200;
   const PAD_LEFT = 32;
-  const PAD_RIGHT = 12;
+  const PAD_RIGHT = 28;
   const PAD_TOP = 36;
   const PAD_BOTTOM = 22;
 
@@ -638,7 +640,11 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   const hasData = trend.some(
-    (b) => (b.five_hour_pct ?? 0) > 0 || (b.seven_day_pct ?? 0) > 0,
+    (b) =>
+      (b.five_hour_pct ?? 0) > 0 ||
+      (b.seven_day_pct ?? 0) > 0 ||
+      (b.available_count ?? 0) > 0 ||
+      (b.leased_count ?? 0) > 0,
   );
 
   if (trend.length === 0 || !hasData) {
@@ -659,9 +665,22 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   const y = (v: number) =>
     PAD_TOP + innerH - (Math.max(0, Math.min(100, v)) / 100) * innerH;
 
-  const path = (sel: (b: DashboardTrendBucket) => number) =>
+  // Account counts share the plot area on their own right-hand scale, rounded
+  // up to an even number so the midpoint label is a whole account.
+  const maxCount = trend.reduce(
+    (m, b) => Math.max(m, b.available_count ?? 0, b.leased_count ?? 0),
+    0,
+  );
+  const countTop = Math.max(2, Math.ceil(maxCount / 2) * 2);
+  const yc = (v: number) =>
+    PAD_TOP + innerH - (Math.max(0, Math.min(countTop, v)) / countTop) * innerH;
+
+  const path = (
+    sel: (b: DashboardTrendBucket) => number,
+    scale: (v: number) => number = y,
+  ) =>
     trend
-      .map((b, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(sel(b)).toFixed(1)}`)
+      .map((b, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${scale(sel(b)).toFixed(1)}`)
       .join(" ");
 
   // fmtPct keeps small values readable (one decimal under 10) so 0.4% doesn't
@@ -682,6 +701,8 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   const last = trend[n - 1];
   const cur5 = last.five_hour_pct ?? 0;
   const cur7 = last.seven_day_pct ?? 0;
+  const curAvail = last.available_count ?? 0;
+  const curLeased = last.leased_count ?? 0;
 
   // mousemove → nearest bucket. We project the cursor into SVG-user space via
   // getScreenCTM so the math stays correct under any container width / DPR.
@@ -709,12 +730,14 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
   // clip the chart's right edge. Fixed dimensions keep the rect/text aligned
   // without needing post-render measurement.
   const TT_W = 150;
-  const TT_H = 64;
+  const TT_H = 100;
   let tooltip: JSX.Element | null = null;
   if (hoverIdx !== null) {
     const b = trend[hoverIdx];
     const v5 = b.five_hour_pct ?? 0;
     const v7 = b.seven_day_pct ?? 0;
+    const vAvail = b.available_count ?? 0;
+    const vLeased = b.leased_count ?? 0;
     const cx = x(hoverIdx);
     let tx = cx + 10;
     if (tx + TT_W > W - PAD_RIGHT) tx = cx - 10 - TT_W;
@@ -731,6 +754,8 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
         />
         <circle cx={cx} cy={y(v5)} r={4} className="trend-dot trend-five" />
         <circle cx={cx} cy={y(v7)} r={4} className="trend-dot trend-seven" />
+        <circle cx={cx} cy={yc(vAvail)} r={4} className="trend-dot trend-available" />
+        <circle cx={cx} cy={yc(vLeased)} r={4} className="trend-dot trend-leased" />
         <rect
           x={tx}
           y={ty}
@@ -752,6 +777,18 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
           {tf("dashboard.trend.tooltip.row", {
             label: t("dashboard.trend.legend.7d_pool"),
             pct: fmtPct(v7),
+          })}
+        </text>
+        <text x={tx + 10} y={ty + 74} className="trend-tooltip-row trend-tooltip-available">
+          {tf("dashboard.trend.count.row", {
+            label: t("dashboard.trend.legend.available"),
+            n: vAvail,
+          })}
+        </text>
+        <text x={tx + 10} y={ty + 92} className="trend-tooltip-row trend-tooltip-leased">
+          {tf("dashboard.trend.count.row", {
+            label: t("dashboard.trend.legend.leased"),
+            n: vLeased,
           })}
         </text>
       </g>
@@ -776,6 +813,11 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
       <text x={PAD_LEFT - 6} y={y(50) + 3} textAnchor="end" className="trend-axis trend-axis-y">50</text>
       <text x={PAD_LEFT - 6} y={y(0) + 3} textAnchor="end" className="trend-axis trend-axis-y">0</text>
 
+      {/* Right-hand axis for the account-count lines. */}
+      <text x={W - PAD_RIGHT + 6} y={yc(countTop) + 3} className="trend-axis trend-axis-y">{countTop}</text>
+      <text x={W - PAD_RIGHT + 6} y={yc(countTop / 2) + 3} className="trend-axis trend-axis-y">{countTop / 2}</text>
+      <text x={W - PAD_RIGHT + 6} y={yc(0) + 3} className="trend-axis trend-axis-y">0</text>
+
       {/* Reference grid at 50% and 90% (the threshold band). */}
       <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(0)} y2={y(0)} className="trend-grid trend-grid-baseline" />
       <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(50)} y2={y(50)} className="trend-grid" />
@@ -789,10 +831,20 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
         className="trend-line trend-seven"
         d={path((b) => b.seven_day_pct ?? 0)}
       />
+      <path
+        className="trend-line trend-available"
+        d={path((b) => b.available_count ?? 0, yc)}
+      />
+      <path
+        className="trend-line trend-leased"
+        d={path((b) => b.leased_count ?? 0, yc)}
+      />
 
       {/* End-of-series dots — anchor the eye to "what's the current value". */}
       <circle cx={x(n - 1)} cy={y(cur5)} r={3.5} className="trend-dot trend-five" />
       <circle cx={x(n - 1)} cy={y(cur7)} r={3.5} className="trend-dot trend-seven" />
+      <circle cx={x(n - 1)} cy={yc(curAvail)} r={3.5} className="trend-dot trend-available" />
+      <circle cx={x(n - 1)} cy={yc(curLeased)} r={3.5} className="trend-dot trend-leased" />
 
       {labelIdx.map((i) => (
         <text
@@ -821,6 +873,20 @@ function UsageTrendChart({ trend }: { trend: DashboardTrendBucket[] }) {
           {tf("dashboard.trend.current.row", {
             label: t("dashboard.trend.legend.7d_pool"),
             pct: fmtPct(cur7),
+          })}
+        </text>
+        <circle cx={PAD_LEFT + 244} cy={PAD_TOP - 16} r={3} className="trend-dot trend-available" />
+        <text x={PAD_LEFT + 252} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
+          {tf("dashboard.trend.count.row", {
+            label: t("dashboard.trend.legend.available"),
+            n: curAvail,
+          })}
+        </text>
+        <circle cx={PAD_LEFT + 364} cy={PAD_TOP - 16} r={3} className="trend-dot trend-leased" />
+        <text x={PAD_LEFT + 372} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
+          {tf("dashboard.trend.count.row", {
+            label: t("dashboard.trend.legend.leased"),
+            n: curLeased,
           })}
         </text>
       </g>
