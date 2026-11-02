@@ -144,6 +144,18 @@ func planWeight(provider, rateTier, sub string) (w5h, w7d float64) {
 	}
 }
 
+// windowExhausted reports whether a cooling account's quota in this window is
+// unusable and so counts as fully used rather than at its raw utilization (the
+// threshold is usually below 100). Hitting the 7d threshold freezes the account
+// for both windows; hitting only the 5h threshold leaves 7d as reported.
+// Mirrors the frontend's windowExhausted.
+func windowExhausted(a Account, window string) bool {
+	if a.SevenDay != nil && a.SevenDay.Utilization >= a.SevenDayThreshold {
+		return true
+	}
+	return window == "five_hour" && a.FiveHour != nil && a.FiveHour.Utilization >= a.FiveHourThreshold
+}
+
 // poolWindowTotals computes the weighted-pool used / capacity / percent for
 // one window across all *active* accounts. Used and capacity are in
 // Pro-equivalents (Pro=1x, Max5x=5x, Max20x=20x for 5h / 10x for 7d).
@@ -172,6 +184,10 @@ func poolWindowTotals(accounts []Account, window string) (used, capacity, percen
 			continue
 		}
 		capacity += w
+		if windowExhausted(a, window) {
+			used += w
+			continue
+		}
 		if u != nil {
 			util := u.Utilization
 			if util < 0 {
