@@ -214,12 +214,13 @@ func TestDashboard_TrendCoolingCountsFull(t *testing.T) {
 
 // TestDashboard_TrendAccountCounts: the current bucket counts active accounts
 // that aren't cooling (a paused account and a frozen one drop out) and the
-// accounts held by a live lease.
+// accounts held by a live lease, split into Claude and Codex. OpenRouter and
+// DeepSeek accounts are shared, not leased, so they count toward neither.
 func TestDashboard_TrendAccountCounts(t *testing.T) {
 	st, _ := newTestStore(t)
 	ctx := context.Background()
-	mk := func(name, status string) *store.Account {
-		a := &store.Account{Name: name, AccessToken: "at-" + name, RefreshToken: "rt-" + name,
+	mk := func(name, provider, status string) *store.Account {
+		a := &store.Account{Name: name, Provider: provider, AccessToken: "at-" + name, RefreshToken: "rt-" + name,
 			ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Status: status}
 		if err := st.Upsert(ctx, a); err != nil {
 			t.Fatalf("upsert %s: %v", name, err)
@@ -229,10 +230,15 @@ func TestDashboard_TrendAccountCounts(t *testing.T) {
 		}
 		return a
 	}
-	ok1 := mk("ok1", "active")
-	mk("ok2", "active")
-	frozen := mk("frozen", "active")
-	mk("paused", "paused")
+	ok1 := mk("ok1", store.ProviderClaude, "active")
+	mk("ok2", store.ProviderClaude, "active")
+	frozen := mk("frozen", store.ProviderClaude, "active")
+	mk("paused", store.ProviderClaude, "paused")
+	cx1 := mk("cx1", store.ProviderCodex, "active")
+	mk("cx2", store.ProviderCodex, "active")
+	mk("cx3", store.ProviderCodex, "active")
+	mk("or", store.ProviderOpenRouter, "active")
+	mk("ds", store.ProviderDeepSeek, "active")
 	ts := time.Now().UnixMilli()
 	if err := st.AppendUsageHistory(ctx, ok1.ID, ts, 20, 30, 0); err != nil {
 		t.Fatalf("history ok1: %v", err)
@@ -246,6 +252,9 @@ func TestDashboard_TrendAccountCounts(t *testing.T) {
 	if _, err := st.AcquireLease(ctx, "lease-1", ok1.ID, "dev-A", time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
+	if _, err := st.AcquireLease(ctx, "lease-2", cx1.ID, "dev-A", time.Minute); err != nil {
+		t.Fatalf("acquire codex: %v", err)
+	}
 
 	srv := New(st, nil, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
@@ -256,7 +265,10 @@ func TestDashboard_TrendAccountCounts(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	last := got.Trend[len(got.Trend)-1]
-	if last.AvailableCount != 2 || last.LeasedCount != 1 {
-		t.Errorf("counts: available=%d leased=%d want 2/1", last.AvailableCount, last.LeasedCount)
+	if last.ClaudeAvailable != 2 || last.ClaudeLeased != 1 {
+		t.Errorf("claude counts: available=%d leased=%d want 2/1", last.ClaudeAvailable, last.ClaudeLeased)
+	}
+	if last.CodexAvailable != 3 || last.CodexLeased != 1 {
+		t.Errorf("codex counts: available=%d leased=%d want 3/1", last.CodexAvailable, last.CodexLeased)
 	}
 }

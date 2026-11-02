@@ -1721,14 +1721,16 @@
 .trend-line.trend-five   { stroke: var(--accent); }
 .trend-line.trend-seven  { stroke: var(--info); }
 .trend-line.trend-sonnet { stroke: var(--warn); }
-.trend-line.trend-available { stroke: var(--ok); stroke-dasharray: 4 3; }
-.trend-line.trend-leased    { stroke: var(--text-tertiary); stroke-dasharray: 4 3; }
+.trend-line.trend-claude    { stroke: var(--ok); }
+.trend-line.trend-codex     { stroke: var(--warn); }
+.trend-line.trend-available { stroke-dasharray: 4 3; }
+.trend-line.trend-leased    { stroke-dasharray: 0.5 3.5; stroke-width: 2; }
 
 .trend-dot.trend-five   { fill: var(--accent); }
 .trend-dot.trend-seven  { fill: var(--info); }
 .trend-dot.trend-sonnet { fill: var(--warn); }
-.trend-dot.trend-available { fill: var(--ok); }
-.trend-dot.trend-leased    { fill: var(--text-tertiary); }
+.trend-dot.trend-claude { fill: var(--ok); }
+.trend-dot.trend-codex  { fill: var(--warn); }
 
 .trend-axis {
   fill: var(--text-tertiary);
@@ -1784,8 +1786,8 @@
 
 .trend-tooltip-five  { fill: var(--accent); }
 .trend-tooltip-seven { fill: var(--info); }
-.trend-tooltip-available { fill: var(--ok); }
-.trend-tooltip-leased    { fill: var(--text-secondary); }
+.trend-tooltip-claude { fill: var(--ok); }
+.trend-tooltip-codex  { fill: var(--warn); }
 
 .trend-chart {
   cursor: crosshair;
