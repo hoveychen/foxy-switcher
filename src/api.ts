@@ -749,9 +749,29 @@ export interface DashboardTrendBucket {
   codex_leased_count?: number;
 }
 
+// One hour of the 7d pool chart. History points carry actual_pct; forecast
+// points carry same_week_pct (last week's consumption replayed) and idle_pct
+// (no consumption, resets only). The now point (last non-forecast) carries
+// all three so the forecast lines start where history ends.
+export interface DashboardWeekPoint {
+  ts: number;
+  forecast: boolean;
+  actual_pct: number;
+  same_week_pct: number;
+  idle_pct: number;
+}
+
+export interface DashboardWeek {
+  capacity: number; // Pro-equivalents
+  now_ts: number;
+  points: DashboardWeekPoint[];
+}
+
 export interface DashboardResponse {
   kpis: DashboardKPIs;
   trend: DashboardTrendBucket[];
+  // Older daemons omit it.
+  week?: DashboardWeek;
 }
 
 export interface AboutResponse {
