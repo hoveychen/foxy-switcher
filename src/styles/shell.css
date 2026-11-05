@@ -1794,6 +1794,28 @@
 .trend-tooltip-claude { fill: var(--ok); }
 .trend-tooltip-codex  { fill: var(--warn); }
 
+/* 7-day chart: actual reuses .trend-seven; the two forecasts are dashed. */
+.trend-line.week-same { stroke: var(--warn); stroke-dasharray: 5 3; }
+.trend-line.week-idle { stroke: var(--ok); stroke-dasharray: 2 3; }
+.trend-dot.week-same  { fill: var(--warn); }
+.trend-dot.week-idle  { fill: var(--ok); }
+.trend-tooltip-trend-seven { fill: var(--info); }
+.trend-tooltip-week-same   { fill: var(--warn); }
+.trend-tooltip-week-idle   { fill: var(--ok); }
+.week-forecast-band {
+  fill: var(--separator);
+  opacity: 0.25;
+  pointer-events: none;
+}
+.week-now {
+  stroke: var(--text-tertiary);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.week-now-label {
+  fill: var(--text-secondary);
+}
+
 .trend-chart {
   cursor: crosshair;
 }

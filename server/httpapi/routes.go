@@ -1243,6 +1243,8 @@ func planWeight(provider, rateTier, sub string) (w5h, w7d float64) {
 type DashboardResponse struct {
 	KPIs  DashboardKPIs          `json:"kpis"`
 	Trend []DashboardTrendBucket `json:"trend"`
+	// Week is the 7d pool over the last 7 days plus a 7-day forecast.
+	Week DashboardWeek `json:"week"`
 }
 
 // handleGetDashboard backs the Dashboard page. Returns pool-level KPIs and a
@@ -1498,7 +1500,13 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 			CodexLeased:      leased.codex,
 		}
 	}
-	writeJSON(w, http.StatusOK, DashboardResponse{KPIs: kpis, Trend: trend})
+	weekRows, err := s.Store.UsageHistorySince(ctx, now.Add(-weekHours*time.Hour).UnixMilli())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	week := sevenDayWeek(accs, weekRows, now)
+	writeJSON(w, http.StatusOK, DashboardResponse{KPIs: kpis, Trend: trend, Week: week})
 }
 
 // --- settings -------------------------------------------------------------

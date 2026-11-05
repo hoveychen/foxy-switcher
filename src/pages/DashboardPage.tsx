@@ -14,6 +14,8 @@ import {
   type Account,
   type ActivityEvent,
   type DashboardTrendBucket,
+  type DashboardWeek,
+  type DashboardWeekPoint,
   type UsageWindow,
 } from "../api";
 import type { Route } from "../components/Sidebar";
@@ -149,13 +151,16 @@ export function DashboardPage({
   // because no other page needs it — re-mounting the chart on tab return is
   // cheap and avoids polling when the user is on Activity / Settings.
   const [trend, setTrend] = useState<DashboardTrendBucket[]>([]);
+  const [week, setWeek] = useState<DashboardWeek | null>(null);
   useEffect(() => {
     let alive = true;
     const fetchOnce = () => {
       apiClient
         .getDashboard()
         .then((d) => {
-          if (alive) setTrend(d.trend);
+          if (!alive) return;
+          setTrend(d.trend);
+          setWeek(d.week ?? null);
         })
         .catch(() => {
           // Older daemon without /api/dashboard — leave the card empty.
@@ -325,6 +330,12 @@ export function DashboardPage({
                 <div className="trend-chart-title text-meta">Claude</div>
               )}
               <UsageTrendChart trend={trend} provider="claude" />
+              {week && week.capacity > 0 && (
+                <>
+                  <div className="trend-chart-title text-meta">{t("dashboard.week.title")}</div>
+                  <WeekForecastChart week={week} />
+                </>
+              )}
               {hasCodexTrend(trend) && (
                 <>
                   <div className="trend-chart-title text-meta">Codex</div>
@@ -936,6 +947,198 @@ function UsageTrendChart({
             </g>
           );
         })}
+      </g>
+
+      {tooltip}
+    </svg>
+  );
+}
+
+// WeekForecastChart plots the 7d pool (same weighting as the 7D KPI card)
+// over the last 7 days and a 7-day forecast, hourly. The forecast has two
+// lines: last week's consumption replayed onto today's accounts, and no
+// consumption at all — both drop as each account reaches its 7d reset.
+const WEEK_SERIES: {
+  key: "actual" | "same" | "idle";
+  label: string;
+  cls: string;
+  forecast: boolean;
+  sel: (p: DashboardWeekPoint) => number;
+}[] = [
+  { key: "actual", label: "dashboard.week.legend.actual", cls: "trend-seven", forecast: false, sel: (p) => p.actual_pct },
+  { key: "same", label: "dashboard.week.legend.same_week", cls: "week-same", forecast: true, sel: (p) => p.same_week_pct },
+  { key: "idle", label: "dashboard.week.legend.idle", cls: "week-idle", forecast: true, sel: (p) => p.idle_pct },
+];
+
+function WeekForecastChart({ week }: { week: DashboardWeek }) {
+  const W = 720;
+  const H = 200;
+  const PAD_LEFT = 32;
+  const PAD_RIGHT = 28;
+  const PAD_TOP = 36;
+  const PAD_BOTTOM = 22;
+
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  const pts = week.points;
+  const n = pts.length;
+  // The now point is the last history point; forecast lines start from it.
+  const nowIdx = pts.findIndex((p) => p.forecast) - 1;
+  if (n < 2 || nowIdx < 0) return null;
+
+  const innerW = W - PAD_LEFT - PAD_RIGHT;
+  const innerH = H - PAD_TOP - PAD_BOTTOM;
+  const x = (i: number) => PAD_LEFT + (i * innerW) / (n - 1);
+  const y = (v: number) =>
+    PAD_TOP + innerH - (Math.max(0, Math.min(100, v)) / 100) * innerH;
+
+  const inRange = (forecast: boolean, i: number) =>
+    forecast ? i >= nowIdx : i <= nowIdx;
+  const path = (s: (typeof WEEK_SERIES)[number]) => {
+    const from = s.forecast ? nowIdx : 0;
+    const to = s.forecast ? n - 1 : nowIdx;
+    let d = "";
+    for (let i = from; i <= to; i++) {
+      d += `${i === from ? "M" : "L"}${x(i).toFixed(1)},${y(s.sel(pts[i])).toFixed(1)} `;
+    }
+    return d.trim();
+  };
+
+  const fmtPct = (v: number) => {
+    const c = Math.max(0, Math.min(100, v));
+    return c < 10 && c > 0 ? c.toFixed(1) : `${Math.round(c)}`;
+  };
+  const fmtDay = (ts: number) => {
+    const d = new Date(ts);
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  };
+  const fmtTime = (ts: number) => {
+    const d = new Date(ts);
+    return `${fmtDay(ts)} ${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+  };
+
+  // Day labels on every other local midnight, kept clear of the now marker.
+  const dayIdx: number[] = [];
+  let midnights = 0;
+  for (let i = 1; i < n; i++) {
+    if (new Date(pts[i].ts).getDate() !== new Date(pts[i - 1].ts).getDate()) {
+      if (midnights++ % 2 === 0 && Math.abs(i - nowIdx) > 12) dayIdx.push(i);
+    }
+  }
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const local = pt.matrixTransform(ctm.inverse());
+    if (local.x < PAD_LEFT - 4 || local.x > W - PAD_RIGHT + 4) {
+      setHoverIdx(null);
+      return;
+    }
+    const idx = Math.round(((local.x - PAD_LEFT) / innerW) * (n - 1));
+    setHoverIdx(Math.max(0, Math.min(n - 1, idx)));
+  };
+
+  const cur = pts[nowIdx].actual_pct;
+  const TT_W = 210;
+  let tooltip: JSX.Element | null = null;
+  if (hoverIdx !== null) {
+    const p = pts[hoverIdx];
+    const rows = WEEK_SERIES.filter((s) => inRange(s.forecast, hoverIdx));
+    const cx = x(hoverIdx);
+    let tx = cx + 10;
+    if (tx + TT_W > W - PAD_RIGHT) tx = cx - 10 - TT_W;
+    if (tx < PAD_LEFT) tx = PAD_LEFT;
+    const ty = PAD_TOP - 4;
+    tooltip = (
+      <g className="trend-cursor-group">
+        <line x1={cx} x2={cx} y1={PAD_TOP} y2={H - PAD_BOTTOM} className="trend-cursor" />
+        {rows.map((s) => (
+          <circle key={s.key} cx={cx} cy={y(s.sel(p))} r={4} className={`trend-dot ${s.cls}`} />
+        ))}
+        <rect x={tx} y={ty} width={TT_W} height={28 + rows.length * 18} rx={6} className="trend-tooltip" />
+        <text x={tx + 10} y={ty + 18} className="trend-tooltip-time">
+          {fmtTime(p.ts)}
+        </text>
+        {rows.map((s, k) => (
+          <text key={s.key} x={tx + 10} y={ty + 38 + k * 18} className={`trend-tooltip-row trend-tooltip-${s.cls}`}>
+            {tf("dashboard.week.tooltip.row", {
+              label: t(s.label),
+              pct: fmtPct(s.sel(p)),
+              used: fmtX((s.sel(p) / 100) * week.capacity),
+            })}
+          </text>
+        ))}
+      </g>
+    );
+  }
+
+  return (
+    <svg
+      ref={svgRef}
+      className="trend-chart"
+      viewBox={`0 0 ${W} ${H}`}
+      role="img"
+      aria-label={t("dashboard.week.aria")}
+      onMouseMove={onMove}
+      onMouseLeave={() => setHoverIdx(null)}
+    >
+      {/* Forecast half sits on a faint band so it reads as not-yet-happened. */}
+      <rect x={x(nowIdx)} y={PAD_TOP} width={x(n - 1) - x(nowIdx)} height={innerH} className="week-forecast-band" />
+
+      <text x={PAD_LEFT - 6} y={y(100) + 3} textAnchor="end" className="trend-axis trend-axis-y">100</text>
+      <text x={PAD_LEFT - 6} y={y(90) + 3} textAnchor="end" className="trend-axis trend-axis-y trend-axis-warn">90</text>
+      <text x={PAD_LEFT - 6} y={y(50) + 3} textAnchor="end" className="trend-axis trend-axis-y">50</text>
+      <text x={PAD_LEFT - 6} y={y(0) + 3} textAnchor="end" className="trend-axis trend-axis-y">0</text>
+
+      <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(0)} y2={y(0)} className="trend-grid trend-grid-baseline" />
+      <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(50)} y2={y(50)} className="trend-grid" />
+      <line x1={PAD_LEFT} x2={W - PAD_RIGHT} y1={y(90)} y2={y(90)} className="trend-grid trend-grid-warn" />
+
+      {/* Draw the forecasts first so the idle line can't hide history. */}
+      {[...WEEK_SERIES].reverse().map((s) => (
+        <path key={s.key} className={`trend-line ${s.cls}`} d={path(s)} />
+      ))}
+
+      <line x1={x(nowIdx)} x2={x(nowIdx)} y1={PAD_TOP} y2={H - PAD_BOTTOM} className="week-now" />
+      <circle cx={x(nowIdx)} cy={y(cur)} r={3.5} className="trend-dot trend-seven" />
+      <text x={x(nowIdx)} y={H - 6} textAnchor="middle" className="trend-axis week-now-label">
+        {t("dashboard.week.now")}
+      </text>
+
+      {dayIdx.map((i) => (
+        <text key={i} x={x(i)} y={H - 6} textAnchor="middle" className="trend-axis">
+          {fmtDay(pts[i].ts)}
+        </text>
+      ))}
+
+      <g className="trend-legend">
+        {(() => {
+          // Labels differ a lot in length across locales, so lay them out by
+          // an estimated width (10px font: CJK ≈ 10px, Latin ≈ 5.6px).
+          let lx = PAD_LEFT;
+          return WEEK_SERIES.map((s) => {
+            const text = s.forecast
+              ? t(s.label)
+              : tf("dashboard.trend.current.row", { label: t(s.label), pct: fmtPct(cur) });
+            const x0 = lx;
+            const w = [...text].reduce((m, ch) => m + (ch.charCodeAt(0) > 0x2e80 ? 10 : 5.6), 0);
+            lx += 20 + w + 28;
+            return (
+              <g key={s.key}>
+                <line x1={x0} x2={x0 + 14} y1={PAD_TOP - 16} y2={PAD_TOP - 16} className={`trend-line ${s.cls}`} />
+                <text x={x0 + 20} y={PAD_TOP - 12} className="trend-axis trend-legend-text">
+                  {text}
+                </text>
+              </g>
+            );
+          });
+        })()}
       </g>
 
       {tooltip}
