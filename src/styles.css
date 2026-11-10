@@ -825,7 +825,7 @@ input {
 
 @media (max-width: 900px) {
   /* On narrower windows the three trailing bars push the title past
-     ellipsis. Drop to two bars (5h + 7d Opus) and let Sonnet hide. */
+     ellipsis. Drop to two bars (5h + 7d total) and let Sonnet hide. */
   .mode-list .account-card-usage .usage-row-compact:nth-child(3) {
     display: none;
   }

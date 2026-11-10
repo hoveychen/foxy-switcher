@@ -214,7 +214,7 @@ type usageRow struct {
 // usageRows returns the windows that actually exist for this account's
 // provider, already labelled. Mirrors the web UI's per-provider split:
 //
-//   - claude    — 5h, 7d Opus, and the per-model weekly-scoped window.
+//   - claude    — 5h, 7d total, and the per-model weekly-scoped window.
 //   - codex     — two windows, and they are ChatGPT's, not Anthropic's, so they
 //     carry neutral Primary/Secondary labels and there is no scoped third.
 //   - openrouter — none. It is pay-as-you-go: no subscription windows exist, and
@@ -234,7 +234,7 @@ func usageRows(a Account) []usageRow {
 	default:
 		return []usageRow{
 			{"5h", a.FiveHour},
-			{"7d Opus", a.SevenDay},
+			{"7d total", a.SevenDay},
 			{"7d " + a.ScopedModelLabel(), a.SevenDaySonnet},
 		}
 	}

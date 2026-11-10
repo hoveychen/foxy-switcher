@@ -471,7 +471,7 @@ function HeroCard({
           ) : (
             <>
               <HeroUsageBar label={t("drawer.usage.5h")} win={account.five_hour} nowMs={nowMs} />
-              <HeroUsageBar label={t("drawer.usage.7d_opus")} win={account.seven_day} nowMs={nowMs} />
+              <HeroUsageBar label={t("drawer.usage.7d_total")} win={account.seven_day} nowMs={nowMs} />
               <HeroUsageBar
                 label={scopedUsageLabel(account.seven_day_scoped_label, scopedIsThrottled(account))}
                 win={account.seven_day_sonnet}

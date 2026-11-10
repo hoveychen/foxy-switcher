@@ -492,7 +492,7 @@ function AccountCard({
             ) : (
               <>
                 <UsageMiniBar label={t("drawer.usage.5h")} win={a.five_hour} />
-                <UsageMiniBar label={t("drawer.usage.7d_opus")} win={a.seven_day} />
+                <UsageMiniBar label={t("drawer.usage.7d_total")} win={a.seven_day} />
                 <UsageMiniBar
                   label={scopedUsageLabel(a.seven_day_scoped_label, scopedIsThrottled(a))}
                   win={a.seven_day_sonnet}

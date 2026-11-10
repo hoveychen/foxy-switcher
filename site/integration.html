@@ -6,7 +6,7 @@
     <title>Read the usage data — Foxy Switcher local API</title>
     <meta
       name="description"
-      content="Foxy Switcher exposes live Claude usage (5h / 7d Opus / 7d Sonnet) over a local HTTP API on 127.0.0.1. Any app on the same machine can read it — no SDK, no auth. Three steps."
+      content="Foxy Switcher exposes live Claude usage (5h / 7d total / 7d per-model) over a local HTTP API on 127.0.0.1. Any app on the same machine can read it — no SDK, no auth. Three steps."
     />
     <meta name="theme-color" content="#ff7a1a" />
     <link rel="icon" type="image/png" href="assets/foxy-icon.png" />
@@ -156,7 +156,7 @@
       <p>
         Foxy Switcher runs a tiny HTTP daemon on <code>127.0.0.1</code>. Every
         number you see in the app — each account's <strong>5-hour</strong>,
-        <strong>7-day Opus</strong> and <strong>7-day Sonnet</strong> usage, the
+        <strong>7-day total</strong> and <strong>7-day per-model</strong> (e.g. Fable) usage, the
         reset countdowns, which account is currently in use — is served over
         that local API. Any program on the same machine can read it. No SDK, no
         API key, no auth.
@@ -247,11 +247,11 @@
           </tr>
           <tr>
             <td><code>seven_day</code></td>
-            <td>The 7-day Opus window (shown as &ldquo;7d Opus&rdquo; in the UI).</td>
+            <td>The 7-day window for the whole account, all models combined (shown as &ldquo;7d Total&rdquo; in the UI).</td>
           </tr>
           <tr>
             <td><code>seven_day_sonnet</code></td>
-            <td>The 7-day Sonnet window.</td>
+            <td>The 7-day per-model sub-limit (legacy key name; currently Fable). Hitting it only blocks that model, not the account.</td>
           </tr>
           <tr>
             <td><code>utilization</code></td>
