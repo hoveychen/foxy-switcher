@@ -531,7 +531,7 @@ Toast：右下角浮层，宽 ≤ 360，自动 4s 消失，可手动关闭，`--
 
 ### 3.18 Chart
 
-- 折线图：使用 `--accent` / `--ok` / `--info` 三色区分 5h / 7d Opus / 7d Sonnet。
+- 折线图：使用 `--accent` / `--ok` / `--info` 三色区分 5h / 7d 总量 / 7d 按模型（Fable 等）。
 - 网格线：`--separator`，1px。
 - 轴文字：`--font-meta`，`--text-tertiary`。
 - Tooltip：`--bg-card` + `--shadow-popover`，包含点状态点 + 数值 + 时间。

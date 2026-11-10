@@ -392,7 +392,7 @@
   "drawer.attr.share_aria": "{device} share of the {window} window",
   "drawer.attr.last_used": "last real use {time} ago",
   "drawer.usage.5h": "5h",
-  "drawer.usage.7d_opus": "7d Opus",
+  "drawer.usage.7d_total": "7d Total",
   "drawer.usage.7d_sonnet": "7d Sonnet",
   "drawer.usage.7d_scoped": "7d {model}",
   "drawer.usage.capped": "capped",

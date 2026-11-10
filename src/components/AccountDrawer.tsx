@@ -236,7 +236,7 @@ function attributionWindows(account: Account): AttributionWindow[] {
   }
   return [
     { key: "five_hour", label: t("drawer.usage.5h") },
-    { key: "seven_day", label: t("drawer.usage.7d_opus") },
+    { key: "seven_day", label: t("drawer.usage.7d_total") },
     { key: "seven_day_sonnet", label: scopedUsageLabel(account.seven_day_scoped_label) },
   ];
 }
@@ -727,7 +727,7 @@ export function AccountDrawer({
                 readOnly={disableAdminActions}
               />
               <UsageBar
-                label={t("drawer.usage.7d_opus")}
+                label={t("drawer.usage.7d_total")}
                 win={account.seven_day}
                 nowMs={nowMs}
                 threshold={account.seven_day_threshold}

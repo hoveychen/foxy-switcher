@@ -623,7 +623,7 @@ func (m *model) listRowAt(x, y int) (int, bool) {
 }
 
 // inlineDetailRows is the number of rows renderInlineDetail produces below
-// the cursor row in the regular layout (owner + 5h + 7d Opus + 7d Sonnet +
+// the cursor row in the regular layout (owner + 5h + 7d total + 7d Sonnet +
 // token meta).
 const inlineDetailRows = 5
 

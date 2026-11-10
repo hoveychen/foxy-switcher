@@ -131,7 +131,7 @@ GUI 每 5s 轮询 `/healthz` + `/api/cred/status`。失联 10s 后顶栏出现�
 **Drawer 字段**：
 
 - 头部：avatar（首字母色块） + name + plan + 状态标签
-- 三个 Usage Bar：5h / 7d Opus / 7d Sonnet
+- 三个 Usage Bar：5h / 7d 总量 / 7d 按模型（Fable 等）
 - Meta 网格：Status / Last used / Token expires / Usage updated / Created / Organization UUID
 - Action group：Use now（主） / Refresh now / Disable·Enable / Delete（destructive）
 
