@@ -310,7 +310,12 @@ type Store struct {
 
 // Open opens (or creates) the SQLite file at path. Sets WAL + 0600 perms.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	// _txlock=immediate: BeginTx issues BEGIN IMMEDIATE. Our transactions are
+	// read-then-write; under DEFERRED the lock upgrade at the first write
+	// fails with SQLITE_BUSY immediately (busy_timeout is not consulted) when
+	// another connection committed meanwhile — seen in prod as
+	// "save account: database is locked". IMMEDIATE waits at BEGIN instead.
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
